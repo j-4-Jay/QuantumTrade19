@@ -1,0 +1,12 @@
+reflex
+pyotp
+qrcode
+keyring
+cryptography
+websockets
+requests
+python-dotenv
+apscheduler
+pandas
+numpy
+desktop-notifier
