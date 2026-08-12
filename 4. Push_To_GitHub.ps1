@@ -21,13 +21,25 @@ git add -A
 $status = git status --porcelain
 if (-not $status) {
     Write-Host "Nothing to commit -- working tree is already clean." -ForegroundColor DarkYellow
-    exit 0
+} else {
+    Write-Host "Committing with message: `"$Message`"" -ForegroundColor Green
+    git commit -m "$Message"
 }
 
-Write-Host "Committing with message: `"$Message`"" -ForegroundColor Green
-git commit -m "$Message"
-
 Write-Host "Pushing to origin..." -ForegroundColor Green
-git push
+$currentBranch = git rev-parse --abbrev-ref HEAD
 
-Write-Host "Done. Changes pushed to GitHub." -ForegroundColor Cyan
+$hasUpstream = git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>$null
+if (-not $hasUpstream) {
+    Write-Host "No upstream branch set yet -- setting it now (first push to '$currentBranch')..." -ForegroundColor Yellow
+    git push --set-upstream origin $currentBranch
+} else {
+    git push
+}
+
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "Done. Changes pushed to GitHub successfully." -ForegroundColor Green
+} else {
+    Write-Host "PUSH FAILED. Nothing was actually sent to GitHub -- scroll up to see the git error above." -ForegroundColor Red
+    exit 1
+}
