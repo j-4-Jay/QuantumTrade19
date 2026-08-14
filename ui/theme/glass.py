@@ -2,12 +2,18 @@
 
 PATH: ui/theme/glass.py  (REPLACE ENTIRE FILE)
 
-FIX: cursor is now explicitly forced to "auto" (not just omitted) on both background styles.
-If a stale cached stylesheet from the old cursor:none rule is still being served, an explicit
-override wins over an absent property - this guarantees the native cursor is forced visible
-the moment this file actually takes effect, regardless of any caching left over from before.
+CHANGE (Module 01 gap-closure item 5): added a uniform 0.9s cross-fade transition to every
+style dict whose background/border/box-shadow/color values are driven by the --qt19-* CSS
+custom properties set in page_shell.py's _theme_style_vars(). Custom properties themselves
+can't be transitioned, but the consuming elements can - as long as they declare the
+transition, which none of these previously did (only PAGE_BG_STYLE had a partial one, and
+PILL_BUTTON_STYLE's existing transform transition is preserved alongside the new one).
 """
 from __future__ import annotations
+
+
+_THEME_CROSSFADE = "background 0.9s ease, border-color 0.9s ease, box-shadow 0.9s ease, color 0.9s ease"
+
 
 GLASS_CARD_STYLE: dict = {
     "background": "var(--qt19-glass-bg)",
@@ -16,9 +22,12 @@ GLASS_CARD_STYLE: dict = {
     "border_radius": "1.5rem",
     "box_shadow": "0 8px 32px rgba(0,0,0,0.18)",
     "padding": "1.25rem",
+    "transition": _THEME_CROSSFADE,
 }
 
+
 GLASS_CARD_3XL_STYLE: dict = {**GLASS_CARD_STYLE, "border_radius": "1.75rem"}
+
 
 PILL_BUTTON_STYLE: dict = {
     "border_radius": "9999px",
@@ -30,23 +39,27 @@ PILL_BUTTON_STYLE: dict = {
     "border": "none",
     "cursor": "pointer",
     "font_weight": "600",
-    "transition": "transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)",
+    "transition": f"transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), {_THEME_CROSSFADE}",
     "_hover": {"transform": "scale(1.05)"},
 }
+
 
 GLOW_RING_STYLE: dict = {
     "border": "2px solid var(--qt19-accent)",
     "box_shadow": "0 0 12px 3px var(--qt19-accent-glow)",
     "border_radius": "9999px",
+    "transition": _THEME_CROSSFADE,
 }
+
 
 PAGE_BG_STYLE: dict = {
     "background": "linear-gradient(160deg, var(--qt19-bg-from), var(--qt19-bg-to))",
     "min_height": "100vh",
     "color": "var(--qt19-text-primary)",
-    "transition": "background 0.6s ease",
+    "transition": _THEME_CROSSFADE,
     "cursor": "auto",
 }
+
 
 AUTH_BG_STYLE: dict = {
     "background": (
@@ -64,6 +77,7 @@ AUTH_BG_STYLE: dict = {
     "justify_content": "center",
     "cursor": "auto",
 }
+
 
 
 def heartbeat_pill_style(pulse_color) -> dict:

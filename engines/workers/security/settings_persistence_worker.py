@@ -2,16 +2,15 @@
 
 PATH: engines/workers/security/settings_persistence_worker.py  (REPLACE ENTIRE FILE)
 
-FIX: same principle as secure_keystorage_worker.py - `load()` used to re-read and re-parse
-data/settings.json from disk on every single call (including on every splash->login handoff,
-via is_totp_enabled()). Added an in-memory cache: the file is read from disk once, then served
-from memory; `save()` updates both the in-memory cache and the on-disk file together, so
-nothing ever goes stale, but repeated reads within a session cost nothing.
+CHANGE: added tab_transition_effects_enabled / tab_transition_mode defaults - the tab-switch
+animation (Dashboard <-> Trading Panel <-> Journal & Reports <-> Alerts <-> Settings) is now
+independently configurable from Settings, separate from the screen-entrance transition pool.
 """
 from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+
 
 _SETTINGS_PATH = Path("data") / "settings.json"
 _DEFAULTS: dict[str, Any] = {
@@ -25,6 +24,9 @@ _DEFAULTS: dict[str, Any] = {
     "discord_notify_enabled": False,
     "transition_effects_enabled": ["dissolve", "zoom-in", "slide-up", "flip-x", "blur-in"],
     "transition_mode": "shuffle",
+    "tab_transition_effects_enabled": ["slide-left"],
+    "tab_transition_mode": "single",
+    "per_symbol_settings": {},
 }
 
 
@@ -56,3 +58,15 @@ class SettingsPersistenceWorker:
         self._cache = current
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(json.dumps(current, indent=2))
+
+    def get_per_symbol_setting(self, symbol: str, key: str, default=None):
+        per_symbol = self.load().get("per_symbol_settings", {})
+        return per_symbol.get(symbol, {}).get(key, default)
+
+    def set_per_symbol_setting(self, symbol: str, key: str, value) -> None:
+        current = self.load()
+        per_symbol = dict(current.get("per_symbol_settings", {}))
+        symbol_bucket = dict(per_symbol.get(symbol, {}))
+        symbol_bucket[key] = value
+        per_symbol[symbol] = symbol_bucket
+        self.save({"per_symbol_settings": per_symbol})

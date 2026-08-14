@@ -1,11 +1,13 @@
 """QuantumTrade19 - App entrypoint.
 
-PATH: quantumtrade19/quantumtrade19.py  (REPLACE ENTIRE FILE)
+PATH: quantumtrade19/quantumtrade19.py (REPLACE ENTIRE FILE)
 
-CHANGE: the whole screen-selection `rx.cond` is now wrapped in ONE box carrying the
-transition class, keyed by `AppState.screen`. Using `key=` forces React to treat every screen
-change as a fresh mount (not a patch of the existing one), which is what reliably replays the
-CSS entrance animation on every single screen-to-screen change, not just Login->Dashboard.
+CHANGE (Module 01 gap-closure item 8): _shell_body()'s tab content is now wrapped in its own
+box, keyed by AppState.active_tab, carrying the qt19-tab-switch class - forces a fresh mount
+on every tab change so the fade+slide animation replays every single time, the same
+remount-via-key technique already used for full-screen transitions and the login shake.
+symbol_detail_popup() stays outside that box so opening a detail card never re-triggers the
+tab animation.
 """
 from __future__ import annotations
 import reflex as rx
@@ -28,15 +30,25 @@ from ui.components.page_shell import qt19_page_shell
 from ui.components.symbol_detail_popup import symbol_detail_popup
 
 
+
+
+
 def _shell_body() -> rx.Component:
     return rx.fragment(
-        rx.cond(AppState.active_tab == "Dashboard", dashboard_page()),
-        rx.cond(AppState.active_tab == "Trading Panel", trading_panel_page()),
-        rx.cond(AppState.active_tab == "Journal & Reports", journal_page()),
-        rx.cond(AppState.active_tab == "Alerts", alerts_page()),
-        rx.cond(AppState.active_tab == "Settings", settings_page()),
+        rx.box(
+            rx.cond(AppState.active_tab == "Dashboard", dashboard_page()),
+            rx.cond(AppState.active_tab == "Trading Panel", trading_panel_page()),
+            rx.cond(AppState.active_tab == "Journal & Reports", journal_page()),
+            rx.cond(AppState.active_tab == "Alerts", alerts_page()),
+            rx.cond(AppState.active_tab == "Settings", settings_page()),
+            key=AppState.active_tab,
+            class_name="qt19-transition-" + AppState.tab_transition_active_effect,
+            width="100%",
+        ),
         symbol_detail_popup(),
     )
+
+
 
 
 def _current_screen() -> rx.Component:
@@ -76,6 +88,16 @@ def index() -> rx.Component:
             _current_screen(),
             class_name="qt19-transition-" + AppState.transition_active_effect,
             key=AppState.screen,
+            style={
+                "--qt19-accent": AppState.theme_vars["accent"],
+                "--qt19-accent-glow": AppState.theme_vars["accent_glow"],
+                "--qt19-bg-from": AppState.theme_vars["bg_from"],
+                "--qt19-bg-to": AppState.theme_vars["bg_to"],
+                "--qt19-glass-bg": AppState.theme_vars["glass_bg"],
+                "--qt19-glass-border": AppState.theme_vars["glass_border"],
+                "--qt19-text-primary": AppState.theme_vars["text_primary"],
+                "--qt19-text-muted": AppState.theme_vars["text_muted"],
+            },
             width="100%", height="100vh",
         ),
     )

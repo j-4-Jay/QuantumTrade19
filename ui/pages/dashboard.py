@@ -1,11 +1,11 @@
 """Dashboard tab - shell scaffold per locked mockup: pinned cards + main table + footer.
 
-PATH: ui/pages/dashboard.py  (REPLACE ENTIRE FILE)
+PATH: ui/pages/dashboard.py (REPLACE ENTIRE FILE)
 
-FIX: the table's header/cell text now explicitly uses `var(--qt19-text-primary)` instead of
-Radix's own default header color. Radix's table components carry their own internal color
-tokens that aren't wired to our theme system, so on light Day themes (white-ish glass card)
-the header text was staying a fixed shade that nearly disappeared against the background.
+FIX: pinned cards now read live prices from AppState.pinned_prices, fed by
+MarketDataMonitor via the poll_pinned_prices background task in app_state.py.
+Main table stays a static placeholder for now -- POI/Setup/Confidence columns
+depend on files 03-05, not yet built.
 """
 from __future__ import annotations
 import reflex as rx
@@ -19,7 +19,10 @@ _COLUMNS = ["Trade Allowed", "Instrument", "Trend", "Liquidity TF", "Interaction
 def _pinned_card(name: str) -> rx.Component:
     return rx.vstack(
         rx.text(name, font_weight="700", font_size="1rem", color="var(--qt19-text-primary)"),
-        rx.text("-- awaiting Market Data Monitor --", font_size="0.7rem", color="var(--qt19-text-muted)"),
+        rx.text(
+            AppState.pinned_prices.get(name, "--"),
+            font_size="1.1rem", font_weight="600", color="var(--qt19-text-primary)",
+        ),
         style=GLASS_CARD_STYLE, min_width="180px",
         on_click=lambda: AppState.open_detail_popup(name), cursor="pointer",
     )

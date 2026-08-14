@@ -1,17 +1,18 @@
-"""Master App Engine - orchestrates UI Experience Monitor + Security Monitor only.
+"""Master App Engine - orchestrates UI Experience Monitor + Security Monitor + Market Data Monitor.
 
-PATH: engines/masters/master_app_engine.py  (REPLACE ENTIRE FILE - fully overwrite, don't merge)
+PATH: engines/masters/master_app_engine.py (REPLACE ENTIRE FILE - fully overwrite, don't merge)
 
-This is the version with manage_is_telegram_configured/manage_is_discord_configured and the
-full Manage-Account-Security + Forgot-Password method set. If your local file was missing
-those, it was an older version - replace it completely with this one.
+CHANGE (Module 01 gap-closure item 10): attempt_login() now accepts remember_device - on
+successful login, if checked, it calls security.trust_this_device() to persist the 60-day
+device-trust timestamp. Also added go_to_register() (bugfix from earlier this session).
 """
 from __future__ import annotations
 from enum import Enum
 from engines.monitors.security_monitor import SecurityMonitor
 from engines.monitors.ui_experience_monitor import UIExperienceMonitor
+from engines.monitors.market_data_monitor import MarketDataMonitor
+from engines.workers.market_data.coindcx_socket_transport import CoinDCXSocketTransport
 from engines.event_bus.bus import event_bus
-
 
 class ShellScreen(str, Enum):
     SPLASH = "splash"
@@ -22,13 +23,33 @@ class ShellScreen(str, Enum):
     SHELL = "shell"
     LOCKED = "locked"
 
-
 class MasterAppEngine:
     def __init__(self, force_memory: bool = False) -> None:
         self.security = SecurityMonitor(force_memory=force_memory)
         self.ui = UIExperienceMonitor()
+        self.market_data = MarketDataMonitor(transport=CoinDCXSocketTransport())
+        self._market_data_started = False
         self.screen: ShellScreen = ShellScreen.SPLASH
         self.paper_mode: bool = True
+
+    def ensure_market_data_started(self) -> None:
+        """Call this once when the app shell loads. Safe to call many times."""
+        if not self._market_data_started:
+            self.market_data.start()
+            self._market_data_started = True
+
+    def get_market_data_health(self) -> str:
+        """Collapses per-symbol health into one value for the topbar dot:
+        'connecting' | 'connected' | 'degraded' | 'down'."""
+        health = self.market_data.get_health()
+        if not health:
+            return "connecting"
+        values = set(health.values())
+        if values == {"OK"}:
+            return "connected"
+        if "OK" in values or "DEGRADED" in values:
+            return "degraded"
+        return "down"
 
     def finish_splash(self) -> ShellScreen:
         self.screen = ShellScreen.REGISTER if self.security.is_first_run() else ShellScreen.LOGIN
@@ -37,6 +58,11 @@ class MasterAppEngine:
 
     def go_to_login(self) -> ShellScreen:
         self.screen = ShellScreen.LOGIN
+        event_bus.publish("shell.screen_changed", {"screen": self.screen.value})
+        return self.screen
+
+    def go_to_register(self) -> ShellScreen:
+        self.screen = ShellScreen.REGISTER
         event_bus.publish("shell.screen_changed", {"screen": self.screen.value})
         return self.screen
 
@@ -60,9 +86,11 @@ class MasterAppEngine:
             event_bus.publish("shell.screen_changed", {"screen": self.screen.value})
         return ok
 
-    def attempt_login(self, username: str, password: str, totp_code: str | None = None) -> bool:
+    def attempt_login(self, username: str, password: str, totp_code: str | None = None, remember_device: bool = False) -> bool:
         ok = self.security.login(username, password, totp_code)
         if ok:
+            if remember_device:
+                self.security.trust_this_device()
             self.screen = ShellScreen.SHELL
             event_bus.publish("shell.screen_changed", {"screen": self.screen.value})
         return ok

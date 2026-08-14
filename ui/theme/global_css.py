@@ -2,15 +2,20 @@
 
 PATH: ui/theme/global_css.py  (REPLACE ENTIRE FILE)
 
-CHANGE: all 10 transition durations slowed from ~0.5s-0.6s to ~0.9s-1.0s, per request, so
-they register clearly to the eye instead of feeling instantaneous.
+CHANGE (Module 01 gap-closure item 8): added qt19-tab-switch - a fast (0.35s) fade+slide used
+for Dashboard <-> Trading Panel <-> Journal & Reports <-> Alerts <-> Settings tab changes.
+Deliberately separate from the slower qt19-transition-* screen-entrance effects (those are
+tuned for full-screen Login->Dashboard hand-offs, not rapid in-shell tab clicks).
 """
 from __future__ import annotations
 import reflex as rx
 
+
 _CSS = """
 * { cursor: auto !important; }
 button, a, [role="button"], input[type="checkbox"], input[type="radio"] { cursor: pointer !important; }
+
+[data-radius="full"] { overflow: hidden !important; }
 
 @keyframes qt19-autofill-detect { from {} to {} }
 input:-webkit-autofill { animation-name: qt19-autofill-detect; animation-duration: 0.001s; }
@@ -31,6 +36,23 @@ input:-webkit-autofill { animation-name: qt19-autofill-detect; animation-duratio
   100% { box-shadow: 0 0 var(--qt19-pulse-blur-min) var(--qt19-pulse-spread-min) var(--qt19-pulse-color, #DC143C); }
 }
 .qt19-heartbeat { animation: qt19-heartbeat 1.6s ease-in-out infinite; transition: background 0.35s ease; }
+
+@keyframes qt19-shake {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-8px); }
+  30% { transform: translateX(7px); }
+  45% { transform: translateX(-6px); }
+  60% { transform: translateX(5px); }
+  75% { transform: translateX(-3px); }
+  90% { transform: translateX(2px); }
+}
+.qt19-shake { animation: qt19-shake 0.4s ease; }
+
+@keyframes qt19-tab-switch {
+  from { opacity: 0; transform: translateX(12px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.qt19-tab-switch { animation: qt19-tab-switch 0.35s cubic-bezier(0.22,1,0.36,1) both; }
 
 @keyframes qt19-border-chase-move {
   from { offset-distance: 0%; }

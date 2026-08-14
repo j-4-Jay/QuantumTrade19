@@ -2,6 +2,13 @@
 
 PATH: ui/components/logout_dialog.py  (REPLACE ENTIRE FILE)
 
+FIX: added radius="full" directly on every rx.button here. Radix Themes' Button renders its
+own internal hover/press state-layer keyed to the theme's default border-radius scale, which
+ignores a CSS-only border_radius override in style= - that mismatch was producing a squared
+hover glow bleeding past the pill shape (visible mainly on light/day themes). Passing
+radius="full" as a component prop fixes the state-layer's own radius, not just the visible
+button surface.
+
 Added distinct IDs (qt19-logout-dialog / qt19-logout-primary / qt19-logout-cancel) so the
 global keyboard shortcut listener gives this modal priority over whatever screen sits behind
 it. Enter defaults to the SAFEST action (Keep Trades Running & Logout, or plain Logout) -
@@ -19,10 +26,12 @@ def _trade_choice_body() -> rx.Component:
         rx.text("You have open trades.", font_weight="700", font_size="0.95rem"),
         rx.text("Close all open trades before logging out, or keep them running in the background?",
                 font_size="0.8rem", color="var(--qt19-text-muted, #9FB3C8)", text_align="center"),
-        rx.button("Close All Trades & Logout", on_click=AppState.confirm_logout_close_trades, style=PILL_BUTTON_STYLE, width="100%"),
+        rx.button("Close All Trades & Logout", on_click=AppState.confirm_logout_close_trades,
+                   style=PILL_BUTTON_STYLE, radius="full", width="100%"),
         rx.button("Keep Trades Running & Logout", id="qt19-logout-primary", on_click=AppState.confirm_logout_keep_trades,
-                   variant="outline", width="100%", border_radius="9999px"),
-        rx.button("Cancel", id="qt19-logout-cancel", on_click=AppState.close_logout_dialog, variant="ghost", width="100%"),
+                   variant="outline", radius="full", width="100%", border_radius="9999px"),
+        rx.button("Cancel", id="qt19-logout-cancel", on_click=AppState.close_logout_dialog,
+                   variant="ghost", radius="full", width="100%"),
         spacing="3", align_items="center",
     )
 
@@ -32,8 +41,10 @@ def _simple_confirm_body() -> rx.Component:
         rx.icon("log-out", size=28, color="var(--qt19-accent, #1E8FFF)"),
         rx.text("Logout of QuantumTrade19?", font_weight="700", font_size="0.95rem"),
         rx.text("This will safely end your session and return to Login.", font_size="0.8rem", color="var(--qt19-text-muted, #9FB3C8)", text_align="center"),
-        rx.button("Logout", id="qt19-logout-primary", on_click=AppState.confirm_logout_no_trades, style=PILL_BUTTON_STYLE, width="100%"),
-        rx.button("Cancel", id="qt19-logout-cancel", on_click=AppState.close_logout_dialog, variant="ghost", width="100%"),
+        rx.button("Logout", id="qt19-logout-primary", on_click=AppState.confirm_logout_no_trades,
+                   style=PILL_BUTTON_STYLE, radius="full", width="100%"),
+        rx.button("Cancel", id="qt19-logout-cancel", on_click=AppState.close_logout_dialog,
+                   variant="ghost", radius="full", width="100%"),
         spacing="3", align_items="center",
     )
 
