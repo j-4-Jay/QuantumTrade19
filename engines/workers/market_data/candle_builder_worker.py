@@ -58,14 +58,30 @@ class CandleBuilderWorker:
 
     def seed_historical(self, symbol: str, timeframe: str, candles: List[Candle]) -> None:
         """Loads Historical_Data_Loader_Worker output so the live series starts
-        continuous — no gap between backfill and first live tick."""
+        continuous - no gap between backfill and first live tick.
+
+        FIX: the last baseline candle is CoinDCX's still-forming "current"
+        bucket at fetch time, not a truly closed one. Holding it back into
+        _current (instead of _closed_history) lets the first live tick
+        extend it in place, instead of creating a second candle with the
+        same open_time that later duplicates on close."""
         key = (symbol, timeframe)
         with self._lock:
             ordered = sorted(candles, key=lambda c: c.open_time)
-            self._closed_history[key] = ordered
-            if ordered:
-                self._last_closed_time[key] = ordered[-1].open_time
-
+            if not ordered:
+                return
+            last = ordered[-1]
+            closed_part = ordered[:-1]
+            self._closed_history[key] = closed_part
+            if closed_part:
+                self._last_closed_time[key] = closed_part[-1].open_time
+            reopened = Candle(
+                symbol=last.symbol, timeframe=last.timeframe,
+                open_time=last.open_time, close_time=last.close_time,
+                open=last.open, high=last.high, low=last.low,
+                close=last.close, volume=last.volume, is_closed=False,
+            )
+            self._current[key] = reopened
     def ingest(self, tick, timeframes: Optional[List[str]] = None) -> List[Candle]:
         """Feeds one normalized tick into every requested timeframe bucket.
         Returns the list of candles that just CLOSED as a result (may be empty)."""

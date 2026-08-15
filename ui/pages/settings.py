@@ -1,17 +1,17 @@
-"""Settings tab - App-Shell placeholder page, with Transition Effects + Tab Switch Animation.
+"""Settings tab - App-Shell placeholder page, now tab-segregated + grid-arranged.
 
-PATH: ui/pages/settings.py  (REPLACE ENTIRE FILE)
+PATH: ui/pages/settings.py (REPLACE ENTIRE FILE)
 
-CHANGE: added a second, independent card - "Tab Switch Animation" - controlling the
-Dashboard <-> Trading Panel <-> Journal & Reports <-> Alerts <-> Settings tab-change effect,
-separate from the Login->Dashboard screen-entrance pool above it. Reuses the same
-AppState.transition_effect_options catalog and single/sequential/shuffle mode pattern, just
-bound to the tab_transition_* state instead of transition_*.
+CHANGE: cards are now grouped into logical rx.tabs matching the categories
+named in the locked mockup (Appearance, Data & Connection, and placeholders
+for categories not yet built), and arranged in a responsive multi-column
+grid instead of one full-width vstack, eliminating large empty side gaps.
 """
 from __future__ import annotations
 import reflex as rx
 from state.app_state import AppState
-from ui.theme.glass import GLASS_CARD_3XL_STYLE, PILL_BUTTON_STYLE
+from ui.theme.glass import GLASS_CARD_3XL_STYLE
+from ui.components.deep_historical_data_card import deep_historical_data_card
 
 
 def _effect_checkbox(opt: dict[str, str]) -> rx.Component:
@@ -36,7 +36,7 @@ def _tab_effect_checkbox(opt: dict[str, str]) -> rx.Component:
     )
 
 
-def _transition_effects_section() -> rx.Component:
+def _transition_effects_card() -> rx.Component:
     return rx.vstack(
         rx.heading("Login \u2192 Dashboard Transition", size="4"),
         rx.text("Pick which entrance animations are allowed, and how they're chosen each time you log in.",
@@ -55,12 +55,11 @@ def _transition_effects_section() -> rx.Component:
             rx.foreach(AppState.transition_effect_options, _effect_checkbox),
             columns="2", spacing="2", width="100%", margin_top="0.5rem",
         ),
-        spacing="3", width="100%",
-        style={**GLASS_CARD_3XL_STYLE, "margin_top": "1rem"},
+        spacing="3", width="100%", style=GLASS_CARD_3XL_STYLE,
     )
 
 
-def _tab_transition_section() -> rx.Component:
+def _tab_transition_card() -> rx.Component:
     return rx.vstack(
         rx.heading("Tab Switch Animation", size="4"),
         rx.text("Controls the effect used when switching between Dashboard, Trading Panel, "
@@ -80,23 +79,75 @@ def _tab_transition_section() -> rx.Component:
             rx.foreach(AppState.transition_effect_options, _tab_effect_checkbox),
             columns="2", spacing="2", width="100%", margin_top="0.5rem",
         ),
-        spacing="3", width="100%",
-        style={**GLASS_CARD_3XL_STYLE, "margin_top": "1rem"},
+        spacing="3", width="100%", style=GLASS_CARD_3XL_STYLE,
+    )
+
+
+def _coming_soon_card(title: str, note: str) -> rx.Component:
+    return rx.vstack(
+        rx.heading(title, size="4"),
+        rx.text(note, font_size="0.8rem", color="var(--qt19-text-muted)"),
+        rx.badge("Coming in a later module", variant="soft", margin_top="0.5rem"),
+        spacing="2", width="100%", style=GLASS_CARD_3XL_STYLE,
+    )
+
+
+def _appearance_tab() -> rx.Component:
+    return rx.grid(
+        _transition_effects_card(),
+        _tab_transition_card(),
+        _coming_soon_card("Theme", "6 selectable themes (Yellow/Saffron/Blue x Day/Night)."),
+        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="3"),
+        spacing="4", width="100%", margin_top="1rem",
+    )
+
+
+def _data_connection_tab() -> rx.Component:
+    return rx.grid(
+        deep_historical_data_card(),
+        _coming_soon_card("Symbols & Rows", "Choose which symbols appear on the Dashboard."),
+        _coming_soon_card("Tick Bands & Alerts", "Per-symbol tick-size and alert-band configuration."),
+        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="2"),
+        spacing="4", width="100%", margin_top="1rem",
+    )
+
+
+def _security_tab() -> rx.Component:
+    return rx.grid(
+        _coming_soon_card("Login & 2FA", "Manage password and TOTP authenticator settings."),
+        _coming_soon_card("Notification Channels", "Telegram / Discord multi-recipient setup."),
+        _coming_soon_card("Startup & Tray", "Run-on-startup and system tray behavior."),
+        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="3"),
+        spacing="4", width="100%", margin_top="1rem",
+    )
+
+
+def _trading_tab() -> rx.Component:
+    return rx.grid(
+        _coming_soon_card("POI Timeframes", "Toggle PDH/PDL, 4H H/L, FVG, Order Block, etc."),
+        _coming_soon_card("Signal Bias Filter", "Market-aware auto-disable rules for filters."),
+        _coming_soon_card("Paper Trading", "Paper/Live toggle defaults and simulator settings."),
+        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="3"),
+        spacing="4", width="100%", margin_top="1rem",
     )
 
 
 def settings_page() -> rx.Component:
     return rx.vstack(
         rx.heading("Settings", size="6"),
-        rx.box(
-            rx.text(
-                "Full settings cards (POI, Security, Sound, Theme, Deep Historical Data, etc.) "
-                "land module-by-module; the Transition Effects sections below are wired now.",
-                color="var(--qt19-text-muted)", font_size="0.85rem",
+        rx.tabs.root(
+            rx.tabs.list(
+                rx.tabs.trigger("Appearance", value="appearance"),
+                rx.tabs.trigger("Data & Connection", value="data"),
+                rx.tabs.trigger("Security & Notifications", value="security"),
+                rx.tabs.trigger("Trading Defaults", value="trading"),
             ),
-            style=GLASS_CARD_3XL_STYLE, width="100%", margin_top="1rem",
+            rx.tabs.content(_appearance_tab(), value="appearance"),
+            rx.tabs.content(_data_connection_tab(), value="data"),
+            rx.tabs.content(_security_tab(), value="security"),
+            rx.tabs.content(_trading_tab(), value="trading"),
+            default_value="appearance",
+            width="100%",
         ),
-        _transition_effects_section(),
-        _tab_transition_section(),
         width="100%", spacing="3",
     )

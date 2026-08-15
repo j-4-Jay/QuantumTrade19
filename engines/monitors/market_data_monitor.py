@@ -1,15 +1,23 @@
 """
-FULL PATH: engines/monitors/market_data_monitor.py
+FULL PATH: engines/monitors/market_data_monitor.py (REPLACE ENTIRE FILE)
 File 02 — Market Data Monitor (Tier 2 Assembly)
 
 Wires the 6 Tier-1 Workers behind ONE clean interface. Zero business logic lives
 here — only sequencing and per-symbol WS<->REST failover routing. Never imported
 directly by anything except a Master Engine (per the 3-tier hierarchy rule).
 Verified via tests/test_market_data_monitor.py (5/5 passing, mocked data).
+
+FIX: previous version had the HistoryDepthProberWorker import stray inside the
+candle_builder_worker import parentheses, and stray blank lines splitting the
+class body from __init__ -- both are syntax errors. Corrected below. Also adds
+Deep History + Ceiling Prober wiring (History_Manifest_Worker,
+Deep_History_Downloader_Worker, History_Depth_Prober_Worker) per Section 8 of
+the architecture blueprint.
 """
 from __future__ import annotations
 
 import threading
+import time
 from typing import Dict, List, Optional
 
 from engines.workers.market_data.symbol_registry_worker import SymbolRegistryWorker
@@ -20,6 +28,9 @@ from engines.workers.market_data.tick_normalizer_worker import TickNormalizerWor
 from engines.workers.market_data.candle_builder_worker import (
     CandleBuilderWorker, Candle, TRADING_TFS, POI_TFS,
 )
+from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
+from engines.workers.market_data.deep_history_downloader_worker import DeepHistoryDownloaderWorker
+from engines.workers.market_data.history_depth_prober_worker import HistoryDepthProberWorker
 
 
 class MarketDataMonitor:
@@ -36,6 +47,13 @@ class MarketDataMonitor:
             on_drop=self._handle_ws_drop,
             on_restore=self._handle_ws_restore,
         )
+
+        self.history_manifest = HistoryManifestWorker()
+        self.deep_history_downloader = DeepHistoryDownloaderWorker(
+            manifest=self.history_manifest,
+            on_chunk=self._handle_deep_history_chunk,
+        )
+        self.depth_prober = HistoryDepthProberWorker(manifest=self.history_manifest)
 
         self._subscribed: set = set()
         self._degraded: set = set()  # symbols currently on REST fallback
@@ -84,6 +102,48 @@ class MarketDataMonitor:
                 report[symbol] = "DOWN"
         return report
 
+    # ================= deep history / ceiling interface =================
+
+    def start_deep_history(self, symbol: str, timeframe: str, target_days: Optional[int] = None) -> None:
+        self.deep_history_downloader.start_download(symbol, timeframe, target_days)
+
+    def cancel_deep_history(self, symbol: str, timeframe: str) -> None:
+        self.deep_history_downloader.cancel_download(symbol, timeframe)
+
+
+
+
+    def get_deep_history_progress(self, symbol: str, timeframe: str) -> dict:
+        from engines.workers.market_data.deep_history_downloader_worker import (
+            covered_days, is_fully_downloaded,
+        )
+        return {
+            "covered_days": covered_days(self.history_manifest, symbol, timeframe),
+            "is_complete": is_fully_downloaded(self.history_manifest, symbol, timeframe),
+        }
+
+    def delete_deep_history(self, symbol: str, timeframe: str) -> None:
+        # Note: your manifest deletes ALL timeframes for this symbol at once
+        # (one JSON file per symbol, not per symbol+timeframe).
+        self.history_manifest.delete_symbol_manifest(symbol)
+
+
+
+
+
+
+    def start_ceiling_probe(self, symbol: str, timeframe: str) -> None:
+        self.depth_prober.start_probe(symbol, timeframe)
+
+    def get_ceiling_days(self, symbol: str, timeframe: str):
+        return self.depth_prober.get_ceiling_days(symbol, timeframe)
+
+    def _handle_deep_history_chunk(self, symbol: str, timeframe: str, candles: list) -> None:
+        # Deep history is for the ML/RL archive -- store to disk, do NOT
+        # feed into the live in-memory CandleBuilderWorker (that stays
+        # baseline-only, per the architecture's separation of concerns).
+        pass  # storage-to-disk step added once file 08's storage layer exists
+
     # ================= internal wiring (never called from outside the Monitor) =================
 
     def _seed_baseline_history(self, symbol: str) -> None:
@@ -119,5 +179,4 @@ class MarketDataMonitor:
 
     @staticmethod
     def _now_ms() -> int:
-        import time
         return int(time.time() * 1000)

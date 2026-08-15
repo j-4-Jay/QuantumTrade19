@@ -1,4 +1,9 @@
+"""
+FULL PATH: engines/workers/market_data/symbol_registry_worker.py (REPLACE ENTIRE FILE)
 
+Adds favorite/unfavorite support: is_favorite field + set_favorite() +
+get_symbols_sorted() (favorites first, alphabetical within each group).
+"""
 import json, os, threading
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional
@@ -10,6 +15,7 @@ DEFAULT_SEED_SYMBOLS = [
     {"symbol": "B-XAU_USDT", "tick_size": 0.01, "contract_size": 0.001, "maker_fee": 0.0005, "taker_fee": 0.001, "active": True, "asset_class": "metal"},
 ]
 
+
 @dataclass
 class SymbolInfo:
     symbol: str
@@ -20,6 +26,8 @@ class SymbolInfo:
     active: bool = True
     asset_class: str = "crypto"
     auto_live_traded_once: bool = False
+    is_favorite: bool = False
+
 
 class SymbolRegistryWorker:
     def __init__(self, path: str = REGISTRY_PATH) -> None:
@@ -34,6 +42,7 @@ class SymbolRegistryWorker:
             with open(self._path, "r", encoding="utf-8") as f:
                 raw = json.load(f)
             for row in raw:
+                row.setdefault("is_favorite", False)
                 info = SymbolInfo(**row)
                 self._symbols[info.symbol] = info
         else:
@@ -72,6 +81,26 @@ class SymbolRegistryWorker:
                 raise KeyError(f"Unknown symbol: {symbol}")
             self._symbols[symbol].active = active
             self._persist()
+
+    def set_favorite(self, symbol: str, is_favorite: bool) -> None:
+        with self._lock:
+            if symbol not in self._symbols:
+                raise KeyError(f"Unknown symbol: {symbol}")
+            self._symbols[symbol].is_favorite = is_favorite
+            self._persist()
+
+    def get_favorite_symbols(self) -> List[str]:
+        with self._lock:
+            return sorted([s.symbol for s in self._symbols.values() if s.is_favorite])
+
+    def get_symbols_sorted(self, active_only: bool = True) -> List[str]:
+        """Favorites first (alphabetical), then everything else (alphabetical).
+        This is the exact ordering the Dashboard table should render."""
+        with self._lock:
+            pool = [s for s in self._symbols.values() if (s.active or not active_only)]
+        favorites = sorted([s.symbol for s in pool if s.is_favorite])
+        others = sorted([s.symbol for s in pool if not s.is_favorite])
+        return favorites + others
 
     def mark_auto_live_traded(self, symbol):
         with self._lock:

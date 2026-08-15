@@ -1,81 +1,130 @@
-"""Deep_History_Downloader_Worker: slow, chunked, opt-in backfill of full historical depth per symbol/timeframe.
-Drives the Deep Historical Data Settings card (locked 11th mockup). Never competes with live trading for priority.
+"""
+FULL PATH: engines/workers/market_data/deep_history_downloader_worker.py (REPLACE ENTIRE FILE)
+
+REWRITTEN to use your EXISTING HistoryManifestWorker API (get_covered_ranges,
+mark_covered, find_gaps, coverage_percent, delete_symbol_manifest) instead of
+methods that don't exist on your real manifest file.
+
+"True earliest reached" is now inferred, not separately tracked: when the API
+returns an empty page, we mark_covered(symbol, tf, EARLY_START_MS, cursor_end)
+-- i.e. "nothing exists before this point" becomes part of the covered range
+itself. That merges with real data ranges automatically (your manifest's own
+merge logic), so a fully-covered range starting at/near EARLY_START_MS IS the
+signal that the true earliest has been reached -- no extra flag needed.
 """
 from __future__ import annotations
-import asyncio
-import time
-from engines.event_bus.bus import event_bus
-from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
-from engines.workers.market_data.rate_limit_gate import rate_limit_gate
 
-CHUNK_SPAN_MS = 7 * 86_400_000
-EARLIEST_POSSIBLE_MS = 0
-TIMEFRAMES = ("1m", "5m", "15m")
+import threading
+import time
+from typing import Callable, Optional
+
+import requests
+
+from engines.workers.market_data.candle_builder_worker import Candle
+from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
+
+CANDLES_URL = "https://public.coindcx.com/market_data/candles/"
+MAX_LIMIT_PER_CALL = 1000
+CHUNK_PACING_S = 0.35
+_TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000}
+EARLY_START_MS = 1420070400000  # 2015-01-01 UTC, our "search floor"
+
+
+def covered_days(manifest: HistoryManifestWorker, symbol: str, timeframe: str) -> float:
+    ranges = manifest.get_covered_ranges(symbol, timeframe)
+    total_ms = sum(end - start for start, end in ranges)
+    return round(total_ms / (1000 * 60 * 60 * 24), 1)
+
+
+def is_fully_downloaded(manifest: HistoryManifestWorker, symbol: str, timeframe: str) -> bool:
+    ranges = manifest.get_covered_ranges(symbol, timeframe)
+    return any(start <= EARLY_START_MS + 1 for start, _ in ranges)
+
+
+def earliest_covered_ms(manifest: HistoryManifestWorker, symbol: str, timeframe: str) -> Optional[int]:
+    ranges = manifest.get_covered_ranges(symbol, timeframe)
+    if not ranges:
+        return None
+    return min(start for start, _ in ranges)
 
 
 class DeepHistoryDownloaderWorker:
-    def __init__(self, manifest: HistoryManifestWorker, http_client=None) -> None:
+    def __init__(self, manifest: HistoryManifestWorker, http_get=None,
+                 on_chunk: Optional[Callable[[str, str, list], None]] = None,
+                 on_progress: Optional[Callable[[str, str, dict], None]] = None) -> None:
         self._manifest = manifest
-        self._http = http_client
-        self._active_tasks: dict[str, asyncio.Task] = {}
+        self._http_get = http_get or requests.get
+        self._on_chunk = on_chunk
+        self._on_progress = on_progress
+        self._active: dict[tuple, threading.Event] = {}
+        self._lock = threading.RLock()
 
-    def start_symbol(self, symbol: str) -> None:
-        if symbol in self._active_tasks:
-            return
-        self._active_tasks[symbol] = asyncio.create_task(self._backfill_symbol(symbol))
-        event_bus.publish("market_data.deep_history.started", {"symbol": symbol})
+    def start_download(self, symbol: str, timeframe: str, target_days: Optional[int] = None) -> None:
+        key = (symbol, timeframe)
+        with self._lock:
+            if key in self._active:
+                return
+            stop_event = threading.Event()
+            self._active[key] = stop_event
+        t = threading.Thread(target=self._download_loop, args=(symbol, timeframe, target_days, stop_event), daemon=True)
+        t.start()
 
-    def stop_symbol(self, symbol: str) -> None:
-        task = self._active_tasks.pop(symbol, None)
-        if task:
-            task.cancel()
-        event_bus.publish("market_data.deep_history.stopped", {"symbol": symbol})
+    def cancel_download(self, symbol: str, timeframe: str) -> None:
+        with self._lock:
+            stop_event = self._active.pop((symbol, timeframe), None)
+            if stop_event:
+                stop_event.set()
 
-    def delete_symbol_data(self, symbol: str) -> None:
-        self.stop_symbol(symbol)
-        self._manifest.delete_symbol_manifest(symbol)
-        event_bus.publish("market_data.deep_history.deleted", {"symbol": symbol})
+    def is_downloading(self, symbol: str, timeframe: str) -> bool:
+        with self._lock:
+            return (symbol, timeframe) in self._active
 
-    async def _backfill_symbol(self, symbol: str) -> None:
+    def _download_loop(self, symbol: str, timeframe: str, target_days: Optional[int], stop_event: threading.Event) -> None:
         try:
-            for timeframe in TIMEFRAMES:
-                await self._backfill_timeframe(symbol, timeframe)
-            event_bus.publish("market_data.deep_history.symbol_complete", {"symbol": symbol})
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            event_bus.publish("market_data.deep_history.error", {"symbol": symbol, "error": str(exc)})
+            earliest = earliest_covered_ms(self._manifest, symbol, timeframe)
+            cursor_end = (earliest - 1) if earliest else int(time.time() * 1000)
 
-    async def _backfill_timeframe(self, symbol: str, timeframe: str) -> None:
-        cursor_end = int(time.time() * 1000)
-        while cursor_end > EARLIEST_POSSIBLE_MS:
-            cursor_start = max(EARLIEST_POSSIBLE_MS, cursor_end - CHUNK_SPAN_MS)
-            gaps = self._manifest.find_gaps(symbol, timeframe, cursor_start, cursor_end)
-            if not gaps:
-                cursor_end = cursor_start
-                continue
-            for gap_start, gap_end in gaps:
-                await rate_limit_gate.acquire("deep_history")
-                candles = await self._fetch_chunk(symbol, timeframe, gap_start, gap_end)
-                if not candles:
-                    self._manifest.mark_covered(symbol, timeframe, EARLIEST_POSSIBLE_MS, gap_end)
-                    return
-                for candle in candles:
-                    event_bus.publish("market_data.deep_history.candle_loaded", {
-                        "symbol": symbol, "timeframe": timeframe, **candle,
+            while not stop_event.is_set():
+                if is_fully_downloaded(self._manifest, symbol, timeframe):
+                    break
+                if target_days is not None and covered_days(self._manifest, symbol, timeframe) >= target_days:
+                    break
+
+                resp = self._http_get(CANDLES_URL, params={
+                    "pair": symbol, "interval": timeframe,
+                    "startTime": EARLY_START_MS, "endTime": cursor_end,
+                    "limit": MAX_LIMIT_PER_CALL,
+                }, timeout=10)
+                resp.raise_for_status()
+                rows = resp.json() or []
+
+                if not rows:
+                    self._manifest.mark_covered(symbol, timeframe, EARLY_START_MS, cursor_end)
+                    break
+
+                candles = [Candle(
+                    symbol=symbol, timeframe=timeframe,
+                    open_time=int(r["time"]), close_time=int(r["time"]) + _TF_MS[timeframe] - 1,
+                    open=float(r["open"]), high=float(r["high"]), low=float(r["low"]),
+                    close=float(r["close"]), volume=float(r.get("volume", 0.0) or 0.0), is_closed=True,
+                ) for r in rows]
+
+                batch_oldest = min(c.open_time for c in candles)
+                batch_newest = max(c.open_time for c in candles)
+                self._manifest.mark_covered(symbol, timeframe, batch_oldest, batch_newest)
+
+                if self._on_chunk:
+                    self._on_chunk(symbol, timeframe, candles)
+                if self._on_progress:
+                    self._on_progress(symbol, timeframe, {
+                        "covered_days": covered_days(self._manifest, symbol, timeframe),
+                        "is_complete": is_fully_downloaded(self._manifest, symbol, timeframe),
                     })
-                self._manifest.mark_covered(symbol, timeframe, gap_start, gap_end)
-                event_bus.publish("market_data.deep_history.progress", {
-                    "symbol": symbol, "timeframe": timeframe,
-                    "coverage_percent": self._manifest.coverage_percent(
-                        symbol, timeframe, EARLIEST_POSSIBLE_MS, int(time.time() * 1000)),
-                })
-            cursor_end = cursor_start
 
-    async def _fetch_chunk(self, symbol: str, timeframe: str, start_ms: int, end_ms: int) -> list[dict]:
-        if self._http is None:
-            raise RuntimeError("no HTTP client injected")
-        from engines.workers.market_data.historical_data_loader_worker import REST_CANDLES_URL
-        return await self._http.get_json(
-            REST_CANDLES_URL, params={"symbol": symbol, "interval": timeframe, "startTime": start_ms, "endTime": end_ms}
-        )
+                if batch_oldest >= cursor_end:
+                    break
+                cursor_end = batch_oldest - 1
+                time.sleep(CHUNK_PACING_S)
+        finally:
+            with self._lock:
+                self._active.pop((symbol, timeframe), None)

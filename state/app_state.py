@@ -123,6 +123,17 @@ class AppState(rx.State):
     detail_popup_symbol: str = ""
     ws_status: str = "connected"
     pinned_prices: dict[str, str] = {}
+    symbol_rows: list[dict] = []
+    deep_history_symbol: str = "B-BTC_USDT"
+    deep_history_timeframe: str = "1m"
+    deep_history_target_days: str = ""
+    deep_history_ceiling_days: str = "Not checked yet"
+    deep_history_covered_days: str = "0"
+    deep_history_is_downloading: bool = False
+    deep_history_status_message: str = ""
+
+
+
 
 
     transition_effects_enabled: list[str] = ["dissolve", "zoom-in", "slide-up", "flip-x", "blur-in"]
@@ -138,6 +149,7 @@ class AppState(rx.State):
     _splash_task_running: bool = False
     _ws_poll_running: bool = False
     _price_poll_running: bool = False
+    _deep_history_poll_running: bool = False
 
 
     def on_load(self) -> None:
@@ -150,6 +162,7 @@ class AppState(rx.State):
         self.tab_transition_effects_enabled = settings.get("tab_transition_effects_enabled", self.tab_transition_effects_enabled)
         self.tab_transition_mode = settings.get("tab_transition_mode", self.tab_transition_mode)
         _engine.ensure_market_data_started()
+        self.refresh_symbol_rows()
         return [AppState.poll_ws_status, AppState.poll_pinned_prices]
 
 
@@ -683,6 +696,123 @@ class AppState(rx.State):
 
     def toggle_paper_live(self) -> None:
         self.paper_mode = _engine.toggle_paper_live()
+
+    def refresh_symbol_rows(self) -> None:
+        """Rebuilds the Dashboard table's row list: favorites first
+        (alphabetical), then everything else (alphabetical)."""
+        registry = _engine.market_data.symbol_registry
+        ordered_symbols = registry.get_symbols_sorted(active_only=True)
+        rows = []
+        for symbol in ordered_symbols:
+            info = registry.get_symbol_info(symbol)
+            rows.append({
+                "symbol": symbol,
+                "is_favorite": info.is_favorite if info else False,
+            })
+        self.symbol_rows = rows
+
+
+        
+    def toggle_favorite(self, symbol: str) -> None:
+        registry = _engine.market_data.symbol_registry
+        info = registry.get_symbol_info(symbol)
+        if info is None:
+            return
+        registry.set_favorite(symbol, not info.is_favorite)
+        self.refresh_symbol_rows()
+
+
+
+    def set_deep_history_symbol(self, value: str) -> None:
+        self.deep_history_symbol = value
+        self.refresh_deep_history_status()
+
+    def set_deep_history_timeframe(self, value: str) -> None:
+        self.deep_history_timeframe = value
+        self.refresh_deep_history_status()
+
+    def set_deep_history_target_days(self, value: str) -> None:
+        self.deep_history_target_days = value
+
+    def check_deep_history_ceiling(self):
+        self.deep_history_status_message = "Checking real ceiling... this can take a few minutes for 1m/5m."
+        _engine.market_data.start_ceiling_probe(self.deep_history_symbol, self.deep_history_timeframe)
+        return AppState.poll_deep_history_status
+
+    def refresh_deep_history_status(self) -> None:
+        progress = _engine.market_data.get_deep_history_progress(
+            self.deep_history_symbol, self.deep_history_timeframe
+        )
+        self.deep_history_covered_days = str(progress["covered_days"])
+        ceiling = _engine.market_data.get_ceiling_days(self.deep_history_symbol, self.deep_history_timeframe)
+        self.deep_history_ceiling_days = f"{ceiling} days" if ceiling is not None else "Not checked yet"
+
+    def start_deep_history_download(self):
+        try:
+            target = int(self.deep_history_target_days) if self.deep_history_target_days.strip() else None
+        except ValueError:
+            self.deep_history_status_message = "Enter a valid whole number of days, or leave blank for 'download all'."
+            return
+        self.deep_history_is_downloading = True
+        self.deep_history_status_message = "Download started..."
+        _engine.market_data.start_deep_history(self.deep_history_symbol, self.deep_history_timeframe, target)
+        return AppState.poll_deep_history_status
+
+    def cancel_deep_history_download(self) -> None:
+        _engine.market_data.cancel_deep_history(self.deep_history_symbol, self.deep_history_timeframe)
+        self.deep_history_is_downloading = False
+        self.deep_history_status_message = "Cancelled."
+
+    def delete_deep_history_data(self) -> None:
+        _engine.market_data.delete_deep_history(self.deep_history_symbol, self.deep_history_timeframe)
+        self.deep_history_status_message = "Deep archive deleted for this symbol (all its timeframes). 5-day baseline is untouched."
+        self.refresh_deep_history_status()
+
+    @rx.event(background=True)
+    async def poll_deep_history_status(self):
+        async with self:
+            if self._deep_history_poll_running:
+                return
+            self._deep_history_poll_running = True
+        try:
+            still_active = True
+            while still_active:
+                async with self:
+                    self.refresh_deep_history_status()
+                    still_active = (
+                        _engine.market_data.deep_history_downloader.is_downloading(
+                            self.deep_history_symbol, self.deep_history_timeframe
+                        )
+                        or _engine.market_data.depth_prober.is_probing(
+                            self.deep_history_symbol, self.deep_history_timeframe
+                        )
+                    )
+                    if not still_active:
+                        self.deep_history_is_downloading = False
+                        if self.deep_history_status_message == "Download started...":
+                            self.deep_history_status_message = "Download complete or paused (target reached)."
+                await asyncio.sleep(3)
+        finally:
+            async with self:
+                self._deep_history_poll_running = False
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
+
+
+
+
 
 
     def open_detail_popup(self, symbol: str) -> None:
