@@ -1,0 +1,4177 @@
+================================================================================
+FILE: engines\monitors\market_data_monitor.py
+================================================================================
+"""
+FULL PATH: engines/monitors/market_data_monitor.py (REPLACE ENTIRE FILE)
+File 02 â€” Market Data Monitor (Tier 2 Assembly)
+
+PATCH v4:
+- Compatible with CoinDCX aggregate stream partial-delta semantics.
+- Removes false warning-per-delta behavior. A rejected normalizer result is
+  now warning-logged only if WSFeedWorker has already proven the row contains
+  a usable price candidate; this should be rare and represents a genuinely
+  malformed price-bearing payload.
+- Uses DEBUG for ordinary rejected REST rows (REST Worker already logs its
+  own normalization/poll failure context).
+- Retains health, baseline, failover, deep-history, and lifecycle logging.
+"""
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from typing import Dict, List, Optional
+
+from engines.workers.market_data.symbol_registry_worker import SymbolRegistryWorker
+from engines.workers.market_data.ws_feed_worker import WSFeedWorker, SocketTransport
+from engines.workers.market_data.rest_poll_fallback_worker import RestPollFallbackWorker
+from engines.workers.market_data.historical_data_loader_worker import HistoricalDataLoaderWorker
+from engines.workers.market_data.tick_normalizer_worker import TickNormalizerWorker
+from engines.workers.market_data.candle_builder_worker import (
+    CandleBuilderWorker, Candle, TRADING_TFS, POI_TFS,
+)
+from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
+from engines.workers.market_data.deep_history_downloader_worker import DeepHistoryDownloaderWorker
+from engines.workers.market_data.history_depth_prober_worker import HistoryDepthProberWorker
+
+logger = logging.getLogger("market_data.monitor")
+
+
+class MarketDataMonitor:
+    def __init__(self, transport: SocketTransport) -> None:
+        self._lock = threading.RLock()
+
+        self.symbol_registry = SymbolRegistryWorker()
+        self.candle_builder = CandleBuilderWorker(on_candle_closed=self._publish_candle_closed)
+        self.historical_loader = HistoricalDataLoaderWorker()
+        self.rest_fallback = RestPollFallbackWorker(on_tick=self._handle_rest_tick)
+        self.ws_feed = WSFeedWorker(
+            transport=transport,
+            on_tick=self._handle_ws_tick,
+            on_drop=self._handle_ws_drop,
+            on_restore=self._handle_ws_restore,
+        )
+
+        self.history_manifest = HistoryManifestWorker()
+        self.deep_history_downloader = DeepHistoryDownloaderWorker(
+            manifest=self.history_manifest,
+            on_chunk=self._handle_deep_history_chunk,
+        )
+        self.depth_prober = HistoryDepthProberWorker(manifest=self.history_manifest)
+
+        self._subscribed: set[str] = set()
+        self._degraded: set[str] = set()
+        self._last_health: Dict[str, str] = {}
+        logger.info("market_data_monitor_created")
+
+    # ================= public interface =================
+
+    def start(self) -> None:
+        active_symbols = self.symbol_registry.get_active_symbols()
+        logger.info("market_data_monitor_start active_symbols=%s", active_symbols)
+        self.ws_feed.start()
+        for symbol in active_symbols:
+            self.subscribe(symbol)
+
+    def stop(self) -> None:
+        logger.info("market_data_monitor_stop subscribed_count=%d", len(self._subscribed))
+        with self._lock:
+            symbols = list(self._subscribed)
+        for symbol in symbols:
+            self.unsubscribe(symbol)
+        self.ws_feed.stop()
+
+    def subscribe(self, symbol: str) -> None:
+        with self._lock:
+            if symbol in self._subscribed:
+                logger.debug("market_data_subscribe_ignored_already_subscribed symbol=%s", symbol)
+                return
+            self._subscribed.add(symbol)
+        logger.info("market_data_subscribe_started symbol=%s", symbol)
+        try:
+            self._seed_baseline_history(symbol)
+            self.ws_feed.subscribe(symbol)
+            logger.info("market_data_subscribe_complete symbol=%s", symbol)
+        except Exception:
+            with self._lock:
+                self._subscribed.discard(symbol)
+            logger.exception("market_data_subscribe_failed symbol=%s", symbol)
+            raise
+
+    def unsubscribe(self, symbol: str) -> None:
+        with self._lock:
+            was_subscribed = symbol in self._subscribed
+            self._subscribed.discard(symbol)
+            self._degraded.discard(symbol)
+            self._last_health.pop(symbol, None)
+        self.ws_feed.unsubscribe(symbol)
+        self.rest_fallback.disengage(symbol)
+        if was_subscribed:
+            logger.info("market_data_unsubscribed symbol=%s", symbol)
+
+    def get_live_candle(self, symbol: str, timeframe: str) -> Optional[Candle]:
+        return self.candle_builder.get_live_candle(symbol, timeframe)
+
+    def get_historical_candles(self, symbol: str, timeframe: str, days: int) -> List[Candle]:
+        end_ms = self._now_ms()
+        start_ms = end_ms - days * 24 * 60 * 60 * 1000
+        candles = self.historical_loader.fetch_range(symbol, timeframe, start_ms, end_ms)
+        logger.debug(
+            "market_data_historical_fetch symbol=%s timeframe=%s days=%d candles=%d",
+            symbol, timeframe, days, len(candles),
+        )
+        return candles
+
+    def get_health(self) -> Dict[str, str]:
+        report: Dict[str, str] = {}
+        with self._lock:
+            symbols = list(self._subscribed)
+        for symbol in symbols:
+            if self.ws_feed.is_healthy(symbol):
+                health = "OK"
+            elif self.rest_fallback.is_engaged(symbol):
+                health = "DEGRADED"
+            else:
+                health = "DOWN"
+            report[symbol] = health
+            self._log_health_transition(symbol, health)
+        return report
+
+    # ================= deep history / ceiling interface =================
+
+    def start_deep_history(self, symbol: str, timeframe: str, target_days: Optional[int] = None) -> None:
+        logger.info("deep_history_started symbol=%s timeframe=%s target_days=%s", symbol, timeframe, target_days)
+        self.deep_history_downloader.start_download(symbol, timeframe, target_days)
+
+    def cancel_deep_history(self, symbol: str, timeframe: str) -> None:
+        logger.info("deep_history_cancel_requested symbol=%s timeframe=%s", symbol, timeframe)
+        self.deep_history_downloader.cancel_download(symbol, timeframe)
+
+    def get_deep_history_progress(self, symbol: str, timeframe: str) -> dict:
+        from engines.workers.market_data.deep_history_downloader_worker import covered_days, is_fully_downloaded
+        return {
+            "covered_days": covered_days(self.history_manifest, symbol, timeframe),
+            "is_complete": is_fully_downloaded(self.history_manifest, symbol, timeframe),
+        }
+
+    def delete_deep_history(self, symbol: str, timeframe: str) -> None:
+        logger.warning("deep_history_delete_requested symbol=%s timeframe=%s", symbol, timeframe)
+        self.history_manifest.delete_symbol_manifest(symbol)
+
+    def start_ceiling_probe(self, symbol: str, timeframe: str) -> None:
+        logger.info("history_ceiling_probe_started symbol=%s timeframe=%s", symbol, timeframe)
+        self.depth_prober.start_probe(symbol, timeframe)
+
+    def get_ceiling_days(self, symbol: str, timeframe: str):
+        return self.depth_prober.get_ceiling_days(symbol, timeframe)
+
+    # ================= internal wiring =================
+
+    def _seed_baseline_history(self, symbol: str) -> None:
+        started = time.monotonic()
+        logger.info("baseline_seed_started symbol=%s timeframes=%s", symbol, TRADING_TFS)
+        baseline = self.historical_loader.backfill_baseline(symbol)
+        counts: Dict[str, int] = {}
+        for tf, candles in baseline.items():
+            self.candle_builder.seed_historical(symbol, tf, candles)
+            counts[tf] = len(candles)
+        logger.info(
+            "baseline_seed_complete symbol=%s counts=%s duration_s=%.3f",
+            symbol, counts, time.monotonic() - started,
+        )
+
+    def _handle_ws_tick(self, symbol: str, payload: dict) -> None:
+        """Called only for price-bearing aggregate deltas by WSFeedWorker.
+        A failure here therefore indicates a real malformed candidate price,
+        not the normal CoinDCX metadata-only delta behavior."""
+        tick = TickNormalizerWorker.from_ws_payload(symbol, payload)
+        if TickNormalizerWorker.is_valid(tick):
+            self.candle_builder.ingest(tick, timeframes=TRADING_TFS + POI_TFS)
+        else:
+            logger.warning(
+                "ws_price_bearing_delta_rejected_by_normalizer symbol=%s keys=%s",
+                symbol, sorted(payload.keys()) if isinstance(payload, dict) else type(payload).__name__,
+            )
+
+    def _handle_rest_tick(self, symbol: str, payload: dict) -> None:
+        tick = TickNormalizerWorker.from_rest_ticker(symbol, payload)
+        if TickNormalizerWorker.is_valid(tick):
+            self.candle_builder.ingest(tick, timeframes=TRADING_TFS + POI_TFS)
+        else:
+            logger.debug("rest_tick_rejected_by_normalizer symbol=%s", symbol)
+
+    def _handle_ws_drop(self, symbol: str) -> None:
+        with self._lock:
+            already_degraded = symbol in self._degraded
+            self._degraded.add(symbol)
+        if not already_degraded:
+            logger.warning("ws_drop_rest_fallback_engaging symbol=%s", symbol)
+        self.rest_fallback.engage(symbol)
+
+    def _handle_ws_restore(self, symbol: str) -> None:
+        with self._lock:
+            was_degraded = symbol in self._degraded
+            self._degraded.discard(symbol)
+        self.rest_fallback.disengage(symbol)
+        if was_degraded:
+            logger.info("ws_restored_rest_fallback_disengaged symbol=%s", symbol)
+
+    def _handle_deep_history_chunk(self, symbol: str, timeframe: str, candles: list) -> None:
+        logger.debug("deep_history_chunk_received symbol=%s timeframe=%s candles=%d", symbol, timeframe, len(candles))
+
+    def _publish_candle_closed(self, candle: Candle) -> None:
+        logger.debug(
+            "candle_closed symbol=%s timeframe=%s open_time=%d close=%s",
+            candle.symbol, candle.timeframe, candle.open_time, candle.close,
+        )
+
+    def _log_health_transition(self, symbol: str, health: str) -> None:
+        with self._lock:
+            previous = self._last_health.get(symbol)
+            self._last_health[symbol] = health
+        if previous != health:
+            level = logging.INFO if health == "OK" else logging.WARNING
+            logger.log(
+                level,
+                "market_data_health_transition symbol=%s previous=%s current=%s",
+                symbol, previous or "UNSET", health,
+            )
+
+    @staticmethod
+    def _now_ms() -> int:
+        return int(time.time() * 1000)
+
+
+
+================================================================================
+FILE: engines\monitors\poi_monitor.py
+================================================================================
+"""
+engines/monitors/poi_monitor.py
+
+Tier 2 â€” POI_Monitor assembly for File 03.
+
+Wires the 5 Tier-1 Workers behind one clean interface, per the Engine
+Hierarchy rule: Monitors have zero business logic of their own. Everything
+here is orchestration + the shared per-symbol POI/state registries that the
+Workers publish into and the interface reads from.
+
+Interface (per 03_POIMonitor_Prompt.md):
+    get_active_pois(symbol)
+    get_poi_state(symbol, poi_id)
+    set_poi_type_enabled(type, bool)
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Dict, List, Optional
+
+from engines.workers.poi.htf_availability import MarketDataMonitorLike
+from engines.workers.poi.poi_types import POI, POIStateRecord, POIType, DEFAULT_ENABLED
+from engines.workers.poi.poi_level_calculator_worker import POILevelCalculatorWorker
+from engines.workers.poi.fvg_detector_worker import FVGDetectorWorker
+from engines.workers.poi.orderblock_detector_worker import OrderBlockDetectorWorker
+from engines.workers.poi.inverse_fvg_detector_worker import InverseFVGDetectorWorker
+from engines.workers.poi.poi_state_tracker_worker import POIStateTrackerWorker
+
+logger = logging.getLogger("poi_monitor")
+
+
+class POIMonitor:
+    def __init__(self, market_data_monitor: MarketDataMonitorLike, symbol_registry) -> None:
+        """symbol_registry must expose get_active_symbols() -> list[str] and
+        get_tick_size(symbol) -> float, mirroring Symbol_Registry_Worker from
+        File 02 â€” POI Monitor never hardcodes symbols or tick sizes either."""
+        self.mdm = market_data_monitor
+        self.symbol_registry = symbol_registry
+
+        # Registries: symbol -> {poi_id: POI} / {poi_id: POIStateRecord}
+        self._level_pois: Dict[str, Dict[str, POI]] = {}
+        self._fvg_pois: Dict[str, Dict[str, POI]] = {}
+        self._ob_pois: Dict[str, Dict[str, POI]] = {}
+        self._inv_fvg_pois: Dict[str, Dict[str, POI]] = {}
+        self._states: Dict[str, Dict[str, POIStateRecord]] = {}
+
+        # One shared enabled-types dict per symbol so toggles apply live and
+        # every Worker for that symbol reads the same source of truth.
+        self._enabled_types: Dict[str, Dict[str, bool]] = {}
+
+        self._level_workers: Dict[str, POILevelCalculatorWorker] = {}
+        self._fvg_workers: Dict[str, FVGDetectorWorker] = {}
+        self._ob_workers: Dict[str, OrderBlockDetectorWorker] = {}
+        self._inv_workers: Dict[str, InverseFVGDetectorWorker] = {}
+        self._state_workers: Dict[str, POIStateTrackerWorker] = {}
+
+        self._tasks: List[asyncio.Task] = []
+
+        for symbol in self.symbol_registry.get_active_symbols():
+            self._wire_symbol(symbol)
+
+    # ------------------------------------------------------------------ wiring
+    def _wire_symbol(self, symbol: str) -> None:
+        enabled = dict(DEFAULT_ENABLED)
+        self._enabled_types[symbol] = enabled
+        self._level_pois[symbol] = {}
+        self._fvg_pois[symbol] = {}
+        self._ob_pois[symbol] = {}
+        self._inv_fvg_pois[symbol] = {}
+        self._states[symbol] = {}
+
+        def _on_level_update(sym: str, pois: List[POI]) -> None:
+            self._level_pois[sym] = {p.poi_id: p for p in pois}
+
+        def _on_fvg_update(sym: str, pois: List[POI]) -> None:
+            self._fvg_pois[sym] = {p.poi_id: p for p in pois}
+
+        def _on_ob_update(sym: str, pois: List[POI]) -> None:
+            self._ob_pois[sym] = {p.poi_id: p for p in pois}
+
+        def _on_inv_update(sym: str, pois: List[POI]) -> None:
+            self._inv_fvg_pois[sym] = {p.poi_id: p for p in pois}
+
+        def _on_state_update(sym: str, states: Dict[str, POIStateRecord]) -> None:
+            self._states[sym] = states
+
+        self._level_workers[symbol] = POILevelCalculatorWorker(
+            self.mdm, symbol, enabled, _on_level_update)
+        self._fvg_workers[symbol] = FVGDetectorWorker(
+            self.mdm, symbol, enabled, _on_fvg_update)
+        self._ob_workers[symbol] = OrderBlockDetectorWorker(
+            self.mdm, symbol, enabled, _on_ob_update)
+        self._inv_workers[symbol] = InverseFVGDetectorWorker(
+            self.mdm, symbol, enabled,
+            get_fvg_pois=lambda sym=symbol: list(self._fvg_pois[sym].values()),
+            on_poi_update=_on_inv_update)
+        self._state_workers[symbol] = POIStateTrackerWorker(
+            self.mdm, symbol, self.symbol_registry.get_tick_size(symbol),
+            get_active_pois=lambda sym=symbol: self._collect_all_pois(sym),
+            on_state_update=_on_state_update)
+
+        # First synchronous pass so get_active_pois() has data even before
+        # the async loops have ticked once (important for tests + fast UI).
+        self._level_workers[symbol].recompute()
+        self._fvg_workers[symbol].recompute()
+        self._ob_workers[symbol].recompute()
+        self._inv_workers[symbol].recompute()
+        self._state_workers[symbol].recompute()
+
+    def _collect_all_pois(self, symbol: str) -> List[POI]:
+        merged: Dict[str, POI] = {}
+        for reg in (self._level_pois, self._fvg_pois, self._ob_pois, self._inv_fvg_pois):
+            merged.update(reg.get(symbol, {}))
+        return [p for p in merged.values() if p.active]
+
+    # ------------------------------------------------------------------ lifecycle
+    def start(self) -> None:
+        for symbol in self.symbol_registry.get_active_symbols():
+            self._tasks.append(asyncio.create_task(self._level_workers[symbol].run_forever()))
+            self._tasks.append(asyncio.create_task(self._fvg_workers[symbol].run_forever()))
+            self._tasks.append(asyncio.create_task(self._ob_workers[symbol].run_forever()))
+            self._tasks.append(asyncio.create_task(self._inv_workers[symbol].run_forever()))
+            self._tasks.append(asyncio.create_task(self._state_workers[symbol].run_forever()))
+
+    async def stop(self) -> None:
+        for task in self._tasks:
+            task.cancel()
+        self._tasks.clear()
+
+    # ------------------------------------------------------------------ public interface
+    def get_active_pois(self, symbol: str) -> List[POI]:
+        return self._collect_all_pois(symbol)
+
+    def get_poi_state(self, symbol: str, poi_id: str) -> Optional[POIStateRecord]:
+        return self._states.get(symbol, {}).get(poi_id)
+
+    def set_poi_type_enabled(self, poi_type: str, enabled: bool) -> None:
+        """Settings toggle entrypoint. Fans out to every symbol currently
+        wired so the change takes effect live across the whole app, not just
+        the symbol currently open on the Dashboard."""
+        for symbol in self.symbol_registry.get_active_symbols():
+            self._enabled_types[symbol][poi_type] = enabled
+            if poi_type == POIType.FVG:
+                self._fvg_workers[symbol].set_enabled(enabled)
+            elif poi_type == POIType.ORDER_BLOCK:
+                self._ob_workers[symbol].set_enabled(enabled)
+            elif poi_type == POIType.INVERSE_FVG:
+                self._inv_workers[symbol].set_enabled(enabled)
+            else:
+                self._level_workers[symbol].set_type_enabled(poi_type, enabled)
+            # State tracker re-derives its POI set on the next recompute via
+            # get_active_pois(); no direct call needed, keeping it decoupled.
+            self._state_workers[symbol].recompute()
+
+    def get_health(self, symbol: str) -> str:
+        """OK if every Worker for the symbol has data; DEGRADED if any HTF
+        source used by an enabled type is still unpopulated."""
+        worker = self._level_workers.get(symbol)
+        if worker is None:
+            return "DOWN"
+        for poi_type, on in self._enabled_types[symbol].items():
+            if not on:
+                continue
+            if not worker.is_type_ready(poi_type) and poi_type in worker.enabled_types:
+                if worker.availability.candle_counts:
+                    return "DEGRADED"
+        return "OK"
+
+
+
+================================================================================
+FILE: engines\workers\poi\candle_access.py
+================================================================================
+"""
+engines/workers/poi/candle_access.py
+
+Tiny compatibility shim, root-fix for "'Candle' object is not subscriptable".
+
+Every File 03 Worker reads OHLC fields off whatever Market_Data_Monitor
+hands back. In production that's the REAL Candle dataclass from File 02
+(attribute access: c.high, c.close, c.open, c.low, c.volume, c.open_time,
+c.close_time). In the mocked check-gate tests it's a plain dict
+(c["high"], c["close"], ...) to keep those tests decoupled from File 02's
+exact dataclass shape. Every Worker now reads fields through cf() so both
+shapes work identically -- this was the missing piece, not a data bug.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+
+def cf(candle: Any, field: str):
+    """candle-field: works whether `candle` is a dict or an object with
+    attributes (e.g. Market_Data_Monitor's real Candle dataclass)."""
+    if isinstance(candle, dict):
+        return candle[field]
+    return getattr(candle, field)
+
+
+
+================================================================================
+FILE: engines\workers\poi\fvg_detector_worker.py
+================================================================================
+"""
+engines/workers/poi/fvg_detector_worker.py
+
+Tier 1 Worker #2 of File 03. Scans HTF candles for a classic 3-candle Fair
+Value Gap and records it as a price-range POI.
+
+FIX: candle field access now goes through cf() -- see candle_access.py.
+"""
+from __future__ import annotations
+
+import logging
+import time
+from typing import Callable, Dict, List
+
+from .candle_access import cf
+from .htf_availability import MarketDataMonitorLike
+from .poi_types import POI, POIType
+
+logger = logging.getLogger("poi_monitor.fvg_detector_worker")
+
+SCAN_TFS = ["4H", "1D", "1W", "1M"]
+LOOKBACK_CANDLES = 60
+
+
+class FVGDetectorWorker:
+    def __init__(
+        self,
+        market_data_monitor: MarketDataMonitorLike,
+        symbol: str,
+        enabled_types: Dict[str, bool],
+        on_poi_update: Callable[[str, List[POI]], None],
+    ) -> None:
+        self.mdm = market_data_monitor
+        self.symbol = symbol
+        self.enabled_types = enabled_types
+        self.on_poi_update = on_poi_update
+        self._pois: Dict[str, POI] = {}
+
+    def _scan_tf(self, tf: str) -> List[POI]:
+        candles = self.mdm.get_historical_candles(self.symbol, tf, LOOKBACK_CANDLES)
+        if not candles or len(candles) < 3:
+            return []
+        found: List[POI] = []
+        for i in range(2, len(candles)):
+            c1, c2, c3 = candles[i - 2], candles[i - 1], candles[i]
+            c1_high, c1_low = cf(c1, "high"), cf(c1, "low")
+            c3_high, c3_low = cf(c3, "high"), cf(c3, "low")
+
+            # Bullish FVG: gap up, c3.low sits above c1.high, acts as support on retest.
+            if c3_low > c1_high:
+                found.append(POI(
+                    poi_id=f"{self.symbol}:FVG:{tf}:{i}:bull",
+                    symbol=self.symbol, poi_type=POIType.FVG, role="support",
+                    source_tf=tf, price_high=c3_low, price_low=c1_high,
+                    formed_at_index=i, formed_at_ts=time.time(),
+                    metadata={"direction": "bullish", "impulse_candle_index": i - 1},
+                ))
+
+            # Bearish FVG: gap down, c3.high sits below c1.low, acts as resistance on retest.
+            if c3_high < c1_low:
+                found.append(POI(
+                    poi_id=f"{self.symbol}:FVG:{tf}:{i}:bear",
+                    symbol=self.symbol, poi_type=POIType.FVG, role="resistance",
+                    source_tf=tf, price_high=c1_low, price_low=c3_high,
+                    formed_at_index=i, formed_at_ts=time.time(),
+                    metadata={"direction": "bearish", "impulse_candle_index": i - 1},
+                ))
+        return found
+
+    def recompute(self) -> List[POI]:
+        if not self.enabled_types.get(POIType.FVG, False):
+            self._pois = {}
+            self.on_poi_update(self.symbol, [])
+            return []
+        pois: List[POI] = []
+        for tf in SCAN_TFS:
+            try:
+                pois.extend(self._scan_tf(tf))
+            except Exception:  # noqa: BLE001
+                logger.exception("FVG scan failed for %s/%s", self.symbol, tf)
+        self._pois = {p.poi_id: p for p in pois}
+        self.on_poi_update(self.symbol, list(self._pois.values()))
+        return list(self._pois.values())
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled_types[POIType.FVG] = enabled
+        self.recompute()
+
+    async def run_forever(self, poll_seconds: float = 60.0) -> None:
+        import asyncio
+        while True:
+            try:
+                self.recompute()
+            except Exception:  # noqa: BLE001
+                logger.exception("FVG_Detector_Worker failed for %s", self.symbol)
+            await asyncio.sleep(poll_seconds)
+
+
+
+================================================================================
+FILE: engines\workers\poi\htf_availability.py
+================================================================================
+"""
+engines/workers/poi/htf_availability.py
+
+Resolves the OPEN DECISION from the File 03 continuation prompt: rather than
+hardcoding the assumption that all of 1H/4H/1D/1W/1M are populated by
+Candle_Builder_Worker, every POI Monitor Worker probes Market_Data_Monitor
+live at startup and treats missing/thin series as gracefully degraded
+(type disabled + logged), not a crash.
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from typing import Dict, Protocol
+
+from .poi_types import POI_TFS
+
+logger = logging.getLogger("poi_monitor.htf_availability")
+
+
+class MarketDataMonitorLike(Protocol):
+    def get_live_candle(self, symbol: str, tf: str) -> dict | None: ...
+    def get_historical_candles(self, symbol: str, tf: str, days: int) -> list[dict]: ...
+    def subscribe(self, symbol: str) -> None: ...
+    def get_health(self) -> str: ...
+
+
+MIN_CANDLES_FOR_AVAILABLE = {
+    "1H": 24,   # >= 1 day worth
+    "4H": 6,    # >= 1 day worth
+    "1D": 2,    # >= 2 completed days
+    "1W": 1,    # >= 1 completed week
+    "1M": 1,    # >= 1 completed month
+}
+
+PROBE_DAYS = {"1H": 3, "4H": 7, "1D": 10, "1W": 30, "1M": 90}
+
+
+@dataclass
+class HTFAvailability:
+    populated: Dict[str, bool]
+    candle_counts: Dict[str, int]
+
+    def is_available(self, tf: str) -> bool:
+        return self.populated.get(tf, False)
+
+
+def probe_htf_availability(market_data_monitor: MarketDataMonitorLike, symbol: str) -> HTFAvailability:
+    """Call once per symbol on Worker startup, and re-call on a slow interval
+    (e.g. every 10 min) in case Candle_Builder_Worker backfills a TF later."""
+    populated: Dict[str, bool] = {}
+    counts: Dict[str, int] = {}
+
+    for tf in POI_TFS:
+        try:
+            candles = market_data_monitor.get_historical_candles(symbol, tf, PROBE_DAYS.get(tf, 7))
+        except Exception as exc:  # noqa: BLE001 - probe must never raise
+            logger.warning("HTF probe failed for %s/%s: %s", symbol, tf, exc)
+            candles = []
+
+        count = len(candles) if candles else 0
+        counts[tf] = count
+        populated[tf] = count >= MIN_CANDLES_FOR_AVAILABLE.get(tf, 1)
+
+        if not populated[tf]:
+            logger.warning(
+                "HTF timeframe %s not yet populated for %s (%d candles seen, "
+                "need >=%d). POI types sourced from %s stay disabled until it fills.",
+                tf, symbol, count, MIN_CANDLES_FOR_AVAILABLE.get(tf, 1), tf,
+            )
+
+    return HTFAvailability(populated=populated, candle_counts=counts)
+
+
+
+================================================================================
+FILE: engines\workers\poi\inverse_fvg_detector_worker.py
+================================================================================
+"""
+engines/workers/poi/inverse_fvg_detector_worker.py
+
+Tier 1 Worker #4 of File 03. Per 123Bull/123Bear Section 5, flips an FVG's
+role once price has closed through it a second time in the opposite
+direction. Consumes FVG_Detector_Worker's live output directly.
+
+FIX: candle field access now goes through cf() -- see candle_access.py.
+"""
+from __future__ import annotations
+
+import logging
+import time
+from typing import Callable, Dict, List, Optional
+
+from .candle_access import cf
+from .htf_availability import MarketDataMonitorLike
+from .poi_types import POI, POIType
+
+logger = logging.getLogger("poi_monitor.inverse_fvg_detector_worker")
+
+
+class InverseFVGDetectorWorker:
+    def __init__(
+        self,
+        market_data_monitor: MarketDataMonitorLike,
+        symbol: str,
+        enabled_types: Dict[str, bool],
+        get_fvg_pois: Callable[[], List[POI]],
+        on_poi_update: Callable[[str, List[POI]], None],
+    ) -> None:
+        self.mdm = market_data_monitor
+        self.symbol = symbol
+        self.enabled_types = enabled_types
+        self.get_fvg_pois = get_fvg_pois
+        self.on_poi_update = on_poi_update
+        self._pois: Dict[str, POI] = {}
+        self._first_close_through: Dict[str, str] = {}  # poi_id -> direction of 1st breach
+
+    def _latest_close(self, tf: str) -> Optional[float]:
+        live = self.mdm.get_live_candle(self.symbol, tf)
+        if live is not None:
+            try:
+                return cf(live, "close")
+            except (KeyError, AttributeError):
+                pass
+        hist = self.mdm.get_historical_candles(self.symbol, tf, 2)
+        return cf(hist[-1], "close") if hist else None
+
+    def recompute(self) -> List[POI]:
+        if not self.enabled_types.get(POIType.INVERSE_FVG, False):
+            self._pois = {}
+            self.on_poi_update(self.symbol, [])
+            return []
+
+        flipped: List[POI] = []
+        for fvg in self.get_fvg_pois():
+            if fvg.symbol != self.symbol or not fvg.is_range():
+                continue
+            close = self._latest_close(fvg.source_tf)
+            if close is None:
+                continue
+
+            closed_above = close > fvg.price_high
+            closed_below = close < fvg.price_low
+            if not (closed_above or closed_below):
+                continue
+
+            direction = "up" if closed_above else "down"
+            prior = self._first_close_through.get(fvg.poi_id)
+
+            if prior is None:
+                self._first_close_through[fvg.poi_id] = direction
+                continue  # first close-through only invalidates the FVG, doesn't flip it yet
+
+            if prior != direction:
+                # second close-through, opposite direction -> flip confirmed
+                new_role = "support" if fvg.role == "resistance" else "resistance"
+                flipped.append(POI(
+                    poi_id=f"{fvg.poi_id}:inverse",
+                    symbol=self.symbol, poi_type=POIType.INVERSE_FVG, role=new_role,
+                    source_tf=fvg.source_tf, price_high=fvg.price_high, price_low=fvg.price_low,
+                    formed_at_index=fvg.formed_at_index, formed_at_ts=time.time(),
+                    metadata={"original_fvg_id": fvg.poi_id, "original_role": fvg.role},
+                ))
+
+        self._pois = {p.poi_id: p for p in flipped}
+        self.on_poi_update(self.symbol, list(self._pois.values()))
+        return list(self._pois.values())
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled_types[POIType.INVERSE_FVG] = enabled
+        self.recompute()
+
+    async def run_forever(self, poll_seconds: float = 60.0) -> None:
+        import asyncio
+        while True:
+            try:
+                self.recompute()
+            except Exception:  # noqa: BLE001
+                logger.exception("InverseFVG_Detector_Worker failed for %s", self.symbol)
+            await asyncio.sleep(poll_seconds)
+
+
+
+================================================================================
+FILE: engines\workers\poi\orderblock_detector_worker.py
+================================================================================
+"""
+engines/workers/poi/orderblock_detector_worker.py
+
+Tier 1 Worker #3 of File 03. Detects the last opposite-colored candle
+before a strong impulsive move (ATR-relative threshold) and records it as
+a price-range POI.
+
+FIX: candle field access now goes through cf() -- see candle_access.py.
+"""
+from __future__ import annotations
+
+import logging
+import time
+from typing import Callable, Dict, List
+
+from .candle_access import cf
+from .htf_availability import MarketDataMonitorLike
+from .poi_types import POI, POIType
+
+logger = logging.getLogger("poi_monitor.orderblock_detector_worker")
+
+SCAN_TFS = ["4H", "1D", "1W", "1M"]
+LOOKBACK_CANDLES = 60
+ATR_WINDOW = 14
+IMPULSE_MULTIPLIER = 1.8  # candle range must exceed ATR * this to count as impulsive
+
+
+def _true_range(c, prev_close: float) -> float:
+    high, low = cf(c, "high"), cf(c, "low")
+    return max(high - low, abs(high - prev_close), abs(low - prev_close))
+
+
+def _rolling_atr(candles: List, idx: int, window: int = ATR_WINDOW) -> float:
+    start = max(1, idx - window)
+    trs = [
+        _true_range(candles[i], cf(candles[i - 1], "close"))
+        for i in range(start, idx + 1)
+        if i > 0
+    ]
+    return sum(trs) / len(trs) if trs else 0.0
+
+
+def _is_green(c) -> bool:
+    return cf(c, "close") > cf(c, "open")
+
+
+class OrderBlockDetectorWorker:
+    def __init__(
+        self,
+        market_data_monitor: MarketDataMonitorLike,
+        symbol: str,
+        enabled_types: Dict[str, bool],
+        on_poi_update: Callable[[str, List[POI]], None],
+    ) -> None:
+        self.mdm = market_data_monitor
+        self.symbol = symbol
+        self.enabled_types = enabled_types
+        self.on_poi_update = on_poi_update
+        self._pois: Dict[str, POI] = {}
+
+    def _scan_tf(self, tf: str) -> List[POI]:
+        candles = self.mdm.get_historical_candles(self.symbol, tf, LOOKBACK_CANDLES)
+        if not candles or len(candles) < ATR_WINDOW + 2:
+            return []
+
+        found: List[POI] = []
+        for i in range(2, len(candles)):
+            impulse = candles[i]
+            atr = _rolling_atr(candles, i - 1)
+            impulse_high, impulse_low = cf(impulse, "high"), cf(impulse, "low")
+            candle_range = impulse_high - impulse_low
+            if atr <= 0 or candle_range < atr * IMPULSE_MULTIPLIER:
+                continue
+
+            impulse_up = _is_green(impulse)
+            prev = candles[i - 1]
+            prev_high, prev_low = cf(prev, "high"), cf(prev, "low")
+
+            if impulse_up and not _is_green(prev):
+                # last red candle before a bullish impulse -> bullish OB, support zone
+                found.append(POI(
+                    poi_id=f"{self.symbol}:OB:{tf}:{i}:bull",
+                    symbol=self.symbol, poi_type=POIType.ORDER_BLOCK, role="support",
+                    source_tf=tf, price_high=prev_high, price_low=prev_low,
+                    formed_at_index=i - 1, formed_at_ts=time.time(),
+                    metadata={"impulse_index": i, "atr": atr, "range": candle_range},
+                ))
+            elif (not impulse_up) and _is_green(prev):
+                # last green candle before a bearish impulse -> bearish OB, resistance zone
+                found.append(POI(
+                    poi_id=f"{self.symbol}:OB:{tf}:{i}:bear",
+                    symbol=self.symbol, poi_type=POIType.ORDER_BLOCK, role="resistance",
+                    source_tf=tf, price_high=prev_high, price_low=prev_low,
+                    formed_at_index=i - 1, formed_at_ts=time.time(),
+                    metadata={"impulse_index": i, "atr": atr, "range": candle_range},
+                ))
+        return found
+
+    def recompute(self) -> List[POI]:
+        if not self.enabled_types.get(POIType.ORDER_BLOCK, False):
+            self._pois = {}
+            self.on_poi_update(self.symbol, [])
+            return []
+        pois: List[POI] = []
+        for tf in SCAN_TFS:
+            try:
+                pois.extend(self._scan_tf(tf))
+            except Exception:  # noqa: BLE001
+                logger.exception("Order Block scan failed for %s/%s", self.symbol, tf)
+        self._pois = {p.poi_id: p for p in pois}
+        self.on_poi_update(self.symbol, list(self._pois.values()))
+        return list(self._pois.values())
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled_types[POIType.ORDER_BLOCK] = enabled
+        self.recompute()
+
+    async def run_forever(self, poll_seconds: float = 60.0) -> None:
+        import asyncio
+        while True:
+            try:
+                self.recompute()
+            except Exception:  # noqa: BLE001
+                logger.exception("OrderBlock_Detector_Worker failed for %s", self.symbol)
+            await asyncio.sleep(poll_seconds)
+
+
+
+================================================================================
+FILE: engines\workers\poi\poi_level_calculator_worker.py
+================================================================================
+"""
+engines/workers/poi/poi_level_calculator_worker.py
+
+Tier 1 Worker #1 of File 03.
+
+Computes, per symbol and per ENABLED POI type: 1-Month H/L, 1-Week H/L,
+PDH/PDL, 4H H/L, Resistance Flip, Support Flip.
+
+Reads ONLY Market_Data_Monitor's HTF candle series (1H/4H/1D/1W/1M) via
+get_live_candle()/get_historical_candles() -- never the 1m/5m/15m trading
+timeframes. Never hardcodes symbols.
+
+FIX: _compute_prev_period_high_low() previously requested a flat 5-day
+lookback for every timeframe. That's fine for 1D/4H, but structurally
+cannot return 2 completed candles for 1W (5 days < 1 week) or 1M (5 days
+<< 1 month) -- now uses a per-timeframe lookback window.
+"""
+from __future__ import annotations
+
+import logging
+import time
+from typing import Callable, Dict, List, Optional
+
+from .candle_access import cf
+from .htf_availability import HTFAvailability, MarketDataMonitorLike, probe_htf_availability
+from .poi_types import POI, POIType, POI_SOURCE_TF
+
+logger = logging.getLogger("poi_monitor.poi_level_calculator_worker")
+
+LINE_TYPES = [
+    POIType.MONTH_HIGH, POIType.MONTH_LOW,
+    POIType.WEEK_HIGH, POIType.WEEK_LOW,
+    POIType.PDH, POIType.PDL,
+    POIType.H4_HIGH, POIType.H4_LOW,
+]
+FLIP_TYPES = [POIType.RESISTANCE_FLIP, POIType.SUPPORT_FLIP]
+
+FRACTAL_LOOKBACK = 2  # candles either side for a swing high/low fractal
+
+# Per-timeframe lookback window for "give me the last completed period."
+# Needs at least 2 completed periods worth of days, with margin.
+LOOKBACK_DAYS_FOR_TF: Dict[str, int] = {
+    "1H": 3,
+    "4H": 5,
+    "1D": 5,
+    "1W": 21,   # 3 weeks, so a fresh symbol still has 2+ completed weekly candles
+    "1M": 95,   # ~3 months, same margin for monthly
+}
+
+
+def _is_swing_high(candles: List, i: int, look: int = FRACTAL_LOOKBACK) -> bool:
+    if i - look < 0 or i + look >= len(candles):
+        return False
+    h = cf(candles[i], "high")
+    return all(cf(candles[i - k], "high") <= h for k in range(1, look + 1)) and \
+        all(cf(candles[i + k], "high") <= h for k in range(1, look + 1))
+
+
+def _is_swing_low(candles: List, i: int, look: int = FRACTAL_LOOKBACK) -> bool:
+    if i - look < 0 or i + look >= len(candles):
+        return False
+    lo = cf(candles[i], "low")
+    return all(cf(candles[i - k], "low") >= lo for k in range(1, look + 1)) and \
+        all(cf(candles[i + k], "low") >= lo for k in range(1, look + 1))
+
+
+class POILevelCalculatorWorker:
+    def __init__(
+        self,
+        market_data_monitor: MarketDataMonitorLike,
+        symbol: str,
+        enabled_types: Dict[str, bool],
+        on_poi_update: Callable[[str, List[POI]], None],
+    ) -> None:
+        self.mdm = market_data_monitor
+        self.symbol = symbol
+        self.enabled_types = enabled_types
+        self.on_poi_update = on_poi_update
+        self.availability: HTFAvailability = probe_htf_availability(market_data_monitor, symbol)
+        self._last_recompute_ts: float = 0.0
+        self._pois: Dict[str, POI] = {}
+
+    def refresh_availability(self) -> None:
+        self.availability = probe_htf_availability(self.mdm, self.symbol)
+
+    def is_type_ready(self, poi_type: str) -> bool:
+        if not self.enabled_types.get(poi_type, False):
+            return False
+        src_tf = POI_SOURCE_TF.get(poi_type)
+        if src_tf is None:
+            return True
+        return self.availability.is_available(src_tf)
+
+    def _line_poi(self, poi_type: str, price: float, source_tf: str, idx: int) -> POI:
+        role = "resistance" if poi_type in (
+            POIType.MONTH_HIGH, POIType.WEEK_HIGH, POIType.PDH, POIType.H4_HIGH,
+        ) else "support"
+        return POI(
+            poi_id=f"{self.symbol}:{poi_type}",
+            symbol=self.symbol,
+            poi_type=poi_type,
+            role=role,
+            source_tf=source_tf,
+            price=price,
+            formed_at_index=idx,
+            formed_at_ts=time.time(),
+            active=True,
+        )
+
+    def _compute_prev_period_high_low(self, tf: str) -> Optional[tuple[float, float, int]]:
+        """Returns (high, low, index) of the most recently *completed* candle
+        on the given TF. CoinDCX's history returns the still-forming
+        current-period candle as the last row -- index -2 is the last
+        genuinely completed one, -1 must be skipped."""
+        lookback_days = LOOKBACK_DAYS_FOR_TF.get(tf, 5)
+        candles = self.mdm.get_historical_candles(self.symbol, tf, lookback_days)
+        if not candles or len(candles) < 2:
+            return None
+        prev = candles[-2]
+        return cf(prev, "high"), cf(prev, "low"), len(candles) - 2
+
+    def _compute_line_types(self) -> List[POI]:
+        results: List[POI] = []
+        mapping = {
+            POIType.MONTH_HIGH: ("1M", "high"), POIType.MONTH_LOW: ("1M", "low"),
+            POIType.WEEK_HIGH: ("1W", "high"), POIType.WEEK_LOW: ("1W", "low"),
+            POIType.PDH: ("1D", "high"), POIType.PDL: ("1D", "low"),
+            POIType.H4_HIGH: ("4H", "high"), POIType.H4_LOW: ("4H", "low"),
+        }
+        for poi_type, (tf, side) in mapping.items():
+            if not self.is_type_ready(poi_type):
+                continue
+            hl = self._compute_prev_period_high_low(tf)
+            if hl is None:
+                continue
+            high, low, idx = hl
+            price = high if side == "high" else low
+            results.append(self._line_poi(poi_type, price, tf, idx))
+        return results
+
+    def _compute_flip_types(self) -> List[POI]:
+        """Resistance Flip / Support Flip: a swing high/low on the 4H series
+        that price has since closed through and is expected to act as the
+        opposite role on retest (per 123Bull/Bear Section 5 "flipped zone")."""
+        results: List[POI] = []
+        if not self.availability.is_available("4H"):
+            return results
+        candles = self.mdm.get_historical_candles(self.symbol, "4H", 30)
+        if not candles or len(candles) < 2 * FRACTAL_LOOKBACK + 3:
+            return results
+        last_close = cf(candles[-1], "close")
+
+        if self.enabled_types.get(POIType.SUPPORT_FLIP, False):
+            for i in range(len(candles) - 2, FRACTAL_LOOKBACK, -1):
+                if _is_swing_high(candles, i):
+                    level = cf(candles[i], "high")
+                    if last_close > level:  # broken upward -> old resistance flips to support
+                        results.append(POI(
+                            poi_id=f"{self.symbol}:SUPPORT_FLIP:{i}",
+                            symbol=self.symbol, poi_type=POIType.SUPPORT_FLIP,
+                            role="support", source_tf="4H", price=level,
+                            formed_at_index=i, formed_at_ts=time.time(),
+                        ))
+                        break
+
+        if self.enabled_types.get(POIType.RESISTANCE_FLIP, False):
+            for i in range(len(candles) - 2, FRACTAL_LOOKBACK, -1):
+                if _is_swing_low(candles, i):
+                    level = cf(candles[i], "low")
+                    if last_close < level:  # broken downward -> old support flips to resistance
+                        results.append(POI(
+                            poi_id=f"{self.symbol}:RESISTANCE_FLIP:{i}",
+                            symbol=self.symbol, poi_type=POIType.RESISTANCE_FLIP,
+                            role="resistance", source_tf="4H", price=level,
+                            formed_at_index=i, formed_at_ts=time.time(),
+                        ))
+                        break
+        return results
+
+    def recompute(self) -> List[POI]:
+        pois = self._compute_line_types() + self._compute_flip_types()
+        self._pois = {p.poi_id: p for p in pois}
+        self._last_recompute_ts = time.time()
+        self.on_poi_update(self.symbol, list(self._pois.values()))
+        return list(self._pois.values())
+
+    def set_type_enabled(self, poi_type: str, enabled: bool) -> None:
+        """Live toggle -- Settings calls straight into this. Immediately
+        recomputes so the Dashboard reflects the change with no restart."""
+        self.enabled_types[poi_type] = enabled
+        if not enabled:
+            self._pois = {k: v for k, v in self._pois.items() if v.poi_type != poi_type}
+        self.recompute()
+
+    async def run_forever(self, poll_seconds: float = 30.0) -> None:
+        import asyncio
+        while True:
+            try:
+                self.recompute()
+            except Exception:  # noqa: BLE001
+                logger.exception("POI_Level_Calculator_Worker failed for %s", self.symbol)
+            await asyncio.sleep(poll_seconds)
+
+
+
+================================================================================
+FILE: engines\workers\poi\poi_state_tracker_worker.py
+================================================================================
+"""
+engines/workers/poi/poi_state_tracker_worker.py
+
+Tier 1 Worker #5 of File 03. Per-POI Approaching/Hit/Crossed/Retesting
+state machine, fully independent per poi_id.
+
+FIX: candle field access now goes through cf() -- see candle_access.py.
+"""
+from __future__ import annotations
+
+import logging
+import time
+from typing import Callable, Dict, List, Optional
+
+from .candle_access import cf
+from .htf_availability import MarketDataMonitorLike
+from .poi_types import POI, POIState, POIStateRecord
+
+logger = logging.getLogger("poi_monitor.poi_state_tracker_worker")
+
+TOUCH_EPSILON_TICKS = 1.0     # within this many ticks counts as a touch
+RETEST_PROXIMITY_TICKS = 3.0  # within this many ticks after crossing counts as a retest
+
+
+class POIStateTrackerWorker:
+    def __init__(
+        self,
+        market_data_monitor: MarketDataMonitorLike,
+        symbol: str,
+        tick_size: float,
+        get_active_pois: Callable[[], List[POI]],
+        on_state_update: Callable[[str, Dict[str, POIStateRecord]], None],
+    ) -> None:
+        self.mdm = market_data_monitor
+        self.symbol = symbol
+        self.tick_size = tick_size
+        self.get_active_pois = get_active_pois
+        self.on_state_update = on_state_update
+        self._states: Dict[str, POIStateRecord] = {}
+
+    def _distance_ticks(self, poi: POI, price: float) -> float:
+        if poi.is_range():
+            if poi.price_low <= price <= poi.price_high:
+                return 0.0
+            edge = poi.price_low if price < poi.price_low else poi.price_high
+            return abs(price - edge) / self.tick_size
+        return abs(price - poi.price) / self.tick_size
+
+    def _side(self, poi: POI, price: float) -> str:
+        level = poi.mid_price()
+        return "above" if price > level else "below"
+
+    def update_one(self, poi: POI, price: float, now: float) -> POIStateRecord:
+        prev = self._states.get(poi.poi_id)
+        distance = self._distance_ticks(poi, price)
+        touching = distance <= TOUCH_EPSILON_TICKS
+
+        if prev is None:
+            state = POIState.HIT if touching else POIState.APPROACHING
+            last_touch = now if touching else None
+            crossed_dir = None
+        else:
+            state = prev.state
+            last_touch = prev.last_touch_ts
+            crossed_dir = prev.crossed_direction
+            prev_side = "above" if prev.last_price > poi.mid_price() else "below"
+            cur_side = self._side(poi, price)
+
+            if touching:
+                last_touch = now
+                if state == POIState.CROSSED:
+                    state = POIState.RETESTING
+                else:
+                    state = POIState.HIT
+            elif state in (POIState.HIT, POIState.RETESTING) and prev_side != cur_side:
+                state = POIState.CROSSED
+                crossed_dir = cur_side
+            elif state == POIState.CROSSED and distance <= RETEST_PROXIMITY_TICKS:
+                state = POIState.RETESTING
+                last_touch = now
+            elif state not in (POIState.CROSSED, POIState.RETESTING):
+                state = POIState.APPROACHING
+
+        record = POIStateRecord(
+            poi_id=poi.poi_id, symbol=self.symbol, distance_ticks=distance,
+            state=state, last_touch_ts=last_touch, last_price=price,
+            crossed_direction=crossed_dir, updated_at=now,
+        )
+        self._states[poi.poi_id] = record
+        return record
+
+    def recompute(self, current_price: Optional[float] = None) -> Dict[str, POIStateRecord]:
+        active_pois = self.get_active_pois()
+        active_ids = {p.poi_id for p in active_pois}
+        self._states = {k: v for k, v in self._states.items() if k in active_ids}
+
+        if current_price is None:
+            live = self.mdm.get_live_candle(self.symbol, "1H")
+            current_price = cf(live, "close") if live is not None else None
+        if current_price is None:
+            return self._states
+
+        now = time.time()
+        for poi in active_pois:
+            self.update_one(poi, current_price, now)
+
+        self.on_state_update(self.symbol, dict(self._states))
+        return dict(self._states)
+
+    async def run_forever(self, poll_seconds: float = 5.0) -> None:
+        import asyncio
+        while True:
+            try:
+                self.recompute()
+            except Exception:  # noqa: BLE001
+                logger.exception("POI_State_Tracker_Worker failed for %s", self.symbol)
+            await asyncio.sleep(poll_seconds)
+
+
+
+================================================================================
+FILE: engines\workers\poi\poi_types.py
+================================================================================
+"""
+engines/workers/poi/poi_types.py
+Shared data structures for the POI Monitor (File 03). No business logic here â€”
+every Worker and the Tier-2 assembly import from this single module so the
+shapes never drift between files.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+from time import time
+from typing import Any, Dict, Optional
+
+
+class POIType(str, Enum):
+    """Every POI type the app can compute. Matches Settings toggle labels exactly."""
+    MONTH_HIGH = "1M_HIGH"
+    MONTH_LOW = "1M_LOW"
+    WEEK_HIGH = "1W_HIGH"
+    WEEK_LOW = "1W_LOW"
+    PDH = "PDH"
+    PDL = "PDL"
+    H4_HIGH = "4H_HIGH"
+    H4_LOW = "4H_LOW"
+    RESISTANCE_FLIP = "RESISTANCE_FLIP"
+    SUPPORT_FLIP = "SUPPORT_FLIP"
+    FVG = "FVG"
+    ORDER_BLOCK = "ORDER_BLOCK"
+    INVERSE_FVG = "INVERSE_FVG"
+
+
+# Default ON/OFF per project instructions: PDH/PDL and 4H H/L default ON, rest OFF.
+DEFAULT_ENABLED: Dict[str, bool] = {
+    POIType.MONTH_HIGH: False,
+    POIType.MONTH_LOW: False,
+    POIType.WEEK_HIGH: False,
+    POIType.WEEK_LOW: False,
+    POIType.PDH: True,
+    POIType.PDL: True,
+    POIType.H4_HIGH: True,
+    POIType.H4_LOW: True,
+    POIType.RESISTANCE_FLIP: False,
+    POIType.SUPPORT_FLIP: False,
+    POIType.FVG: False,
+    POIType.ORDER_BLOCK: False,
+    POIType.INVERSE_FVG: False,
+}
+
+# Which source HTF timeframe each line-POI type is derived from.
+POI_SOURCE_TF: Dict[str, str] = {
+    POIType.MONTH_HIGH: "1M",
+    POIType.MONTH_LOW: "1M",
+    POIType.WEEK_HIGH: "1W",
+    POIType.WEEK_LOW: "1W",
+    POIType.PDH: "1D",
+    POIType.PDL: "1D",
+    POIType.H4_HIGH: "4H",
+    POIType.H4_LOW: "4H",
+    POIType.RESISTANCE_FLIP: "4H",
+    POIType.SUPPORT_FLIP: "4H",
+}
+
+# The full candidate HTF series the Market Data Monitor is expected to expose.
+# File 03 must not assume all of these are populated â€” see htf_availability.py.
+POI_TFS = ["1H", "4H", "1D", "1W", "1M"]
+
+
+class POIState(str, Enum):
+    APPROACHING = "Approaching"
+    HIT = "Hit"
+    CROSSED = "Crossed"
+    RETESTING = "Retesting"
+
+
+@dataclass
+class POI:
+    """One Point of Interest, line or price-range."""
+    poi_id: str
+    symbol: str
+    poi_type: str                       # one of POIType values
+    role: str                           # "resistance" | "support"
+    source_tf: str
+    price: Optional[float] = None       # set for line POIs
+    price_high: Optional[float] = None  # set for range POIs (FVG/OB/InverseFVG)
+    price_low: Optional[float] = None
+    formed_at_index: int = -1
+    formed_at_ts: float = 0.0
+    active: bool = True
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def is_range(self) -> bool:
+        return self.price_high is not None and self.price_low is not None
+
+    def mid_price(self) -> float:
+        if self.is_range():
+            return (self.price_high + self.price_low) / 2.0
+        return self.price
+
+
+@dataclass
+class POIStateRecord:
+    """Live tracking state for one POI, independent of every other POI."""
+    poi_id: str
+    symbol: str
+    distance_ticks: float
+    state: str
+    last_touch_ts: Optional[float]
+    last_price: float
+    crossed_direction: Optional[str] = None  # "up" | "down", set once Crossed fires
+    updated_at: float = field(default_factory=time)
+
+
+
+================================================================================
+FILE: engines\workers\market_data\candle_store.py
+================================================================================
+"""Passive, event-subscribed candle cache backing Market_Data_Monitor's get_live_candle()/get_historical_candles().
+Not a Worker itself -- lets the Monitor serve reads without reaching into a Worker's internals directly.
+"""
+from __future__ import annotations
+import threading
+from collections import defaultdict, deque
+from typing import Deque, Dict, List, Optional, Tuple
+from engines.event_bus.bus import event_bus
+
+MAX_CANDLES_PER_SERIES = 50_000
+
+
+class CandleStore:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._series: Dict[Tuple[str, str], Deque[dict]] = defaultdict(lambda: deque(maxlen=MAX_CANDLES_PER_SERIES))
+        event_bus.subscribe("market_data.candle.closed", self._on_candle)
+        event_bus.subscribe("market_data.history.candle_loaded", self._on_candle)
+        event_bus.subscribe("market_data.deep_history.candle_loaded", self._on_candle)
+
+    def _on_candle(self, event: dict) -> None:
+        key = (event["symbol"], event["timeframe"])
+        with self._lock:
+            series = self._series[key]
+            if series and series[-1]["bucket_start_ms"] == event.get("bucket_start_ms"):
+                series[-1] = event
+            else:
+                series.append(event)
+
+    def get_live_candle(self, symbol: str, timeframe: str) -> Optional[dict]:
+        with self._lock:
+            series = self._series.get((symbol, timeframe))
+            return dict(series[-1]) if series else None
+
+    def get_historical_candles(self, symbol: str, timeframe: str, days: int) -> List[dict]:
+        with self._lock:
+            series = self._series.get((symbol, timeframe), deque())
+            if not series:
+                return []
+            cutoff_ms = series[-1]["bucket_start_ms"] - days * 86_400_000
+            return [dict(c) for c in series if c["bucket_start_ms"] >= cutoff_ms]
+
+
+
+================================================================================
+FILE: engines\workers\market_data\history_manifest_worker.py
+================================================================================
+"""History_Manifest_Worker: tracks exactly which date ranges are already downloaded, per symbol per timeframe.
+Drives Deep_History_Downloader_Worker's skip-logic and the Settings-card progress bars.
+"""
+from __future__ import annotations
+import json
+import threading
+from pathlib import Path
+from typing import List, Tuple
+
+_MANIFEST_DIR = Path("data") / "historical" / "manifests"
+
+
+class HistoryManifestWorker:
+    def __init__(self, manifest_dir: Path = _MANIFEST_DIR) -> None:
+        self._dir = manifest_dir
+        self._lock = threading.Lock()
+        self._dir.mkdir(parents=True, exist_ok=True)
+
+    def _path_for(self, symbol: str) -> Path:
+        return self._dir / f"{symbol}.json"
+
+    def _load(self, symbol: str) -> dict:
+        path = self._path_for(symbol)
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text())
+        except json.JSONDecodeError:
+            return {}
+
+    def _save(self, symbol: str, data: dict) -> None:
+        self._path_for(symbol).write_text(json.dumps(data, indent=2))
+
+    def get_covered_ranges(self, symbol: str, timeframe: str) -> List[Tuple[int, int]]:
+        with self._lock:
+            data = self._load(symbol)
+            return [tuple(r) for r in data.get(timeframe, [])]
+
+    def mark_covered(self, symbol: str, timeframe: str, start_ms: int, end_ms: int) -> None:
+        with self._lock:
+            data = self._load(symbol)
+            ranges = data.setdefault(timeframe, [])
+            ranges.append([start_ms, end_ms])
+            ranges.sort(key=lambda r: r[0])
+            merged: List[list] = []
+            for r in ranges:
+                if merged and r[0] <= merged[-1][1]:
+                    merged[-1][1] = max(merged[-1][1], r[1])
+                else:
+                    merged.append(list(r))
+            data[timeframe] = merged
+            self._save(symbol, data)
+
+    def find_gaps(self, symbol: str, timeframe: str, full_start_ms: int, full_end_ms: int) -> List[Tuple[int, int]]:
+        covered = self.get_covered_ranges(symbol, timeframe)
+        gaps: List[Tuple[int, int]] = []
+        cursor = full_start_ms
+        for start, end in covered:
+            if end <= cursor:
+                continue
+            if start > cursor:
+                gaps.append((cursor, min(start, full_end_ms)))
+            cursor = max(cursor, end)
+            if cursor >= full_end_ms:
+                break
+        if cursor < full_end_ms:
+            gaps.append((cursor, full_end_ms))
+        return [g for g in gaps if g[0] < g[1]]
+
+    def coverage_percent(self, symbol: str, timeframe: str, full_start_ms: int, full_end_ms: int) -> float:
+        total_span = full_end_ms - full_start_ms
+        if total_span <= 0:
+            return 100.0
+        gap_span = sum(end - start for start, end in self.find_gaps(symbol, timeframe, full_start_ms, full_end_ms))
+        return round(max(0.0, min(100.0, (1 - gap_span / total_span) * 100)), 2)
+
+    def delete_symbol_manifest(self, symbol: str) -> None:
+        path = self._path_for(symbol)
+        with self._lock:
+            if path.exists():
+                path.unlink()
+
+
+
+================================================================================
+FILE: engines\workers\market_data\history_depth_prober_worker.py
+================================================================================
+"""
+FULL PATH: engines/workers/market_data/history_depth_prober_worker.py (REPLACE ENTIRE FILE)
+
+REWRITTEN to use your EXISTING HistoryManifestWorker.mark_covered() instead of
+a method that doesn't exist on your real manifest. Probing now feeds discovered
+ranges directly into the manifest as it walks back, so a probe run also counts
+as real downloaded coverage -- no wasted requests.
+"""
+from __future__ import annotations
+
+import threading
+import time
+from typing import Callable, Optional
+
+import requests
+
+from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
+
+CANDLES_URL = "https://public.coindcx.com/market_data/candles/"
+MAX_LIMIT_PER_CALL = 1000
+PROBE_PACING_S = 0.3
+EARLY_START_MS = 1420070400000
+
+
+class HistoryDepthProberWorker:
+    def __init__(self, manifest: HistoryManifestWorker, http_get=None,
+                 on_progress: Optional[Callable[[str, str, dict], None]] = None) -> None:
+        self._manifest = manifest
+        self._http_get = http_get or requests.get
+        self._on_progress = on_progress
+        self._active: dict[tuple, threading.Event] = {}
+        self._lock = threading.RLock()
+        self._results: dict[tuple, dict] = {}
+
+    def start_probe(self, symbol: str, timeframe: str) -> None:
+        key = (symbol, timeframe)
+        with self._lock:
+            if key in self._active:
+                return
+            stop_event = threading.Event()
+            self._active[key] = stop_event
+        t = threading.Thread(target=self._probe_loop, args=(symbol, timeframe, stop_event), daemon=True)
+        t.start()
+
+    def is_probing(self, symbol: str, timeframe: str) -> bool:
+        with self._lock:
+            return (symbol, timeframe) in self._active
+
+    def get_ceiling_days(self, symbol: str, timeframe: str) -> Optional[float]:
+        with self._lock:
+            result = self._results.get((symbol, timeframe))
+        return result["span_days"] if result else None
+
+    def _probe_loop(self, symbol: str, timeframe: str, stop_event: threading.Event) -> None:
+        end_ms = int(time.time() * 1000)
+        cursor_end = end_ms
+        oldest_ms = end_ms
+        newest_ms = None
+
+        try:
+            while not stop_event.is_set():
+                resp = self._http_get(CANDLES_URL, params={
+                    "pair": symbol, "interval": timeframe,
+                    "startTime": EARLY_START_MS, "endTime": cursor_end,
+                    "limit": MAX_LIMIT_PER_CALL,
+                }, timeout=10)
+                resp.raise_for_status()
+                rows = resp.json() or []
+
+                if not rows:
+                    self._manifest.mark_covered(symbol, timeframe, EARLY_START_MS, cursor_end)
+                    break
+
+                batch_oldest = min(int(r["time"]) for r in rows)
+                batch_newest = max(int(r["time"]) for r in rows)
+                if newest_ms is None:
+                    newest_ms = batch_newest
+                oldest_ms = min(oldest_ms, batch_oldest)
+                self._manifest.mark_covered(symbol, timeframe, batch_oldest, batch_newest)
+
+                if self._on_progress:
+                    span_days = (newest_ms - oldest_ms) / (1000 * 60 * 60 * 24)
+                    self._on_progress(symbol, timeframe, {"probing": True, "span_days_so_far": round(span_days, 1)})
+
+                if batch_oldest >= cursor_end:
+                    break
+                cursor_end = batch_oldest - 1
+                time.sleep(PROBE_PACING_S)
+
+            span_days = (newest_ms - oldest_ms) / (1000 * 60 * 60 * 24) if newest_ms else 0.0
+            with self._lock:
+                self._results[(symbol, timeframe)] = {"span_days": round(span_days, 1)}
+            if self._on_progress:
+                self._on_progress(symbol, timeframe, {"probing": False, "ceiling_days": round(span_days, 1)})
+        finally:
+            with self._lock:
+                self._active.pop((symbol, timeframe), None)
+
+
+
+================================================================================
+FILE: engines\workers\market_data\deep_history_downloader_worker.py
+================================================================================
+"""
+FULL PATH: engines/workers/market_data/deep_history_downloader_worker.py (REPLACE ENTIRE FILE)
+
+REWRITTEN to use your EXISTING HistoryManifestWorker API (get_covered_ranges,
+mark_covered, find_gaps, coverage_percent, delete_symbol_manifest) instead of
+methods that don't exist on your real manifest file.
+
+"True earliest reached" is now inferred, not separately tracked: when the API
+returns an empty page, we mark_covered(symbol, tf, EARLY_START_MS, cursor_end)
+-- i.e. "nothing exists before this point" becomes part of the covered range
+itself. That merges with real data ranges automatically (your manifest's own
+merge logic), so a fully-covered range starting at/near EARLY_START_MS IS the
+signal that the true earliest has been reached -- no extra flag needed.
+"""
+from __future__ import annotations
+
+import threading
+import time
+from typing import Callable, Optional
+
+import requests
+
+from engines.workers.market_data.candle_builder_worker import Candle
+from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
+
+CANDLES_URL = "https://public.coindcx.com/market_data/candles/"
+MAX_LIMIT_PER_CALL = 1000
+CHUNK_PACING_S = 0.35
+_TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000}
+EARLY_START_MS = 1420070400000  # 2015-01-01 UTC, our "search floor"
+
+
+def covered_days(manifest: HistoryManifestWorker, symbol: str, timeframe: str) -> float:
+    ranges = manifest.get_covered_ranges(symbol, timeframe)
+    total_ms = sum(end - start for start, end in ranges)
+    return round(total_ms / (1000 * 60 * 60 * 24), 1)
+
+
+def is_fully_downloaded(manifest: HistoryManifestWorker, symbol: str, timeframe: str) -> bool:
+    ranges = manifest.get_covered_ranges(symbol, timeframe)
+    return any(start <= EARLY_START_MS + 1 for start, _ in ranges)
+
+
+def earliest_covered_ms(manifest: HistoryManifestWorker, symbol: str, timeframe: str) -> Optional[int]:
+    ranges = manifest.get_covered_ranges(symbol, timeframe)
+    if not ranges:
+        return None
+    return min(start for start, _ in ranges)
+
+
+class DeepHistoryDownloaderWorker:
+    def __init__(self, manifest: HistoryManifestWorker, http_get=None,
+                 on_chunk: Optional[Callable[[str, str, list], None]] = None,
+                 on_progress: Optional[Callable[[str, str, dict], None]] = None) -> None:
+        self._manifest = manifest
+        self._http_get = http_get or requests.get
+        self._on_chunk = on_chunk
+        self._on_progress = on_progress
+        self._active: dict[tuple, threading.Event] = {}
+        self._lock = threading.RLock()
+
+    def start_download(self, symbol: str, timeframe: str, target_days: Optional[int] = None) -> None:
+        key = (symbol, timeframe)
+        with self._lock:
+            if key in self._active:
+                return
+            stop_event = threading.Event()
+            self._active[key] = stop_event
+        t = threading.Thread(target=self._download_loop, args=(symbol, timeframe, target_days, stop_event), daemon=True)
+        t.start()
+
+    def cancel_download(self, symbol: str, timeframe: str) -> None:
+        with self._lock:
+            stop_event = self._active.pop((symbol, timeframe), None)
+            if stop_event:
+                stop_event.set()
+
+    def is_downloading(self, symbol: str, timeframe: str) -> bool:
+        with self._lock:
+            return (symbol, timeframe) in self._active
+
+    def _download_loop(self, symbol: str, timeframe: str, target_days: Optional[int], stop_event: threading.Event) -> None:
+        try:
+            earliest = earliest_covered_ms(self._manifest, symbol, timeframe)
+            cursor_end = (earliest - 1) if earliest else int(time.time() * 1000)
+
+            while not stop_event.is_set():
+                if is_fully_downloaded(self._manifest, symbol, timeframe):
+                    break
+                if target_days is not None and covered_days(self._manifest, symbol, timeframe) >= target_days:
+                    break
+
+                resp = self._http_get(CANDLES_URL, params={
+                    "pair": symbol, "interval": timeframe,
+                    "startTime": EARLY_START_MS, "endTime": cursor_end,
+                    "limit": MAX_LIMIT_PER_CALL,
+                }, timeout=10)
+                resp.raise_for_status()
+                rows = resp.json() or []
+
+                if not rows:
+                    self._manifest.mark_covered(symbol, timeframe, EARLY_START_MS, cursor_end)
+                    break
+
+                candles = [Candle(
+                    symbol=symbol, timeframe=timeframe,
+                    open_time=int(r["time"]), close_time=int(r["time"]) + _TF_MS[timeframe] - 1,
+                    open=float(r["open"]), high=float(r["high"]), low=float(r["low"]),
+                    close=float(r["close"]), volume=float(r.get("volume", 0.0) or 0.0), is_closed=True,
+                ) for r in rows]
+
+                batch_oldest = min(c.open_time for c in candles)
+                batch_newest = max(c.open_time for c in candles)
+                self._manifest.mark_covered(symbol, timeframe, batch_oldest, batch_newest)
+
+                if self._on_chunk:
+                    self._on_chunk(symbol, timeframe, candles)
+                if self._on_progress:
+                    self._on_progress(symbol, timeframe, {
+                        "covered_days": covered_days(self._manifest, symbol, timeframe),
+                        "is_complete": is_fully_downloaded(self._manifest, symbol, timeframe),
+                    })
+
+                if batch_oldest >= cursor_end:
+                    break
+                cursor_end = batch_oldest - 1
+                time.sleep(CHUNK_PACING_S)
+        finally:
+            with self._lock:
+                self._active.pop((symbol, timeframe), None)
+
+
+
+================================================================================
+FILE: state\app_state.py
+================================================================================
+"""Reflex State - thin UI binding layer over the Master App Engine (no business logic here).
+
+PATH: state/app_state.py  (REPLACE ENTIRE FILE)
+
+CHANGE (Module 01 gap-closure item 10): added login_remember_device / toggle_login_remember_device
+for the "Remember this device (skip 2FA for 60 days)" checkbox on Login. submit_login() now
+passes that flag through to MasterAppEngine.attempt_login() and resets it on success.
+run_splash_sequence() now also checks security.is_device_trusted() so the TOTP field correctly
+stays hidden on subsequent logins from an already-trusted device.
+
+CHANGE (Module 01 gap-closure item 8, Settings-controlled tab animation): added
+tab_transition_effects_enabled / tab_transition_mode / tab_transition_active_effect /
+_tab_transition_sequence_index, loaded in on_load, driven by a new _pick_tab_transition_effect
+(mirrors _pick_transition_effect but routes through the same PageTransitionWorker.pick() with
+an independent pool/mode), plus toggle_tab_transition_effect / set_tab_transition_mode for the
+new Settings card, and set_active_tab now picks a fresh tab effect + plays the tab-slide sound
+on every switch.
+
+FIX (the recurring post-splash delay): browser console confirmed React Strict Mode is active
+in this dev build, which deliberately double-invokes mount effects (mount -> cleanup -> mount
+again) to catch missing cleanup logic. Reflex's `on_mount` almost certainly runs through this
+same mechanism, meaning `run_splash_sequence` was very likely starting TWICE on every splash
+mount - the first copy finishes and correctly flips the screen to Login, but the SECOND,
+duplicate copy keeps running in the same per-session event queue, and any click has to wait
+behind it until it finishes. Added `_splash_task_running` as a guard: the second, duplicate
+invocation now exits immediately instead of re-running the whole 5s+2s wait a second time.
+"""
+from __future__ import annotations
+import asyncio
+import random
+import reflex as rx
+from engines.masters.master_app_engine import MasterAppEngine, ShellScreen
+PINNED_SYMBOL_MAP = {
+        "BTCUSD": "B-BTC_USDT",
+        "ETHUSD": "B-ETH_USDT",
+        "Gold": "B-XAU_USDT",  # not yet in Symbol_Registry_Worker - will show "--" until added
+    }
+
+
+
+from config.settings import (
+    THEMES, DEFAULT_THEME_KEY, SIDEBAR_TABS, THEME_ORDER, THEME_LABELS,
+    SPLASH_DURATION_SECONDS, SPLASH_HOLD_SECONDS, TRANSITION_EFFECTS,
+)
+
+
+_engine = MasterAppEngine()
+
+
+
+class AppState(rx.State):
+    screen: str = ShellScreen.SPLASH.value
+    active_tab: str = "Dashboard"
+    theme_key: str = DEFAULT_THEME_KEY
+    paper_mode: bool = True
+    is_locked: bool = False
+    sound_muted: bool = False
+
+
+    totp_required: bool = False
+
+
+    reg_username: str = ""
+    reg_password: str = ""
+    reg_confirm_password: str = ""
+    reg_enable_totp: bool = False
+    reg_error: str = ""
+    reg_stage: str = "form"
+    reg_qr_data_uri: str = ""
+    reg_totp_code: str = ""
+    show_reg_password: bool = False
+    show_reg_confirm_password: bool = False
+
+
+    login_username: str = ""
+    login_password: str = ""
+    login_totp: str = ""
+    login_error: str = ""
+    show_login_password: bool = False
+    show_lock_password: bool = False
+    login_credentials_match: bool = False
+    login_error_seq: int = 0
+    login_remember_device: bool = False
+
+
+    manage_username: str = ""
+    manage_password: str = ""
+    manage_error: str = ""
+    manage_stage: str = "verify"
+    manage_totp_qr: str = ""
+    manage_totp_code: str = ""
+    show_manage_password: bool = False
+    tg_bot_token: str = ""
+    tg_chat_id: str = ""
+    tg_enabled: bool = False
+    tg_configured: bool = False
+    tg_message: str = ""
+    dc_webhook_url: str = ""
+    dc_enabled: bool = False
+    dc_configured: bool = False
+    dc_message: str = ""
+
+
+    forgot_stage: str = "choose"
+    forgot_selected_method: str = ""
+    forgot_code: str = ""
+    forgot_otp_sent: bool = False
+    forgot_verified: bool = False
+    forgot_new_password: str = ""
+    forgot_confirm_password: str = ""
+    forgot_error: str = ""
+    show_forgot_new_password: bool = False
+    show_forgot_confirm_password: bool = False
+    forgot_available_methods: list[str] = []
+    forgot_has_any_method: bool = False
+
+
+    show_logout_dialog: bool = False
+    logout_stage: str = "confirm"
+
+
+    detail_popup_open: bool = False
+    detail_popup_symbol: str = ""
+    ws_status: str = "connected"
+    pinned_prices: dict[str, str] = {}
+    symbol_rows: list[dict] = []
+    deep_history_symbol: str = "B-BTC_USDT"
+    deep_history_timeframe: str = "1m"
+    deep_history_target_days: str = ""
+    deep_history_ceiling_days: str = "Not checked yet"
+    deep_history_covered_days: str = "0"
+    deep_history_is_downloading: bool = False
+    deep_history_status_message: str = ""
+
+
+
+
+
+    transition_effects_enabled: list[str] = ["dissolve", "zoom-in", "slide-up", "flip-x", "blur-in"]
+    transition_mode: str = "shuffle"
+    transition_active_effect: str = "dissolve"
+    _transition_sequence_index: int = 0
+
+    tab_transition_effects_enabled: list[str] = ["slide-left"]
+    tab_transition_mode: str = "single"
+    tab_transition_active_effect: str = "slide-left"
+    _tab_transition_sequence_index: int = 0
+
+    _splash_task_running: bool = False
+    _ws_poll_running: bool = False
+    _price_poll_running: bool = False
+    _deep_history_poll_running: bool = False
+
+
+    def on_load(self) -> None:
+        self.theme_key = _engine.ui.theme.get_active_key()
+        self.paper_mode = _engine.paper_mode
+        self.sound_muted = not _engine.ui.sound.is_master_on()
+        settings = _engine.security.persistence.load()
+        self.transition_effects_enabled = settings.get("transition_effects_enabled", self.transition_effects_enabled)
+        self.transition_mode = settings.get("transition_mode", self.transition_mode)
+        self.tab_transition_effects_enabled = settings.get("tab_transition_effects_enabled", self.tab_transition_effects_enabled)
+        self.tab_transition_mode = settings.get("tab_transition_mode", self.tab_transition_mode)
+        _engine.ensure_market_data_started()
+        self.refresh_symbol_rows()
+        return [AppState.poll_ws_status, AppState.poll_pinned_prices]
+
+
+    async def run_splash_sequence(self):
+        """Fires the bar-fill animation fresh via rx.call_script, waits the fill duration,
+        holds at 100%, then dissolves to Register/Login (hardcoded, never the random pool).
+        Guarded against React Strict Mode's double-invocation of on_mount - see module docstring.
+        """
+        if self._splash_task_running:
+            return
+        self._splash_task_running = True
+        try:
+            duration_ms = int(SPLASH_DURATION_SECONDS * 1000)
+            yield rx.call_script(
+                f"""
+                (function() {{
+                    const fill = document.getElementById('qt19-splash-bar-fill');
+                    const pct = document.getElementById('qt19-splash-pct');
+                    if (fill) {{
+                        fill.style.transition = 'none';
+                        fill.style.transform = 'scaleX(0)';
+                        void fill.offsetWidth;
+                        fill.style.transition = 'transform {SPLASH_DURATION_SECONDS}s linear';
+                        requestAnimationFrame(function() {{ fill.style.transform = 'scaleX(1)'; }});
+                    }}
+                    if (pct) {{ pct.textContent = '0%'; }}
+                    const start = Date.now();
+                    const durationMs = {duration_ms};
+                    const interval = setInterval(function() {{
+                        const elapsed = Date.now() - start;
+                        const percent = Math.min(100, Math.round((elapsed / durationMs) * 100));
+                        if (pct) {{ pct.textContent = percent + '%'; }}
+                        if (elapsed >= durationMs) {{ clearInterval(interval); }}
+                    }}, 100);
+                }})();
+                """
+            )
+            await asyncio.sleep(SPLASH_DURATION_SECONDS)
+            await asyncio.sleep(SPLASH_HOLD_SECONDS)
+            self.totp_required = _engine.security.is_totp_enabled() and not _engine.security.is_device_trusted()
+            self.transition_active_effect = "dissolve"
+            self.screen = _engine.finish_splash().value
+        finally:
+            self._splash_task_running = False
+
+
+    def set_reg_username(self, value: str) -> None:
+        self.reg_username = value
+
+
+    def set_reg_password(self, value: str) -> None:
+        self.reg_password = value
+
+
+    def set_reg_confirm_password(self, value: str) -> None:
+        self.reg_confirm_password = value
+
+
+    def set_reg_totp_code(self, value: str) -> None:
+        self.reg_totp_code = value
+
+
+    def toggle_reg_enable_totp(self, checked: bool) -> None:
+        self.reg_enable_totp = checked
+
+
+    def toggle_show_reg_password(self) -> None:
+        self.show_reg_password = not self.show_reg_password
+
+
+    def toggle_show_reg_confirm_password(self) -> None:
+        self.show_reg_confirm_password = not self.show_reg_confirm_password
+
+
+    def _pick_transition_effect(self) -> None:
+        effect, next_index = _engine.ui.transitions.pick(
+            self.transition_effects_enabled, self.transition_mode, self._transition_sequence_index
+        )
+        self.transition_active_effect = effect
+        self._transition_sequence_index = next_index
+
+
+    def _pick_tab_transition_effect(self) -> None:
+        effect, next_index = _engine.ui.transitions.pick(
+            self.tab_transition_effects_enabled, self.tab_transition_mode, self._tab_transition_sequence_index
+        )
+        self.tab_transition_active_effect = effect
+        self._tab_transition_sequence_index = next_index
+
+
+    def submit_registration(self) -> None:
+        if not self.reg_username.strip():
+            self.reg_error = "Username is required."
+            return
+        if len(self.reg_password) < 4:
+            self.reg_error = "Password must be at least 4 characters."
+            return
+        if self.reg_password != self.reg_confirm_password:
+            self.reg_error = "Passwords do not match."
+            return
+        if not _engine.register_credentials(self.reg_username, self.reg_password):
+            self.reg_error = "Registration failed. Check your username/password and try again."
+            return
+        self.reg_error = ""
+        if self.reg_enable_totp:
+            self.reg_qr_data_uri = _engine.security.begin_totp_enrollment(self.reg_username)
+            self.reg_stage = "qr"
+        else:
+            if _engine.finish_registration_without_totp(self.reg_username, self.reg_password):
+                self.totp_required = False
+                self._pick_transition_effect()
+                self.screen = _engine.screen.value
+
+
+    def confirm_totp_setup(self) -> None:
+        if not self.reg_totp_code.strip():
+            self.reg_error = "Enter the 6-digit code from your authenticator app."
+            return
+        if _engine.finish_registration_with_totp(self.reg_username, self.reg_password, self.reg_totp_code):
+            self.reg_error = ""
+            self.totp_required = True
+            self._pick_transition_effect()
+            self.screen = _engine.screen.value
+        else:
+            self.reg_error = "Incorrect code. Please check your authenticator app and try again."
+
+
+    def skip_totp_setup(self) -> None:
+        self.reg_enable_totp = False
+        if _engine.finish_registration_without_totp(self.reg_username, self.reg_password):
+            self.totp_required = False
+            self._pick_transition_effect()
+            self.screen = _engine.screen.value
+
+
+    def go_to_login(self) -> None:
+        self._pick_transition_effect()
+        self.screen = _engine.go_to_login().value
+
+
+    def go_to_register(self) -> None:
+        self.reg_username = ""
+        self.reg_password = ""
+        self.reg_confirm_password = ""
+        self.reg_enable_totp = False
+        self.reg_error = ""
+        self.reg_stage = "form"
+        self.reg_qr_data_uri = ""
+        self.reg_totp_code = ""
+        self._pick_transition_effect()
+        self.screen = _engine.go_to_register().value
+
+
+    def set_login_username(self, value: str) -> None:
+        self.login_username = value
+        self.login_credentials_match = _engine.security.auth.verify(self.login_username, self.login_password)
+
+
+    def set_login_password(self, value: str) -> None:
+        self.login_password = value
+        self.login_credentials_match = _engine.security.auth.verify(self.login_username, self.login_password)
+
+
+    def set_login_totp(self, value: str) -> None:
+        self.login_totp = value
+
+
+    def toggle_show_login_password(self) -> None:
+        self.show_login_password = not self.show_login_password
+
+
+    def toggle_show_lock_password(self) -> None:
+        self.show_lock_password = not self.show_lock_password
+
+
+    def toggle_login_remember_device(self, checked: bool) -> None:
+        self.login_remember_device = checked
+
+
+    def submit_login(self) -> None:
+        if not self.login_username.strip() or len(self.login_password) < 4:
+            self.login_error = "Enter your username and password."
+            self.login_error_seq += 1
+            return self.play_sound("error")
+        ok = _engine.attempt_login(self.login_username, self.login_password, self.login_totp or None, self.login_remember_device)
+        if ok:
+            self.login_error = ""
+            self.login_password = ""
+            self.login_totp = ""
+            self.login_remember_device = False
+            self.login_credentials_match = False
+            self._pick_transition_effect()
+            self.screen = _engine.screen.value
+        else:
+            self.login_error = "Invalid credentials or authenticator code."
+            self.login_error_seq += 1
+            return self.play_sound("error")
+
+
+    def lock_app(self) -> None:
+        _engine.lock()
+        self._pick_transition_effect()
+        self.screen = _engine.screen.value
+        self.is_locked = True
+
+
+    def unlock_app(self) -> None:
+        if len(self.login_password) < 4:
+            self.login_error = "Password must be at least 4 characters."
+            return
+        ok = _engine.unlock(self.login_password, self.login_totp or None)
+        if ok:
+            self.login_error = ""
+            self.login_password = ""
+            self.login_totp = ""
+            self._pick_transition_effect()
+            self.screen = _engine.screen.value
+            self.is_locked = False
+        else:
+            self.login_error = "Invalid credentials or authenticator code."
+
+
+    def begin_manage_security(self) -> None:
+        self.manage_username = ""
+        self.manage_password = ""
+        self.manage_error = ""
+        self.manage_stage = "verify"
+        self.manage_totp_qr = ""
+        self.manage_totp_code = ""
+        self.tg_bot_token = ""
+        self.tg_chat_id = ""
+        self.tg_enabled = _engine.security.is_telegram_enabled()
+        self.tg_configured = _engine.manage_is_telegram_configured()
+        self.tg_message = ""
+        self.dc_webhook_url = ""
+        self.dc_enabled = _engine.security.is_discord_enabled()
+        self.dc_configured = _engine.manage_is_discord_configured()
+        self.dc_message = ""
+        self.totp_required = _engine.security.is_totp_enabled()
+        self._pick_transition_effect()
+        self.screen = _engine.begin_manage_security().value
+
+
+    def set_manage_username(self, value: str) -> None:
+        self.manage_username = value
+
+
+    def set_manage_password(self, value: str) -> None:
+        self.manage_password = value
+
+
+    def toggle_show_manage_password(self) -> None:
+        self.show_manage_password = not self.show_manage_password
+
+
+    def verify_manage_identity(self) -> None:
+        if _engine.verify_manage_security_identity(self.manage_username, self.manage_password):
+            self.manage_error = ""
+            self.manage_stage = "panel"
+            self.totp_required = _engine.security.is_totp_enabled()
+        else:
+            self.manage_error = "Incorrect username or password."
+
+
+    def start_enable_totp(self) -> None:
+        self.manage_totp_qr = _engine.manage_totp_begin_enable(self.manage_username)
+        self.manage_stage = "totp_qr"
+
+
+    def set_manage_totp_code(self, value: str) -> None:
+        self.manage_totp_code = value
+
+
+    def confirm_enable_totp(self) -> None:
+        if not self.manage_totp_code.strip():
+            self.manage_error = "Enter the 6-digit code from your authenticator app."
+            return
+        if _engine.manage_totp_confirm_enable(self.manage_totp_code):
+            self.manage_error = ""
+            self.manage_stage = "panel"
+            self.totp_required = True
+        else:
+            self.manage_error = "Incorrect code. Please try again."
+
+
+    def disable_totp(self) -> None:
+        _engine.manage_totp_disable()
+        self.totp_required = False
+
+
+    def set_tg_bot_token(self, value: str) -> None:
+        self.tg_bot_token = value
+
+
+    def set_tg_chat_id(self, value: str) -> None:
+        self.tg_chat_id = value
+
+
+    def toggle_tg_enabled(self, checked: bool) -> None:
+        self.tg_enabled = checked
+
+
+    def save_telegram(self) -> None:
+        _engine.manage_save_telegram(self.tg_bot_token, self.tg_chat_id, self.tg_enabled)
+        self.tg_configured = _engine.manage_is_telegram_configured()
+        self.tg_bot_token = ""
+        self.tg_message = "Saved." if self.tg_configured else "Saved, but no bot token/chat ID is on file yet - enter both once."
+
+
+    def test_telegram(self) -> None:
+        success, detail = _engine.manage_test_telegram()
+        self.tg_message = detail
+
+
+    def set_dc_webhook_url(self, value: str) -> None:
+        self.dc_webhook_url = value
+
+
+    def toggle_dc_enabled(self, checked: bool) -> None:
+        self.dc_enabled = checked
+
+
+    def save_discord(self) -> None:
+        _engine.manage_save_discord(self.dc_webhook_url, self.dc_enabled)
+        self.dc_configured = _engine.manage_is_discord_configured()
+        self.dc_webhook_url = ""
+        self.dc_message = "Saved." if self.dc_configured else "Saved, but no webhook URL is on file yet - enter one once."
+
+
+    def test_discord(self) -> None:
+        success, detail = _engine.manage_test_discord()
+        self.dc_message = detail
+
+
+    def finish_manage_security(self) -> None:
+        self._pick_transition_effect()
+        self.screen = _engine.finish_manage_security().value
+
+
+    def begin_forgot_password(self) -> None:
+        self.forgot_selected_method = ""
+        self.forgot_code = ""
+        self.forgot_otp_sent = False
+        self.forgot_verified = False
+        self.forgot_new_password = ""
+        self.forgot_confirm_password = ""
+        self.forgot_error = ""
+        self.forgot_has_any_method = _engine.has_any_recovery_method()
+        self.forgot_available_methods = _engine.available_reset_methods()
+        self.forgot_stage = "reset" if not self.forgot_has_any_method else "choose"
+        self._pick_transition_effect()
+        self.screen = _engine.begin_forgot_password().value
+
+
+    def cancel_forgot_password(self) -> None:
+        self.forgot_new_password = ""
+        self.forgot_confirm_password = ""
+        self.forgot_error = ""
+        self._pick_transition_effect()
+        self.screen = _engine.cancel_forgot_password().value
+
+
+    def select_forgot_method(self, method: str) -> None:
+        self.forgot_selected_method = method
+        self.forgot_error = ""
+        if method == "totp":
+            self.forgot_stage = "enter_code"
+        else:
+            if _engine.send_forgot_otp(method):
+                self.forgot_otp_sent = True
+                self.forgot_stage = "enter_code"
+            else:
+                self.forgot_error = f"Could not send a code via {method.title()}. Check the channel configuration in Manage Account Security."
+
+
+    def resend_forgot_otp(self) -> None:
+        if self.forgot_selected_method in ("telegram", "discord"):
+            _engine.send_forgot_otp(self.forgot_selected_method)
+            self.forgot_otp_sent = True
+
+
+    def set_forgot_code(self, value: str) -> None:
+        self.forgot_code = value
+
+
+    def verify_forgot_identity(self) -> None:
+        if not self.forgot_code.strip():
+            self.forgot_error = "Enter the code."
+            return
+        if _engine.verify_identity_for_reset(self.forgot_selected_method, self.forgot_code):
+            self.forgot_error = ""
+            self.forgot_verified = True
+            self.forgot_stage = "reset"
+        else:
+            self.forgot_error = "That code did not match. Double-check and try again."
+
+
+    def set_forgot_new_password(self, value: str) -> None:
+        self.forgot_new_password = value
+
+
+    def set_forgot_confirm_password(self, value: str) -> None:
+        self.forgot_confirm_password = value
+
+
+    def toggle_show_forgot_new_password(self) -> None:
+        self.show_forgot_new_password = not self.show_forgot_new_password
+
+
+    def toggle_show_forgot_confirm_password(self) -> None:
+        self.show_forgot_confirm_password = not self.show_forgot_confirm_password
+
+
+    def submit_new_password(self) -> None:
+        if len(self.forgot_new_password) < 4:
+            self.forgot_error = "Password must be at least 4 characters."
+            return
+        if self.forgot_new_password != self.forgot_confirm_password:
+            self.forgot_error = "Passwords do not match."
+            return
+        if self.forgot_verified:
+            ok = _engine.reset_password(self.forgot_new_password)
+        else:
+            ok = _engine.reset_password_unverified(self.forgot_new_password)
+        if ok:
+            self.forgot_error = ""
+            self._pick_transition_effect()
+            self.screen = _engine.screen.value
+        else:
+            self.forgot_error = "Could not reset password. Please try again."
+
+
+    def open_logout_dialog(self) -> None:
+        self.logout_stage = "trade_choice" if _engine.has_open_trades() else "confirm"
+        self.show_logout_dialog = True
+
+
+    def close_logout_dialog(self) -> None:
+        self.show_logout_dialog = False
+
+
+    def _do_logout(self, close_trades: bool | None) -> None:
+        self._pick_transition_effect()
+        self.screen = _engine.logout(close_trades).value
+        self.show_logout_dialog = False
+        self.login_username = ""
+        self.login_password = ""
+        self.login_totp = ""
+        self.login_error = ""
+        self.login_credentials_match = False
+
+
+    def confirm_logout_no_trades(self) -> None:
+        self._do_logout(None)
+
+
+    def confirm_logout_close_trades(self) -> None:
+        self._do_logout(True)
+
+
+    def confirm_logout_keep_trades(self) -> None:
+        self._do_logout(False)
+
+
+    def set_active_tab(self, tab: str) -> None:
+        self.active_tab = tab
+        self.detail_popup_open = False
+        self._pick_tab_transition_effect()
+        return self.play_sound("tab-slide")
+
+
+    def set_theme(self, key: str) -> None:
+        if _engine.ui.theme.set_active_key(key):
+            self.theme_key = key
+
+
+    def toggle_sound(self) -> None:
+        is_on = _engine.ui.sound.toggle_master()
+        self.sound_muted = not is_on
+
+
+    def play_sound(self, event_name: str):
+        url = _engine.ui.play_sound(event_name)
+        if not url:
+            return
+        return rx.call_script(
+            f"(function(){{ try {{ new Audio('{url}').play().catch(function(){{}}); }} "
+            f"catch(e) {{}} }})();"
+        )
+
+
+    @rx.event(background=True)
+    async def poll_ws_status(self):
+        async with self:
+            if self._ws_poll_running:
+                return
+            self._ws_poll_running = True
+        try:
+            while True:
+                async with self:
+                    self.ws_status = _engine.get_market_data_health()
+                await asyncio.sleep(3)
+        finally:
+            async with self:
+                self._ws_poll_running = False
+
+
+
+    @rx.event(background=True)
+    async def poll_pinned_prices(self):
+        async with self:
+            if getattr(self, "_price_poll_running", False):
+                return
+            self._price_poll_running = True
+        try:
+            while True:
+                snapshot = {}
+                for display_name, real_symbol in PINNED_SYMBOL_MAP.items():
+                    candle = _engine.market_data.get_live_candle(real_symbol, "1m")
+                    if candle:
+                        snapshot[display_name] = f"{candle.close:,.2f}"
+                    else:
+                        snapshot[display_name] = "--"
+                async with self:
+                    self.pinned_prices = snapshot
+                await asyncio.sleep(2)
+        finally:
+            async with self:
+                self._price_poll_running = False
+
+
+    def toggle_paper_live(self) -> None:
+        self.paper_mode = _engine.toggle_paper_live()
+
+    def refresh_symbol_rows(self) -> None:
+        """Rebuilds the Dashboard table's row list: favorites first
+        (alphabetical), then everything else (alphabetical)."""
+        registry = _engine.market_data.symbol_registry
+        ordered_symbols = registry.get_symbols_sorted(active_only=True)
+        rows = []
+        for symbol in ordered_symbols:
+            info = registry.get_symbol_info(symbol)
+            rows.append({
+                "symbol": symbol,
+                "is_favorite": info.is_favorite if info else False,
+            })
+        self.symbol_rows = rows
+
+
+        
+    def toggle_favorite(self, symbol: str) -> None:
+        registry = _engine.market_data.symbol_registry
+        info = registry.get_symbol_info(symbol)
+        if info is None:
+            return
+        registry.set_favorite(symbol, not info.is_favorite)
+        self.refresh_symbol_rows()
+
+
+
+    def set_deep_history_symbol(self, value: str) -> None:
+        self.deep_history_symbol = value
+        self.refresh_deep_history_status()
+
+    def set_deep_history_timeframe(self, value: str) -> None:
+        self.deep_history_timeframe = value
+        self.refresh_deep_history_status()
+
+    def set_deep_history_target_days(self, value: str) -> None:
+        self.deep_history_target_days = value
+
+    def check_deep_history_ceiling(self):
+        self.deep_history_status_message = "Checking real ceiling... this can take a few minutes for 1m/5m."
+        _engine.market_data.start_ceiling_probe(self.deep_history_symbol, self.deep_history_timeframe)
+        return AppState.poll_deep_history_status
+
+    def refresh_deep_history_status(self) -> None:
+        progress = _engine.market_data.get_deep_history_progress(
+            self.deep_history_symbol, self.deep_history_timeframe
+        )
+        self.deep_history_covered_days = str(progress["covered_days"])
+        ceiling = _engine.market_data.get_ceiling_days(self.deep_history_symbol, self.deep_history_timeframe)
+        self.deep_history_ceiling_days = f"{ceiling} days" if ceiling is not None else "Not checked yet"
+
+    def start_deep_history_download(self):
+        try:
+            target = int(self.deep_history_target_days) if self.deep_history_target_days.strip() else None
+        except ValueError:
+            self.deep_history_status_message = "Enter a valid whole number of days, or leave blank for 'download all'."
+            return
+        self.deep_history_is_downloading = True
+        self.deep_history_status_message = "Download started..."
+        _engine.market_data.start_deep_history(self.deep_history_symbol, self.deep_history_timeframe, target)
+        return AppState.poll_deep_history_status
+
+    def cancel_deep_history_download(self) -> None:
+        _engine.market_data.cancel_deep_history(self.deep_history_symbol, self.deep_history_timeframe)
+        self.deep_history_is_downloading = False
+        self.deep_history_status_message = "Cancelled."
+
+    def delete_deep_history_data(self) -> None:
+        _engine.market_data.delete_deep_history(self.deep_history_symbol, self.deep_history_timeframe)
+        self.deep_history_status_message = "Deep archive deleted for this symbol (all its timeframes). 5-day baseline is untouched."
+        self.refresh_deep_history_status()
+
+    @rx.event(background=True)
+    async def poll_deep_history_status(self):
+        async with self:
+            if self._deep_history_poll_running:
+                return
+            self._deep_history_poll_running = True
+        try:
+            still_active = True
+            while still_active:
+                async with self:
+                    self.refresh_deep_history_status()
+                    still_active = (
+                        _engine.market_data.deep_history_downloader.is_downloading(
+                            self.deep_history_symbol, self.deep_history_timeframe
+                        )
+                        or _engine.market_data.depth_prober.is_probing(
+                            self.deep_history_symbol, self.deep_history_timeframe
+                        )
+                    )
+                    if not still_active:
+                        self.deep_history_is_downloading = False
+                        if self.deep_history_status_message == "Download started...":
+                            self.deep_history_status_message = "Download complete or paused (target reached)."
+                await asyncio.sleep(3)
+        finally:
+            async with self:
+                self._deep_history_poll_running = False
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
+
+
+
+
+
+
+    def open_detail_popup(self, symbol: str) -> None:
+        self.detail_popup_symbol = symbol
+        self.detail_popup_open = True
+
+
+    def close_detail_popup(self) -> None:
+        self.detail_popup_open = False
+
+
+    def toggle_transition_effect(self, effect: str, checked: bool) -> None:
+        current = list(self.transition_effects_enabled)
+        if checked and effect not in current:
+            current.append(effect)
+        elif not checked and effect in current:
+            current.remove(effect)
+        if not current:
+            current = [effect]
+        self.transition_effects_enabled = current
+        _engine.security.persistence.save({"transition_effects_enabled": current})
+
+
+    def set_transition_mode(self, mode: str) -> None:
+        self.transition_mode = mode
+        _engine.security.persistence.save({"transition_mode": mode})
+
+
+    def toggle_tab_transition_effect(self, effect: str, checked: bool) -> None:
+        current = list(self.tab_transition_effects_enabled)
+        if checked and effect not in current:
+            current.append(effect)
+        elif not checked and effect in current:
+            current.remove(effect)
+        if not current:
+            current = [effect]
+        self.tab_transition_effects_enabled = current
+        _engine.security.persistence.save({"tab_transition_effects_enabled": current})
+
+
+    def set_tab_transition_mode(self, mode: str) -> None:
+        self.tab_transition_mode = mode
+        _engine.security.persistence.save({"tab_transition_mode": mode})
+
+
+    @rx.var
+    def theme_vars(self) -> dict[str, str]:
+        t = THEMES[self.theme_key]
+        return {
+            "accent": t.accent, "accent_glow": t.accent_glow, "bg_from": t.bg_from, "bg_to": t.bg_to,
+            "glass_bg": t.glass_bg, "glass_border": t.glass_border,
+            "text_primary": t.text_primary, "text_muted": t.text_muted,
+        }
+
+
+    @rx.var
+    def sidebar_tabs(self) -> list[str]:
+        return SIDEBAR_TABS
+
+
+    @rx.var
+    def theme_options(self) -> list[dict[str, str]]:
+        return [{"key": k, "label": THEME_LABELS[k]} for k in THEME_ORDER]
+
+
+    @rx.var
+    def transition_effect_options(self) -> list[dict[str, str]]:
+        return [{"key": k, "label": v} for k, v in TRANSITION_EFFECTS.items()]
+
+
+
+================================================================================
+FILE: ui\pages\trading_panel.py
+================================================================================
+from __future__ import annotations
+import reflex as rx
+from ui.theme.glass import GLASS_CARD_3XL_STYLE
+
+def trading_panel_page():
+    return rx.vstack(rx.heading("Trading Panel", size="6"),
+        rx.box(rx.text("Chart + POI/FVG overlay, risk sidebar, and status bar land in later modules.", color="var(--qt19-text-muted)", font_size="0.85rem"), style=GLASS_CARD_3XL_STYLE, width="100%", margin_top="1rem"),
+        width="100%", spacing="3")
+
+
+
+================================================================================
+FILE: ui\pages\settings.py
+================================================================================
+"""Settings tab - App-Shell placeholder page, now tab-segregated + grid-arranged.
+
+PATH: ui/pages/settings.py (REPLACE ENTIRE FILE)
+
+CHANGE: cards are now grouped into logical rx.tabs matching the categories
+named in the locked mockup (Appearance, Data & Connection, and placeholders
+for categories not yet built), and arranged in a responsive multi-column
+grid instead of one full-width vstack, eliminating large empty side gaps.
+"""
+from __future__ import annotations
+import reflex as rx
+from state.app_state import AppState
+from ui.theme.glass import GLASS_CARD_3XL_STYLE
+from ui.components.deep_historical_data_card import deep_historical_data_card
+
+
+def _effect_checkbox(opt: dict[str, str]) -> rx.Component:
+    return rx.hstack(
+        rx.checkbox(
+            checked=AppState.transition_effects_enabled.contains(opt["key"]),
+            on_change=lambda checked: AppState.toggle_transition_effect(opt["key"], checked),
+        ),
+        rx.text(opt["label"], font_size="0.82rem"),
+        spacing="2", align_items="center", width="100%",
+    )
+
+
+def _tab_effect_checkbox(opt: dict[str, str]) -> rx.Component:
+    return rx.hstack(
+        rx.checkbox(
+            checked=AppState.tab_transition_effects_enabled.contains(opt["key"]),
+            on_change=lambda checked: AppState.toggle_tab_transition_effect(opt["key"], checked),
+        ),
+        rx.text(opt["label"], font_size="0.82rem"),
+        spacing="2", align_items="center", width="100%",
+    )
+
+
+def _transition_effects_card() -> rx.Component:
+    return rx.vstack(
+        rx.heading("Login \u2192 Dashboard Transition", size="4"),
+        rx.text("Pick which entrance animations are allowed, and how they're chosen each time you log in.",
+                font_size="0.8rem", color="var(--qt19-text-muted)"),
+        rx.hstack(
+            rx.text("Mode:", font_size="0.82rem", font_weight="600"),
+            rx.select(
+                ["single", "sequential", "shuffle"],
+                value=AppState.transition_mode,
+                on_change=AppState.set_transition_mode,
+                width="180px",
+            ),
+            spacing="3", align_items="center",
+        ),
+        rx.grid(
+            rx.foreach(AppState.transition_effect_options, _effect_checkbox),
+            columns="2", spacing="2", width="100%", margin_top="0.5rem",
+        ),
+        spacing="3", width="100%", style=GLASS_CARD_3XL_STYLE,
+    )
+
+
+def _tab_transition_card() -> rx.Component:
+    return rx.vstack(
+        rx.heading("Tab Switch Animation", size="4"),
+        rx.text("Controls the effect used when switching between Dashboard, Trading Panel, "
+                "Journal & Reports, Alerts, and Settings.",
+                font_size="0.8rem", color="var(--qt19-text-muted)"),
+        rx.hstack(
+            rx.text("Mode:", font_size="0.82rem", font_weight="600"),
+            rx.select(
+                ["single", "sequential", "shuffle"],
+                value=AppState.tab_transition_mode,
+                on_change=AppState.set_tab_transition_mode,
+                width="180px",
+            ),
+            spacing="3", align_items="center",
+        ),
+        rx.grid(
+            rx.foreach(AppState.transition_effect_options, _tab_effect_checkbox),
+            columns="2", spacing="2", width="100%", margin_top="0.5rem",
+        ),
+        spacing="3", width="100%", style=GLASS_CARD_3XL_STYLE,
+    )
+
+
+def _coming_soon_card(title: str, note: str) -> rx.Component:
+    return rx.vstack(
+        rx.heading(title, size="4"),
+        rx.text(note, font_size="0.8rem", color="var(--qt19-text-muted)"),
+        rx.badge("Coming in a later module", variant="soft", margin_top="0.5rem"),
+        spacing="2", width="100%", style=GLASS_CARD_3XL_STYLE,
+    )
+
+
+def _appearance_tab() -> rx.Component:
+    return rx.grid(
+        _transition_effects_card(),
+        _tab_transition_card(),
+        _coming_soon_card("Theme", "6 selectable themes (Yellow/Saffron/Blue x Day/Night)."),
+        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="3"),
+        spacing="4", width="100%", margin_top="1rem",
+    )
+
+
+def _data_connection_tab() -> rx.Component:
+    return rx.grid(
+        deep_historical_data_card(),
+        _coming_soon_card("Symbols & Rows", "Choose which symbols appear on the Dashboard."),
+        _coming_soon_card("Tick Bands & Alerts", "Per-symbol tick-size and alert-band configuration."),
+        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="2"),
+        spacing="4", width="100%", margin_top="1rem",
+    )
+
+
+def _security_tab() -> rx.Component:
+    return rx.grid(
+        _coming_soon_card("Login & 2FA", "Manage password and TOTP authenticator settings."),
+        _coming_soon_card("Notification Channels", "Telegram / Discord multi-recipient setup."),
+        _coming_soon_card("Startup & Tray", "Run-on-startup and system tray behavior."),
+        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="3"),
+        spacing="4", width="100%", margin_top="1rem",
+    )
+
+
+def _trading_tab() -> rx.Component:
+    return rx.grid(
+        _coming_soon_card("POI Timeframes", "Toggle PDH/PDL, 4H H/L, FVG, Order Block, etc."),
+        _coming_soon_card("Signal Bias Filter", "Market-aware auto-disable rules for filters."),
+        _coming_soon_card("Paper Trading", "Paper/Live toggle defaults and simulator settings."),
+        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="3"),
+        spacing="4", width="100%", margin_top="1rem",
+    )
+
+
+def settings_page() -> rx.Component:
+    return rx.vstack(
+        rx.heading("Settings", size="6"),
+        rx.tabs.root(
+            rx.tabs.list(
+                rx.tabs.trigger("Appearance", value="appearance"),
+                rx.tabs.trigger("Data & Connection", value="data"),
+                rx.tabs.trigger("Security & Notifications", value="security"),
+                rx.tabs.trigger("Trading Defaults", value="trading"),
+            ),
+            rx.tabs.content(_appearance_tab(), value="appearance"),
+            rx.tabs.content(_data_connection_tab(), value="data"),
+            rx.tabs.content(_security_tab(), value="security"),
+            rx.tabs.content(_trading_tab(), value="trading"),
+            default_value="appearance",
+            width="100%",
+        ),
+        width="100%", spacing="3",
+    )
+
+
+
+================================================================================
+FILE: ui\components\deep_historical_data_card.py
+================================================================================
+"""
+FULL PATH: ui/components/deep_historical_data_card.py   <-- SAVE HERE, EXACT PATH
+
+Settings card: numeric day-count input, with clear labels for the real
+discovered ceiling and what is already downloaded, so the user can make
+an informed choice.
+"""
+from __future__ import annotations
+import reflex as rx
+from state.app_state import AppState
+from ui.theme.glass import GLASS_CARD_STYLE
+
+_TIMEFRAME_OPTIONS = ["1m", "5m", "15m"]
+
+
+def deep_historical_data_card() -> rx.Component:
+    return rx.vstack(
+        rx.text("Deep Historical Data", font_weight="700", font_size="1.1rem", color="var(--qt19-text-primary)"),
+        rx.text(
+            "Downloads extra candle history beyond the always-on 5-day baseline, "
+            "purely to build a local archive for future ML/RL training. Never competes "
+            "with live trading for API priority.",
+            font_size="0.8rem", color="var(--qt19-text-muted)",
+        ),
+
+        rx.hstack(
+            rx.text("Symbol:", font_size="0.85rem", color="var(--qt19-text-primary)"),
+            rx.input(
+                value=AppState.deep_history_symbol,
+                on_change=AppState.set_deep_history_symbol,
+                width="160px", border_radius="0.75rem",
+            ),
+            rx.text("Timeframe:", font_size="0.85rem", color="var(--qt19-text-primary)"),
+            rx.select(
+                _TIMEFRAME_OPTIONS,
+                value=AppState.deep_history_timeframe,
+                on_change=AppState.set_deep_history_timeframe,
+                width="100px",
+            ),
+            spacing="3", align_items="center",
+        ),
+
+        rx.hstack(
+            rx.vstack(
+                rx.text("Real ceiling (actual max CoinDCX offers)", font_size="0.75rem", color="var(--qt19-text-muted)"),
+                rx.text(AppState.deep_history_ceiling_days, font_weight="700", font_size="1rem", color="var(--qt19-accent)"),
+                spacing="1", align_items="start",
+            ),
+            rx.vstack(
+                rx.text("Already downloaded & saved", font_size="0.75rem", color="var(--qt19-text-muted)"),
+                rx.text(f"{AppState.deep_history_covered_days} days", font_weight="700", font_size="1rem", color="var(--qt19-text-primary)"),
+                spacing="1", align_items="start",
+            ),
+            rx.button(
+                "Check Real Ceiling", on_click=AppState.check_deep_history_ceiling,
+                size="2", variant="outline", border_radius="9999px",
+            ),
+            spacing="6", align_items="start", margin_top="0.5rem",
+        ),
+
+        rx.hstack(
+            rx.text("Download this many extra days:", font_size="0.85rem", color="var(--qt19-text-primary)"),
+            rx.input(
+                placeholder="e.g. 365 (blank = download all, up to the real ceiling)",
+                value=AppState.deep_history_target_days,
+                on_change=AppState.set_deep_history_target_days,
+                width="320px", border_radius="0.75rem", type="number",
+            ),
+            spacing="3", align_items="center", margin_top="0.5rem",
+        ),
+
+        rx.hstack(
+            rx.button(
+                rx.cond(AppState.deep_history_is_downloading, "Downloading...", "Start Download"),
+                on_click=AppState.start_deep_history_download,
+                disabled=AppState.deep_history_is_downloading,
+                border_radius="9999px", style={"background": "var(--qt19-accent)", "color": "white"},
+            ),
+            rx.button(
+                "Cancel", on_click=AppState.cancel_deep_history_download,
+                disabled=~AppState.deep_history_is_downloading,
+                variant="outline", border_radius="9999px",
+            ),
+            rx.button(
+                "Delete Downloaded Data", on_click=AppState.delete_deep_history_data,
+                variant="outline", color_scheme="red", border_radius="9999px",
+            ),
+            spacing="3", margin_top="0.75rem",
+        ),
+
+        rx.text(AppState.deep_history_status_message, font_size="0.78rem", color="var(--qt19-text-muted)", margin_top="0.3rem"),
+
+        style=GLASS_CARD_STYLE, width="100%", spacing="3", padding="1.25rem",
+    )
+
+
+
+================================================================================
+FILE: tests\monitors\test_poi_monitor_assembly.py
+================================================================================
+"""
+FULL PATH: tests/monitors/test_poi_monitor_assembly.py (NEW FILE)
+
+Tier 2 integration checks for POIMonitor. Uses real File 03 Workers wired
+through the real assembly, with mocked File 02 public interface + fake symbol
+registry. No network calls.
+
+Covers:
+- get_active_pois(symbol) returns only that symbol's independently-built POIs
+- get_poi_state(symbol, poi_id) returns state without cross-symbol leakage
+- set_poi_type_enabled(type, bool) fans out over active symbols
+- all 13 POIType toggles route to the appropriate Worker live
+
+Run:
+    pytest tests/monitors/test_poi_monitor_assembly.py -v
+"""
+from __future__ import annotations
+
+import pytest
+
+from engines.monitors.poi_monitor import POIMonitor
+from engines.workers.poi.poi_types import DEFAULT_ENABLED, POI, POIState, POIStateRecord, POIType
+from tests.workers.poi.poi_test_helpers import FakeMarketDataMonitor, FakeSymbolRegistry, candle, flat_candles
+
+SYMBOLS = ("B-BTC_USDT", "B-ETH_USDT")
+
+
+def _populate_minimal_htf_data(mdm: FakeMarketDataMonitor) -> None:
+    """Supply enough candles for availability gates while making all detector
+    types deterministic/no-op by default. The final 1D/4H row is treated as
+    forming by POILevelCalculatorWorker, so index -2 becomes the known POI."""
+    mdm.set_series("1H", flat_candles(30))
+    mdm.set_series("4H", [
+        candle(100, 102, 98, 101), candle(101, 103, 99, 102),
+        candle(102, 104, 100, 103), candle(103, 105, 101, 104),
+        candle(104, 106, 102, 105), candle(105, 107, 103, 106),
+        candle(106, 112, 108, 110),  # completed (index -2): 4H H/L=112/108
+        candle(110, 113, 109, 111),  # forming, excluded
+    ])
+    mdm.set_series("1D", [
+        candle(100, 102, 98, 101),
+        candle(101, 105, 95, 100),  # completed (index -2): PDH/PDL=105/95
+        candle(100, 103, 99, 102),  # forming, excluded
+    ])
+    mdm.set_series("1W", [
+        candle(100, 110, 90, 105), candle(105, 112, 95, 108),
+    ])
+    mdm.set_series("1M", [
+        candle(100, 115, 85, 110), candle(110, 120, 90, 112),
+    ])
+    mdm.set_live("1H", candle(100, 101, 99, 100))
+    mdm.set_live("4H", candle(110, 113, 109, 111))
+    mdm.set_live("1D", candle(100, 103, 99, 102))
+    mdm.set_live("1W", candle(105, 112, 95, 108))
+    mdm.set_live("1M", candle(110, 120, 90, 112))
+
+
+@pytest.fixture
+def monitor():
+    mdm = FakeMarketDataMonitor()
+    _populate_minimal_htf_data(mdm)
+    registry = FakeSymbolRegistry(SYMBOLS)
+    return POIMonitor(mdm, registry)
+
+
+def test_get_active_pois_returns_default_line_pois_for_each_symbol_independently(monitor):
+    btc = monitor.get_active_pois("B-BTC_USDT")
+    eth = monitor.get_active_pois("B-ETH_USDT")
+
+    expected_types = {POIType.PDH, POIType.PDL, POIType.H4_HIGH, POIType.H4_LOW}
+    assert {p.poi_type for p in btc} == expected_types
+    assert {p.poi_type for p in eth} == expected_types
+    assert all(p.symbol == "B-BTC_USDT" for p in btc)
+    assert all(p.symbol == "B-ETH_USDT" for p in eth)
+
+    btc_prices = {p.poi_type: p.price for p in btc}
+    assert btc_prices == {
+        POIType.PDH: 105,
+        POIType.PDL: 95,
+        POIType.H4_HIGH: 112,
+        POIType.H4_LOW: 108,
+    }
+
+
+def test_get_poi_state_returns_only_requested_symbol_state(monitor):
+    btc_pdh = next(p for p in monitor.get_active_pois("B-BTC_USDT") if p.poi_type == POIType.PDH)
+    eth_pdh = next(p for p in monitor.get_active_pois("B-ETH_USDT") if p.poi_type == POIType.PDH)
+
+    # Force distinct values into the assembly-owned state registry, then use
+    # public retrieval only. This proves no poi_id/symbol namespace collision.
+    monitor._states["B-BTC_USDT"][btc_pdh.poi_id] = POIStateRecord(
+        poi_id=btc_pdh.poi_id, symbol="B-BTC_USDT", distance_ticks=5,
+        state=POIState.APPROACHING, last_touch_ts=None, last_price=100,
+    )
+    monitor._states["B-ETH_USDT"][eth_pdh.poi_id] = POIStateRecord(
+        poi_id=eth_pdh.poi_id, symbol="B-ETH_USDT", distance_ticks=0,
+        state=POIState.HIT, last_touch_ts=123.0, last_price=105,
+    )
+
+    btc_state = monitor.get_poi_state("B-BTC_USDT", btc_pdh.poi_id)
+    eth_state = monitor.get_poi_state("B-ETH_USDT", eth_pdh.poi_id)
+    assert btc_state.state == POIState.APPROACHING
+    assert eth_state.state == POIState.HIT
+    assert monitor.get_poi_state("B-BTC_USDT", eth_pdh.poi_id) is None
+    assert monitor.get_poi_state("UNKNOWN", btc_pdh.poi_id) is None
+
+
+@pytest.mark.parametrize("poi_type", list(POIType))
+def test_every_poi_type_toggle_fans_out_to_all_symbols(monitor, poi_type):
+    """Literal File 03 check gate: every one of the 13 Settings toggles must
+    turn its calculation on/off live across every currently active symbol."""
+    monitor.set_poi_type_enabled(poi_type, True)
+    for symbol in SYMBOLS:
+        assert monitor._enabled_types[symbol][poi_type] is True
+
+    monitor.set_poi_type_enabled(poi_type, False)
+    for symbol in SYMBOLS:
+        assert monitor._enabled_types[symbol][poi_type] is False
+        assert not any(p.poi_type == poi_type for p in monitor.get_active_pois(symbol))
+
+
+def test_disabling_one_line_type_removes_only_that_type_and_preserves_others(monitor):
+    monitor.set_poi_type_enabled(POIType.PDH, False)
+    for symbol in SYMBOLS:
+        types = {p.poi_type for p in monitor.get_active_pois(symbol)}
+        assert POIType.PDH not in types
+        assert {POIType.PDL, POIType.H4_HIGH, POIType.H4_LOW}.issubset(types)
+
+
+def test_set_fvg_enabled_routes_to_fvg_worker_and_updates_both_symbols(monitor):
+    monitor.set_poi_type_enabled(POIType.FVG, True)
+    for symbol in SYMBOLS:
+        assert monitor._fvg_workers[symbol].enabled_types[POIType.FVG] is True
+
+    monitor.set_poi_type_enabled(POIType.FVG, False)
+    for symbol in SYMBOLS:
+        assert monitor._fvg_workers[symbol]._pois == {}
+
+
+def test_set_order_block_enabled_routes_to_orderblock_worker_and_updates_both_symbols(monitor):
+    monitor.set_poi_type_enabled(POIType.ORDER_BLOCK, True)
+    for symbol in SYMBOLS:
+        assert monitor._ob_workers[symbol].enabled_types[POIType.ORDER_BLOCK] is True
+
+    monitor.set_poi_type_enabled(POIType.ORDER_BLOCK, False)
+    for symbol in SYMBOLS:
+        assert monitor._ob_workers[symbol]._pois == {}
+
+
+def test_set_inverse_fvg_enabled_routes_to_inverse_worker_and_updates_both_symbols(monitor):
+    monitor.set_poi_type_enabled(POIType.INVERSE_FVG, True)
+    for symbol in SYMBOLS:
+        assert monitor._inv_workers[symbol].enabled_types[POIType.INVERSE_FVG] is True
+
+    monitor.set_poi_type_enabled(POIType.INVERSE_FVG, False)
+    for symbol in SYMBOLS:
+        assert monitor._inv_workers[symbol]._pois == {}
+
+
+def test_unknown_symbol_has_no_pois_or_health(monitor):
+    assert monitor.get_active_pois("UNKNOWN") == []
+    assert monitor.get_health("UNKNOWN") == "DOWN"
+
+
+
+================================================================================
+FILE: tests\workers\poi\poi_test_helpers.py
+================================================================================
+"""
+FULL PATH: tests/workers/poi/poi_test_helpers.py (NEW FILE)
+
+Shared deterministic test doubles/builders for File 03 POI Worker tests.
+These are test-only fixtures: no network calls, no application state, no
+CoinDCX dependency. They deliberately return dict-shaped candles so every
+POI Worker is verified against the same mocked shape used by the existing
+check-gate suite; candle_access.cf() simultaneously preserves production
+compatibility with File 02's real Candle dataclass.
+"""
+from __future__ import annotations
+
+from typing import Dict, Iterable, List
+
+
+SCAN_TFS = ("1H", "4H", "1D", "1W", "1M")
+DETECTOR_SCAN_TFS = ("4H", "1D", "1W", "1M")
+
+
+def candle(open_: float, high: float, low: float, close: float) -> dict:
+    """Return a minimal dict candle matching the File 03 Worker contract."""
+    return {"open": open_, "high": high, "low": low, "close": close, "volume": 1.0}
+
+
+def flat_candles(count: int, start: float = 100.0, span: float = 1.0) -> List[dict]:
+    """Stable small-range candles; intentionally cannot meet a 1.8x ATR
+    impulse threshold unless a test explicitly appends an impulse candle."""
+    rows: List[dict] = []
+    for i in range(count):
+        base = start + (i % 2) * 0.1
+        rows.append(candle(base, base + span, base - span, base + 0.05))
+    return rows
+
+
+class FakeMarketDataMonitor:
+    """Duck-type implementation of the documented File 02 public interface.
+    Tests can set distinct historical series and live candles per TF."""
+
+    def __init__(self) -> None:
+        self.series: Dict[str, List[dict]] = {tf: [] for tf in SCAN_TFS}
+        self.live: Dict[str, dict] = {}
+        self.fetch_calls: List[tuple[str, str, int]] = []
+
+    def set_series(self, tf: str, rows: Iterable[dict]) -> None:
+        self.series[tf] = list(rows)
+
+    def set_live(self, tf: str, row: dict) -> None:
+        self.live[tf] = row
+
+    def get_historical_candles(self, symbol: str, tf: str, days: int) -> List[dict]:
+        self.fetch_calls.append((symbol, tf, days))
+        return list(self.series.get(tf, []))
+
+    def get_live_candle(self, symbol: str, tf: str):
+        return self.live.get(tf)
+
+    def subscribe(self, symbol: str) -> None:
+        return None
+
+    def get_health(self) -> str:
+        return "OK"
+
+
+class FakeSymbolRegistry:
+    """Two-symbol registry proving Tier 2 fan-out/isolation behavior."""
+
+    def __init__(self, symbols: Iterable[str] = ("B-BTC_USDT", "B-ETH_USDT"), tick_size: float = 0.1) -> None:
+        self._symbols = list(symbols)
+        self._tick_size = tick_size
+
+    def get_active_symbols(self) -> List[str]:
+        return list(self._symbols)
+
+    def get_tick_size(self, symbol: str) -> float:
+        if symbol not in self._symbols:
+            raise KeyError(symbol)
+        return self._tick_size
+
+
+
+================================================================================
+FILE: tests\workers\poi\test_fvg_detector_worker.py
+================================================================================
+"""
+FULL PATH: tests/workers/poi/test_fvg_detector_worker.py (NEW FILE)
+
+Deterministic check-gate coverage for File 03 Tier 1 Worker #2:
+FVG_Detector_Worker.
+
+Run:
+    pytest tests/workers/poi/test_fvg_detector_worker.py -v
+"""
+from __future__ import annotations
+
+from engines.workers.poi.fvg_detector_worker import FVGDetectorWorker
+from engines.workers.poi.poi_types import POIType
+from tests.workers.poi.poi_test_helpers import DETECTOR_SCAN_TFS, FakeMarketDataMonitor, candle
+
+SYMBOL = "B-BTC_USDT"
+
+
+def _worker(mdm: FakeMarketDataMonitor, enabled: bool = True):
+    updates = []
+    worker = FVGDetectorWorker(
+        mdm, SYMBOL, {POIType.FVG: enabled},
+        on_poi_update=lambda symbol, pois: updates.append((symbol, list(pois))),
+    )
+    return worker, updates
+
+
+def test_bullish_fvg_records_support_range_and_formation_index():
+    mdm = FakeMarketDataMonitor()
+    # c3.low=110 > c1.high=100, leaving bullish FVG [100, 110].
+    mdm.set_series("4H", [
+        candle(95, 100, 90, 96),
+        candle(96, 108, 95, 107),
+        candle(107, 115, 110, 114),
+    ])
+    for tf in ("1D", "1W", "1M"):
+        mdm.set_series(tf, [])
+
+    worker, updates = _worker(mdm)
+    pois = worker.recompute()
+
+    assert len(pois) == 1
+    poi = pois[0]
+    assert poi.poi_type == POIType.FVG
+    assert poi.role == "support"
+    assert poi.source_tf == "4H"
+    assert poi.price_low == 100
+    assert poi.price_high == 110
+    assert poi.formed_at_index == 2
+    assert poi.metadata == {"direction": "bullish", "impulse_candle_index": 1}
+    assert poi.poi_id == f"{SYMBOL}:FVG:4H:2:bull"
+    assert updates[-1][0] == SYMBOL
+    assert updates[-1][1] == pois
+
+
+def test_bearish_fvg_records_resistance_range_and_formation_index():
+    mdm = FakeMarketDataMonitor()
+    # c3.high=90 < c1.low=100, leaving bearish FVG [90, 100].
+    mdm.set_series("4H", [
+        candle(105, 110, 100, 104),
+        candle(104, 106, 95, 96),
+        candle(96, 90, 80, 82),
+    ])
+    for tf in ("1D", "1W", "1M"):
+        mdm.set_series(tf, [])
+
+    worker, _ = _worker(mdm)
+    pois = worker.recompute()
+
+    assert len(pois) == 1
+    poi = pois[0]
+    assert poi.role == "resistance"
+    assert poi.price_low == 90
+    assert poi.price_high == 100
+    assert poi.formed_at_index == 2
+    assert poi.metadata == {"direction": "bearish", "impulse_candle_index": 1}
+    assert poi.poi_id == f"{SYMBOL}:FVG:4H:2:bear"
+
+
+def test_touching_boundaries_is_not_an_fvg():
+    mdm = FakeMarketDataMonitor()
+    # Strict inequality is intentional: c3.low == c1.high is a touch, no gap.
+    mdm.set_series("4H", [
+        candle(95, 100, 90, 96),
+        candle(96, 105, 95, 104),
+        candle(104, 110, 100, 108),
+    ])
+    for tf in ("1D", "1W", "1M"):
+        mdm.set_series(tf, [])
+
+    worker, _ = _worker(mdm)
+    assert worker.recompute() == []
+
+
+def test_scans_each_htf_independently_without_cross_tf_leakage():
+    mdm = FakeMarketDataMonitor()
+    bullish = [
+        candle(95, 100, 90, 96), candle(96, 108, 95, 107), candle(107, 115, 110, 114),
+    ]
+    bearish = [
+        candle(105, 110, 100, 104), candle(104, 106, 95, 96), candle(96, 90, 80, 82),
+    ]
+    mdm.set_series("4H", bullish)
+    mdm.set_series("1D", bearish)
+    mdm.set_series("1W", [])
+    mdm.set_series("1M", [])
+
+    worker, _ = _worker(mdm)
+    pois = worker.recompute()
+
+    assert {(p.source_tf, p.role) for p in pois} == {("4H", "support"), ("1D", "resistance")}
+
+
+def test_toggle_off_clears_pois_live_and_toggle_on_recomputes_them():
+    mdm = FakeMarketDataMonitor()
+    mdm.set_series("4H", [
+        candle(95, 100, 90, 96), candle(96, 108, 95, 107), candle(107, 115, 110, 114),
+    ])
+    for tf in ("1D", "1W", "1M"):
+        mdm.set_series(tf, [])
+
+    worker, updates = _worker(mdm, enabled=True)
+    assert len(worker.recompute()) == 1
+
+    worker.set_enabled(False)
+    assert worker._pois == {}
+    assert updates[-1] == (SYMBOL, [])
+
+    worker.set_enabled(True)
+    assert len(worker._pois) == 1
+    assert updates[-1][0] == SYMBOL
+    assert len(updates[-1][1]) == 1
+
+
+
+================================================================================
+FILE: tests\workers\poi\test_inverse_fvg_detector_worker.py
+================================================================================
+"""
+FULL PATH: tests/workers/poi/test_inverse_fvg_detector_worker.py (NEW FILE)
+
+Deterministic check-gate coverage for File 03 Tier 1 Worker #4:
+InverseFVG_Detector_Worker.
+
+Locked rule under test (123Bull/123Bear, Scenario B): one close-through only
+invalidates/records the original FVG. A second close-through in the opposite
+direction confirms the role flip and creates the Inverse FVG.
+
+Run:
+    pytest tests/workers/poi/test_inverse_fvg_detector_worker.py -v
+"""
+from __future__ import annotations
+
+from engines.workers.poi.inverse_fvg_detector_worker import InverseFVGDetectorWorker
+from engines.workers.poi.poi_types import POI, POIType
+from tests.workers.poi.poi_test_helpers import FakeMarketDataMonitor, candle
+
+SYMBOL = "B-BTC_USDT"
+
+
+def _fvg(poi_id: str, role: str, low: float = 100.0, high: float = 110.0) -> POI:
+    return POI(
+        poi_id=poi_id,
+        symbol=SYMBOL,
+        poi_type=POIType.FVG,
+        role=role,
+        source_tf="4H",
+        price_low=low,
+        price_high=high,
+        formed_at_index=7,
+        metadata={"direction": "bullish" if role == "support" else "bearish"},
+    )
+
+
+def _worker(mdm: FakeMarketDataMonitor, fvgs: list[POI], enabled: bool = True):
+    updates = []
+    worker = InverseFVGDetectorWorker(
+        mdm, SYMBOL, {POIType.INVERSE_FVG: enabled},
+        get_fvg_pois=lambda: list(fvgs),
+        on_poi_update=lambda symbol, pois: updates.append((symbol, list(pois))),
+    )
+    return worker, updates
+
+
+def test_first_close_through_records_breach_but_does_not_create_inverse_fvg():
+    mdm = FakeMarketDataMonitor()
+    mdm.set_live("4H", candle(109, 115, 108, 112))  # above range [100, 110]
+    fvg = _fvg("bull-gap", role="support")
+    worker, updates = _worker(mdm, [fvg])
+
+    assert worker.recompute() == []
+    assert worker._first_close_through == {"bull-gap": "up"}
+    assert worker._pois == {}
+    assert updates[-1] == (SYMBOL, [])
+
+
+def test_second_opposite_close_through_creates_inverse_fvg_and_flips_role():
+    mdm = FakeMarketDataMonitor()
+    fvg = _fvg("bull-gap", role="support")
+    worker, _ = _worker(mdm, [fvg])
+
+    mdm.set_live("4H", candle(109, 115, 108, 112))  # first breach up
+    assert worker.recompute() == []
+
+    mdm.set_live("4H", candle(101, 102, 95, 98))  # second breach down
+    pois = worker.recompute()
+
+    assert len(pois) == 1
+    inverse = pois[0]
+    assert inverse.poi_id == "bull-gap:inverse"
+    assert inverse.poi_type == POIType.INVERSE_FVG
+    assert inverse.role == "resistance"  # original support flips to resistance
+    assert inverse.source_tf == "4H"
+    assert inverse.price_low == 100.0
+    assert inverse.price_high == 110.0
+    assert inverse.formed_at_index == 7
+    assert inverse.metadata == {"original_fvg_id": "bull-gap", "original_role": "support"}
+
+
+def test_bearish_fvg_flips_from_resistance_to_support_after_down_then_up_breaches():
+    mdm = FakeMarketDataMonitor()
+    fvg = _fvg("bear-gap", role="resistance")
+    worker, _ = _worker(mdm, [fvg])
+
+    mdm.set_live("4H", candle(101, 102, 95, 98))  # first breach down
+    assert worker.recompute() == []
+
+    mdm.set_live("4H", candle(109, 115, 108, 112))  # second breach up
+    pois = worker.recompute()
+
+    assert len(pois) == 1
+    assert pois[0].role == "support"
+    assert pois[0].metadata["original_role"] == "resistance"
+
+
+def test_same_direction_multiple_breaches_never_confirm_flip():
+    mdm = FakeMarketDataMonitor()
+    fvg = _fvg("same-direction", role="support")
+    worker, _ = _worker(mdm, [fvg])
+
+    mdm.set_live("4H", candle(109, 115, 108, 112))
+    assert worker.recompute() == []
+    mdm.set_live("4H", candle(111, 116, 110, 113))
+    assert worker.recompute() == []
+    assert worker._pois == {}
+    assert worker._first_close_through["same-direction"] == "up"
+
+
+def test_no_breach_inside_range_creates_nothing():
+    mdm = FakeMarketDataMonitor()
+    mdm.set_live("4H", candle(103, 108, 102, 106))
+    worker, _ = _worker(mdm, [_fvg("inside", role="support")])
+
+    assert worker.recompute() == []
+    assert worker._first_close_through == {}
+
+
+def test_consumes_injected_fvg_output_and_ignores_other_symbol_pois():
+    mdm = FakeMarketDataMonitor()
+    mdm.set_live("4H", candle(109, 115, 108, 112))
+    other = POI(
+        poi_id="other-gap", symbol="B-ETH_USDT", poi_type=POIType.FVG,
+        role="support", source_tf="4H", price_low=100, price_high=110,
+    )
+    worker, _ = _worker(mdm, [_fvg("own-gap", role="support"), other])
+
+    assert worker.recompute() == []
+    assert worker._first_close_through == {"own-gap": "up"}
+
+
+def test_toggle_off_clears_inverses_and_does_not_evaluate_breaches():
+    mdm = FakeMarketDataMonitor()
+    mdm.set_live("4H", candle(109, 115, 108, 112))
+    worker, updates = _worker(mdm, [_fvg("off-gap", role="support")], enabled=False)
+
+    assert worker.recompute() == []
+    assert worker._first_close_through == {}
+    assert updates[-1] == (SYMBOL, [])
+
+    worker.set_enabled(True)
+    assert worker._first_close_through == {"off-gap": "up"}
+
+
+
+================================================================================
+FILE: tests\workers\poi\test_orderblock_detector_worker.py
+================================================================================
+"""
+FULL PATH: tests/workers/poi/test_orderblock_detector_worker.py (NEW FILE)
+
+Deterministic check-gate coverage for File 03 Tier 1 Worker #3:
+OrderBlock_Detector_Worker.
+
+Run:
+    pytest tests/workers/poi/test_orderblock_detector_worker.py -v
+"""
+from __future__ import annotations
+
+from engines.workers.poi.orderblock_detector_worker import OrderBlockDetectorWorker
+from engines.workers.poi.poi_types import POIType
+from tests.workers.poi.poi_test_helpers import DETECTOR_SCAN_TFS, FakeMarketDataMonitor, candle, flat_candles
+
+SYMBOL = "B-BTC_USDT"
+
+
+def _worker(mdm: FakeMarketDataMonitor, enabled: bool = True):
+    updates = []
+    worker = OrderBlockDetectorWorker(
+        mdm, SYMBOL, {POIType.ORDER_BLOCK: enabled},
+        on_poi_update=lambda symbol, pois: updates.append((symbol, list(pois))),
+    )
+    return worker, updates
+
+
+def _set_other_detector_tfs_empty(mdm: FakeMarketDataMonitor) -> None:
+    for tf in ("1D", "1W", "1M"):
+        mdm.set_series(tf, [])
+
+
+def test_bullish_order_block_is_last_red_candle_before_strong_green_impulse():
+    mdm = FakeMarketDataMonitor()
+    rows = flat_candles(15, start=100.0, span=1.0)
+    # Index 15 is the final opposite-colored (red) candle, range [99, 101].
+    rows.append(candle(100.5, 101.0, 99.0, 99.5))
+    # Index 16 is a strong green impulse: range 8 >> prior ATR around 2.
+    rows.append(candle(99.5, 107.5, 99.5, 107.0))
+    mdm.set_series("4H", rows)
+    _set_other_detector_tfs_empty(mdm)
+
+    worker, _ = _worker(mdm)
+    pois = worker.recompute()
+
+    assert len(pois) == 1
+    poi = pois[0]
+    assert poi.poi_type == POIType.ORDER_BLOCK
+    assert poi.role == "support"
+    assert poi.source_tf == "4H"
+    assert poi.price_low == 99.0
+    assert poi.price_high == 101.0
+    assert poi.formed_at_index == 15
+    assert poi.metadata["impulse_index"] == 16
+    assert poi.metadata["range"] == 8.0
+    assert poi.poi_id == f"{SYMBOL}:OB:4H:16:bull"
+
+
+def test_bearish_order_block_is_last_green_candle_before_strong_red_impulse():
+    mdm = FakeMarketDataMonitor()
+    rows = flat_candles(15, start=100.0, span=1.0)
+    # Index 15 is the final opposite-colored (green) candle, range [99, 101].
+    rows.append(candle(99.5, 101.0, 99.0, 100.5))
+    # Index 16 is a strong red impulse.
+    rows.append(candle(100.5, 100.5, 92.5, 93.0))
+    mdm.set_series("4H", rows)
+    _set_other_detector_tfs_empty(mdm)
+
+    worker, _ = _worker(mdm)
+    pois = worker.recompute()
+
+    assert len(pois) == 1
+    poi = pois[0]
+    assert poi.role == "resistance"
+    assert poi.price_low == 99.0
+    assert poi.price_high == 101.0
+    assert poi.formed_at_index == 15
+    assert poi.metadata["impulse_index"] == 16
+    assert poi.metadata["range"] == 8.0
+    assert poi.poi_id == f"{SYMBOL}:OB:4H:16:bear"
+
+
+def test_non_impulsive_move_creates_no_order_block():
+    mdm = FakeMarketDataMonitor()
+    # All ranges remain ~2, so none can be 1.8x the rolling ATR.
+    mdm.set_series("4H", flat_candles(20, start=100.0, span=1.0))
+    _set_other_detector_tfs_empty(mdm)
+
+    worker, _ = _worker(mdm)
+    assert worker.recompute() == []
+
+
+def test_requires_at_least_atr_window_plus_two_candles():
+    mdm = FakeMarketDataMonitor()
+    mdm.set_series("4H", flat_candles(15))  # Worker threshold is 16 candles.
+    _set_other_detector_tfs_empty(mdm)
+
+    worker, _ = _worker(mdm)
+    assert worker.recompute() == []
+
+
+def test_toggle_off_clears_order_blocks_live_and_toggle_on_recomputes():
+    mdm = FakeMarketDataMonitor()
+    rows = flat_candles(15, start=100.0, span=1.0)
+    rows.append(candle(100.5, 101.0, 99.0, 99.5))
+    rows.append(candle(99.5, 107.5, 99.5, 107.0))
+    mdm.set_series("4H", rows)
+    _set_other_detector_tfs_empty(mdm)
+
+    worker, updates = _worker(mdm, enabled=True)
+    assert len(worker.recompute()) == 1
+
+    worker.set_enabled(False)
+    assert worker._pois == {}
+    assert updates[-1] == (SYMBOL, [])
+
+    worker.set_enabled(True)
+    assert len(worker._pois) == 1
+    assert len(updates[-1][1]) == 1
+
+
+
+================================================================================
+FILE: tests\workers\poi\test_poi_monitor_check_gates.py
+================================================================================
+"""
+tests/workers/poi/test_poi_monitor_check_gates.py
+
+Standalone, fully-mocked test harness for File 03's check gates (no live
+CoinDCX calls â€” per Standing Suggestion: every Worker check gate includes at
+least one fabricated/mocked-data test). Covers, in order:
+
+1. Settings toggle turns a POI type's calculation on/off live.
+2. PDH/PDL and 4H H/L (default-ON types) compute correctly against a known
+   fabricated historical example.
+3. State tags transition Approaching -> Hit -> Crossed -> Retesting along a
+   simulated price path.
+4. Multiple POIs on the same symbol track fully independently.
+
+NOTE on fixture sizing: htf_availability.py requires a *minimum* candle
+count per TF before treating it as "populated" (mirrors how a real,
+freshly-activated symbol wouldn't have a full HTF history yet either).
+The 4H fixture below intentionally carries >= MIN_CANDLES_FOR_AVAILABLE["4H"]
+(6) candles so the availability probe passes and 4H_HIGH/4H_LOW actually
+compute â€” with too few candles, POI_Level_Calculator_Worker is *supposed*
+to leave that type unresolved rather than compute off thin data.
+
+Run with: pytest tests/workers/poi/test_poi_monitor_check_gates.py -v
+"""
+from __future__ import annotations
+
+from typing import Dict, List
+
+import pytest
+
+from engines.workers.poi.poi_types import POI, POIType, POIState
+from engines.workers.poi.poi_level_calculator_worker import POILevelCalculatorWorker
+from engines.workers.poi.poi_state_tracker_worker import POIStateTrackerWorker
+
+
+class FakeMarketDataMonitor:
+    """Duck-types get_live_candle/get_historical_candles/subscribe/get_health
+    exactly as documented for Market_Data_Monitor's Tier-2 interface."""
+
+    def __init__(self) -> None:
+        self.series: Dict[str, List[dict]] = {}
+        self.live: Dict[str, dict] = {}
+
+    def set_series(self, tf: str, candles: List[dict]) -> None:
+        self.series[tf] = candles
+
+    def set_live(self, tf: str, candle: dict) -> None:
+        self.live[tf] = candle
+
+    def get_historical_candles(self, symbol: str, tf: str, days: int) -> List[dict]:
+        return self.series.get(tf, [])
+
+    def get_live_candle(self, symbol: str, tf: str):
+        return self.live.get(tf)
+
+    def subscribe(self, symbol: str) -> None:
+        pass
+
+    def get_health(self) -> str:
+        return "OK"
+
+
+def _mk_candle(o, h, l, c):
+    return {"open": o, "high": h, "low": l, "close": c}
+
+
+@pytest.fixture
+def mdm() -> FakeMarketDataMonitor:
+    m = FakeMarketDataMonitor()
+
+    # 1D series: yesterday (completed, index -2) high=105 low=95, today
+    # (forming, index -1) must be ignored. 3 candles clears the 1D minimum (2).
+    m.set_series("1D", [
+        _mk_candle(100, 102, 98, 101),
+        _mk_candle(101, 105, 95, 100),   # <- completed "yesterday", PDH=105 PDL=95
+        _mk_candle(100, 103, 99, 102),   # <- forming "today", must be ignored
+    ])
+
+    # 4H series: 7 candles total, clearing the 4H availability minimum (6).
+    # index -2 is the most recently *completed* 4H candle: high=112 low=108.
+    # index -1 is the still-forming candle and must be ignored.
+    m.set_series("4H", [
+        _mk_candle(105, 107, 103, 106),
+        _mk_candle(106, 108, 104, 107),
+        _mk_candle(107, 109, 105, 108),
+        _mk_candle(108, 110, 106, 109),
+        _mk_candle(109, 111, 107, 110),
+        _mk_candle(109, 112, 108, 111),  # <- completed, 4H_HIGH=112 4H_LOW=108
+        _mk_candle(111, 113, 110, 112),  # <- forming, ignored
+    ])
+    m.set_live("1H", {"close": 100.0})
+    return m
+
+
+def test_type_toggle_turns_calculation_on_off_live(mdm):
+    enabled = {POIType.PDH: True, POIType.PDL: True, POIType.H4_HIGH: True, POIType.H4_LOW: True}
+    calc = POILevelCalculatorWorker(mdm, "BTCUSDT", enabled, lambda s, p: None)
+    pois = calc.recompute()
+    assert any(p.poi_type == POIType.PDH for p in pois)
+
+    calc.set_type_enabled(POIType.PDH, False)
+    pois_after = calc.recompute()
+    assert not any(p.poi_type == POIType.PDH for p in pois_after)
+
+    calc.set_type_enabled(POIType.PDH, True)
+    pois_reenabled = calc.recompute()
+    assert any(p.poi_type == POIType.PDH for p in pois_reenabled)
+
+
+def test_pdh_pdl_and_4h_hl_known_example(mdm):
+    enabled = {POIType.PDH: True, POIType.PDL: True, POIType.H4_HIGH: True, POIType.H4_LOW: True}
+    calc = POILevelCalculatorWorker(mdm, "BTCUSDT", enabled, lambda s, p: None)
+    pois = {p.poi_type: p.price for p in calc.recompute()}
+
+    assert pois[POIType.PDH] == 105
+    assert pois[POIType.PDL] == 95
+    assert pois[POIType.H4_HIGH] == 112
+    assert pois[POIType.H4_LOW] == 108
+
+
+def test_state_transitions_along_simulated_price_path(mdm):
+    tick_size = 1.0
+    poi = POI(poi_id="X:PDH", symbol="BTCUSDT", poi_type=POIType.PDH,
+              role="resistance", source_tf="1D", price=105.0)
+    tracker = POIStateTrackerWorker(
+        mdm, "BTCUSDT", tick_size, get_active_pois=lambda: [poi], on_state_update=lambda s, r: None)
+
+    # Approaching: far below the level.
+    r = tracker.update_one(poi, 100.0, now=1)
+    assert r.state == POIState.APPROACHING
+
+    # Hit: within touch epsilon.
+    r = tracker.update_one(poi, 104.6, now=2)
+    assert r.state == POIState.HIT
+    assert r.last_touch_ts == 2
+
+    # Crossed: closes fully through to the other side.
+    r = tracker.update_one(poi, 110.0, now=3)
+    assert r.state == POIState.CROSSED
+    assert r.crossed_direction == "above"
+
+    # Retesting: comes back near the level from the far side.
+    r = tracker.update_one(poi, 105.5, now=4)
+    assert r.state == POIState.RETESTING
+    assert r.last_touch_ts == 4
+
+
+def test_multiple_pois_track_independently():
+    mdm = FakeMarketDataMonitor()
+    poi_a = POI(poi_id="A", symbol="BTCUSDT", poi_type=POIType.PDH, role="resistance",
+                source_tf="1D", price=100.0)
+    poi_b = POI(poi_id="B", symbol="BTCUSDT", poi_type=POIType.PDL, role="support",
+                source_tf="1D", price=50.0)
+    tracker = POIStateTrackerWorker(
+        mdm, "BTCUSDT", 1.0, get_active_pois=lambda: [poi_a, poi_b], on_state_update=lambda s, r: None)
+
+    tracker.update_one(poi_a, 99.6, now=1)   # touches A
+    tracker.update_one(poi_b, 200.0, now=1)  # B stays far away, approaching only
+
+    state_a = tracker._states["A"]
+    state_b = tracker._states["B"]
+    assert state_a.state == POIState.HIT
+    assert state_b.state == POIState.APPROACHING
+
+    # Moving A further should never change B's stored state.
+    tracker.update_one(poi_a, 110.0, now=2)
+    assert tracker._states["B"] is state_b
+    assert tracker._states["B"].state == POIState.APPROACHING
+
+
+
+================================================================================
+FILE: tests\workers\market_data\test_market_data_workers.py
+================================================================================
+"""Check-gate tests for Module 02 Market Data Monitor -- all mocked/fabricated data, no live API calls."""
+from __future__ import annotations
+import asyncio
+from pathlib import Path
+import pytest
+
+from engines.event_bus.bus import event_bus
+from engines.workers.market_data.symbol_registry_worker import SymbolRegistryWorker
+from engines.workers.market_data.tick_normalizer_worker import TickNormalizerWorker
+from engines.workers.market_data.candle_builder_worker import CandleBuilderWorker
+from engines.workers.market_data.candle_store import CandleStore
+from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
+from engines.workers.market_data.deep_history_downloader_worker import DeepHistoryDownloaderWorker
+from engines.workers.market_data.rest_poll_fallback_worker import RESTPollFallbackWorker
+
+
+@pytest.fixture
+def tmp_registry(tmp_path: Path) -> SymbolRegistryWorker:
+    return SymbolRegistryWorker(path=tmp_path / "symbol_registry.json")
+
+
+@pytest.fixture
+def tmp_manifest(tmp_path: Path) -> HistoryManifestWorker:
+    return HistoryManifestWorker(manifest_dir=tmp_path / "manifests")
+
+
+def test_symbol_registry_seeds_pinned_defaults_with_meta(tmp_registry: SymbolRegistryWorker) -> None:
+    pinned = tmp_registry.get_pinned_symbols()
+    assert set(pinned) == {"GOLD", "ETHUSD", "BTCUSD"}
+    meta = tmp_registry.get_symbol_meta("BTCUSD")
+    assert set(meta) == {"tick_size", "contract_size", "maker_fee", "taker_fee"}
+
+
+def test_symbol_registry_manual_add_makes_deep_history_eligible(tmp_registry: SymbolRegistryWorker) -> None:
+    tmp_registry.add_symbol_manual("SOLUSD")
+    assert tmp_registry.is_deep_history_eligible("SOLUSD") is True
+
+
+def test_tick_normalizer_emits_canonical_shape_with_both_timestamps() -> None:
+    captured = []
+    event_bus.subscribe("market_data.tick.normalized", lambda e: captured.append(e))
+    TickNormalizerWorker()
+    event_bus.publish("market_data.tick.raw_ws", {
+        "symbol": "BTCUSD", "price": "65000.5", "quantity": "0.1", "exchange_timestamp_ms": 1000})
+    tick = captured[-1]
+    assert tick["price"] == 65000.5 and tick["source"] == "ws"
+    assert tick["exchange_timestamp_ms"] == 1000 and tick["received_timestamp_ms"] > 0
+
+
+def test_candle_builder_closes_1m_on_rollover_and_builds_poi_timeframes() -> None:
+    closed = []
+    event_bus.subscribe("market_data.candle.closed", lambda e: closed.append(e))
+    builder = CandleBuilderWorker()
+    builder._on_tick({"symbol": "BTCUSD", "price": 100.0, "volume": 1, "exchange_timestamp_ms": 0})
+    builder._on_tick({"symbol": "BTCUSD", "price": 110.0, "volume": 1, "exchange_timestamp_ms": 30_000})
+    builder._on_tick({"symbol": "BTCUSD", "price": 90.0, "volume": 1, "exchange_timestamp_ms": 65_000})
+    one_min = [c for c in closed if c["timeframe"] == "1m"]
+    assert one_min and one_min[0]["high"] == 110.0 and one_min[0]["low"] == 100.0
+    daily = [k for k in builder._open if k[1] == "Daily"]
+    weekly = [k for k in builder._open if k[1] == "Weekly"]
+    monthly = [k for k in builder._open if k[1] == "Monthly"]
+    assert daily and weekly and monthly
+
+
+def test_candle_builder_never_emits_duplicate_for_same_bucket() -> None:
+    closed = []
+    event_bus.subscribe("market_data.candle.closed", lambda e: closed.append(e))
+    builder = CandleBuilderWorker()
+    for ts in (0, 10_000, 20_000, 61_000):
+        builder._on_tick({"symbol": "ETHUSD", "price": 50.0, "volume": 1, "exchange_timestamp_ms": ts})
+    builder._on_tick({"symbol": "ETHUSD", "price": 51.0, "volume": 1, "exchange_timestamp_ms": 5_000})
+    one_min_bucket0 = [c for c in closed if c["timeframe"] == "1m" and c["bucket_start_ms"] == 0]
+    assert len(one_min_bucket0) == 1
+
+
+def test_manifest_find_gaps_and_coverage(tmp_manifest: HistoryManifestWorker) -> None:
+    assert tmp_manifest.find_gaps("BTCUSD", "1m", 0, 1000) == [(0, 1000)]
+    tmp_manifest.mark_covered("BTCUSD", "1m", 0, 500)
+    tmp_manifest.mark_covered("BTCUSD", "1m", 500, 1000)
+    assert tmp_manifest.find_gaps("BTCUSD", "1m", 0, 1000) == []
+    assert tmp_manifest.coverage_percent("BTCUSD", "1m", 0, 1000) == 100.0
+
+
+class _FakeHTTP:
+    def __init__(self, rows_per_call=None) -> None:
+        self.calls = 0
+        self._rows_per_call = rows_per_call
+
+    async def get_json(self, url, params=None):
+        self.calls += 1
+        if self._rows_per_call is not None:
+            return self._rows_per_call
+        if self.calls > 1:
+            return []
+        return [{"open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 10, "bucket_start_ms": params["startTime"]}]
+
+
+def test_deep_history_downloader_stops_when_exchange_has_no_more_data(tmp_manifest: HistoryManifestWorker) -> None:
+    async def run():
+        http = _FakeHTTP()
+        worker = DeepHistoryDownloaderWorker(tmp_manifest, http_client=http)
+        await worker._backfill_timeframe("BTCUSD", "1m")
+        return http.calls
+    calls = asyncio.run(run())
+    assert calls >= 1
+    assert tmp_manifest.get_covered_ranges("BTCUSD", "1m") != []
+
+
+def test_manifest_persists_across_restart(tmp_manifest: HistoryManifestWorker) -> None:
+    tmp_manifest.mark_covered("ETHUSD", "15m", 0, 900_000)
+    reloaded = HistoryManifestWorker(manifest_dir=tmp_manifest._dir)
+    assert reloaded.get_covered_ranges("ETHUSD", "15m") == [(0, 900_000)]
+
+
+def test_rest_fallback_engages_only_for_the_degraded_symbol_never_others() -> None:
+    async def run():
+        http = _FakeHTTP(rows_per_call=[{"last_price": 100, "volume": 1}])
+        worker = RESTPollFallbackWorker(http_client=http)
+        event_bus.publish("market_data.feed.degraded", {"symbol": "BTCUSD", "reason": "stall"})
+        await asyncio.sleep(0.05)
+        engaged_btc = worker.is_active("BTCUSD")
+        engaged_eth = worker.is_active("ETHUSD")
+        worker._on_ws_recovering({"symbol": "BTCUSD"})
+        return engaged_btc, engaged_eth
+    engaged_btc, engaged_eth = asyncio.run(run())
+    assert engaged_btc is True
+    assert engaged_eth is False
+
+
+def test_candle_store_serves_live_and_historical_candles() -> None:
+    store = CandleStore()
+    event_bus.publish("market_data.candle.closed", {
+        "symbol": "BTCUSD", "timeframe": "1m", "open": 1, "high": 2, "low": 0.5, "close": 1.5,
+        "volume": 10, "bucket_start_ms": 1_000_000_000})
+    event_bus.publish("market_data.candle.closed", {
+        "symbol": "BTCUSD", "timeframe": "1m", "open": 1.5, "high": 2.5, "low": 1, "close": 2,
+        "volume": 5, "bucket_start_ms": 1_000_060_000})
+    live = store.get_live_candle("BTCUSD", "1m")
+    assert live is not None and live["close"] == 2
+    history = store.get_historical_candles("BTCUSD", "1m", days=5)
+    assert len(history) == 2
+
+
+
+================================================================================
+FILE: tests\test_market_data_monitor.py
+================================================================================
+
+import time
+import unittest
+from typing import Callable, Dict, List
+
+from engines.workers.market_data.candle_builder_worker import Candle
+from engines.workers.market_data.tick_normalizer_worker import NormalizedTick
+from engines.monitors.market_data_monitor import MarketDataMonitor
+
+
+class FakeSocketTransport:
+    def __init__(self):
+        self._handlers = {}
+        self._connected = False
+        self.emitted = []
+
+    def connect(self, url):
+        self._connected = True
+
+    def disconnect(self):
+        self._connected = False
+
+    def emit(self, event, data):
+        self.emitted.append((event, data))
+
+    def on(self, event, handler):
+        self._handlers[event] = handler
+
+    def connected(self):
+        return self._connected
+
+    def push_tick(self, symbol, price, ts_ms, volume=1.0):
+        handler = self._handlers.get("ticker")
+        if handler:
+            handler({"symbol": symbol, "p": price, "q": volume, "T": ts_ms})
+
+
+class FakeHttpResponse:
+    def __init__(self, json_body):
+        self._json_body = json_body
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._json_body
+
+
+def make_fake_candle_http_get(candle_rows):
+    def _get(url, params=None, timeout=None):
+        return FakeHttpResponse(candle_rows)
+    return _get
+
+
+def make_fake_ticker_http_get(price_holder, symbol):
+    def _get(url, timeout=None):
+        return FakeHttpResponse([{"market": symbol, "last_price": price_holder["price"],
+                                   "volume": 1.0, "timestamp": int(time.time() * 1000)}])
+    return _get
+
+
+class TestCandleBuilderContinuity(unittest.TestCase):
+    def test_no_gap_no_duplicate_across_synthetic_soak(self):
+        from engines.workers.market_data.candle_builder_worker import CandleBuilderWorker
+        builder = CandleBuilderWorker()
+        symbol = "B-BTC_USDT"
+        start = 1_700_000_000_000
+        step = 60_000
+        for i in range(500):
+            ts = start + i * step + 30_000
+            tick = NormalizedTick(symbol=symbol, price=100.0 + i, volume=1.0,
+                                   exchange_ts=ts, received_ts=ts, source="ws")
+            builder.ingest(tick, timeframes=["1m"])
+        report = builder.check_continuity(symbol, "1m")
+        self.assertTrue(report["clean"], msg=report)
+        self.assertEqual(len(report["gaps"]), 0)
+        self.assertEqual(len(report["duplicates"]), 0)
+
+    def test_late_out_of_order_tick_never_rewrites_closed_candle(self):
+        from engines.workers.market_data.candle_builder_worker import CandleBuilderWorker
+        builder = CandleBuilderWorker()
+        symbol = "B-ETH_USDT"
+        start = 1_700_000_000_000
+        t1 = NormalizedTick(symbol, 10.0, 1.0, start, start, "ws")
+        t2 = NormalizedTick(symbol, 11.0, 1.0, start + 70_000, start + 70_000, "ws")
+        builder.ingest(t1, ["1m"])
+        builder.ingest(t2, ["1m"])
+        stale = NormalizedTick(symbol, 9999.0, 1.0, start + 5_000, start + 5_000, "ws")
+        builder.ingest(stale, ["1m"])
+        history = builder.get_series(symbol, "1m")
+        closed = [c for c in history if c.is_closed]
+        self.assertEqual(closed[0].close, 10.0)
+
+
+class TestWSDropAndRestFallback(unittest.TestCase):
+    def test_fallback_engages_within_window_and_hands_back_on_restore(self):
+        transport = FakeSocketTransport()
+        monitor = MarketDataMonitor(transport=transport)
+        symbol = "B-BTC_USDT"
+
+        price_holder = {"price": 101.0}
+        monitor.historical_loader._http_get = make_fake_candle_http_get([])
+        monitor.rest_fallback._http_get = make_fake_ticker_http_get(price_holder, symbol)
+
+        monitor.ws_feed.start()
+        monitor.subscribe(symbol)
+
+        transport.push_tick(symbol, 100.0, int(time.time() * 1000))
+        self.assertEqual(monitor.get_health()[symbol], "OK")
+
+        time.sleep(3.2)
+        self.assertEqual(monitor.get_health()[symbol], "DEGRADED")
+        self.assertTrue(monitor.rest_fallback.is_engaged(symbol))
+
+        transport.push_tick(symbol, 105.0, int(time.time() * 1000))
+        time.sleep(0.2)
+        self.assertFalse(monitor.rest_fallback.is_engaged(symbol))
+        self.assertEqual(monitor.get_health()[symbol], "OK")
+
+        monitor.ws_feed.stop()
+
+
+class TestFreshSymbolHasHistoryImmediately(unittest.TestCase):
+    def test_backfill_seeds_candle_builder_on_subscribe(self):
+        transport = FakeSocketTransport()
+        monitor = MarketDataMonitor(transport=transport)
+        symbol = "B-ETH_USDT"
+
+        now = int(time.time() * 1000)
+        fake_rows = [{"time": now - i * 60_000, "open": 10, "high": 11, "low": 9,
+                      "close": 10.5, "volume": 5} for i in range(200)]
+        monitor.historical_loader._http_get = make_fake_candle_http_get(fake_rows)
+        monitor.rest_fallback._http_get = make_fake_ticker_http_get({"price": 10.5}, symbol)
+
+        monitor.ws_feed.start()
+        monitor.subscribe(symbol)
+
+        series = monitor.candle_builder.get_series(symbol, "1m")
+        self.assertGreater(len(series), 0)
+        monitor.ws_feed.stop()
+
+
+class TestPerSymbolIsolation(unittest.TestCase):
+    def test_unsubscribe_one_symbol_does_not_affect_other(self):
+        transport = FakeSocketTransport()
+        monitor = MarketDataMonitor(transport=transport)
+        s1, s2 = "B-BTC_USDT", "B-ETH_USDT"
+
+        monitor.historical_loader._http_get = make_fake_candle_http_get([])
+        monitor.rest_fallback._http_get = make_fake_ticker_http_get({"price": 1.0}, s1)
+
+        monitor.ws_feed.start()
+        monitor.subscribe(s1)
+        monitor.subscribe(s2)
+
+        transport.push_tick(s1, 50.0, int(time.time() * 1000))
+        transport.push_tick(s2, 60.0, int(time.time() * 1000))
+
+        monitor.unsubscribe(s1)
+
+        self.assertNotIn(s1, monitor.get_health())
+        self.assertIn(s2, monitor.get_health())
+        self.assertEqual(monitor.get_health()[s2], "OK")
+        monitor.ws_feed.stop()
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+
+
+
+================================================================================
+FILE: config\settings.py
+================================================================================
+"""Module 01 - UI/UX & App Shell. Global static config.
+
+PATH: config/settings.py  (REPLACE ENTIRE FILE)
+
+CHANGE: SPLASH_DURATION_SECONDS 6.0 -> 5.0, per request (still followed by SPLASH_HOLD_SECONDS
+= 2.0 at 100% before the dissolve into Login).
+"""
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Literal
+
+APP_NAME: str = "QuantumTrade19"
+APP_SUBHEADING: str = "by Jayprakash Pattnaik"
+APP_TAGLINE: str = "Precision. Quantum. Profits."
+APP_VERSION: str = "v0.1.0-alpha"
+SIDEBAR_TABS: list[str] = ["Dashboard", "Trading Panel", "Journal & Reports", "Alerts", "Settings"]
+SPLASH_DURATION_SECONDS: float = 5.0
+SPLASH_HOLD_SECONDS: float = 2.0
+
+ThemeHue = Literal["yellow", "saffron", "blue"]
+ThemeMode = Literal["day", "night"]
+
+
+@dataclass(frozen=True)
+class ThemeDefinition:
+    hue: ThemeHue
+    mode: ThemeMode
+    accent: str
+    accent_glow: str
+    bg_from: str
+    bg_to: str
+    glass_bg: str
+    glass_border: str
+    text_primary: str
+    text_muted: str
+
+
+THEMES: dict[str, ThemeDefinition] = {
+    "yellow-day": ThemeDefinition("yellow", "day", "#F5C518", "#FFE68A", "#FFF9E5", "#FDEFC0", "rgba(255,255,255,0.55)", "rgba(245,197,24,0.45)", "#2B2400", "#6B5E00"),
+    "yellow-night": ThemeDefinition("yellow", "night", "#F5C518", "#FFE68A", "#141200", "#232000", "rgba(20,18,0,0.55)", "rgba(245,197,24,0.35)", "#FFF4CC", "#C9B65B"),
+    "saffron-day": ThemeDefinition("saffron", "day", "#FF7A18", "#FFB067", "#FFF1E5", "#FFE0C2", "rgba(255,255,255,0.55)", "rgba(255,122,24,0.45)", "#361A00", "#8A4E12"),
+    "saffron-night": ThemeDefinition("saffron", "night", "#FF7A18", "#FFB067", "#1A0D00", "#2B1500", "rgba(26,13,0,0.55)", "rgba(255,122,24,0.35)", "#FFE3C6", "#D69A64"),
+    "blue-day": ThemeDefinition("blue", "day", "#1E8FFF", "#8FCBFF", "#E9F4FF", "#CFE7FF", "rgba(255,255,255,0.55)", "rgba(30,143,255,0.45)", "#00203B", "#2E5D85"),
+    "blue-night": ThemeDefinition("blue", "night", "#1E8FFF", "#8FCBFF", "#00060F", "#001A33", "rgba(0,6,15,0.55)", "rgba(30,143,255,0.35)", "#D6ECFF", "#6FA6D9"),
+}
+DEFAULT_THEME_KEY: str = "blue-night"
+THEME_ORDER: list[str] = ["yellow-day", "yellow-night", "saffron-day", "saffron-night", "blue-day", "blue-night"]
+THEME_LABELS: dict[str, str] = {
+    "yellow-day": "Yellow \u00b7 Day", "yellow-night": "Yellow \u00b7 Night",
+    "saffron-day": "Saffron \u00b7 Day", "saffron-night": "Saffron \u00b7 Night",
+    "blue-day": "Blue \u00b7 Day", "blue-night": "Blue \u00b7 Night",
+}
+
+LIVE_GLOW_COLOR: str = "#EF4444"
+LIVE_GLOW_SHADOW: str = "rgba(239,68,68,0.55)"
+LOGO_IMAGE_PATH: str = "/branding/logo.png"
+FAVICON_NOTE: str = "Place favicon.ico directly in assets/favicon.ico (NOT assets/branding/)."
+MIN_PASSWORD_LENGTH: int = 4
+
+CURSOR_DEFAULT_IMAGE_PATH: str = "/branding/cursor_default.png"
+CURSOR_ACTIVE_IMAGE_PATH: str = "/branding/cursor_active.png"
+
+TRANSITION_EFFECTS: dict[str, str] = {
+    "dissolve": "Dissolve",
+    "zoom-in": "Zoom In",
+    "zoom-out": "Zoom Out",
+    "slide-up": "Page Slide Up",
+    "slide-down": "Page Slide Down",
+    "slide-left": "Page Slide Left",
+    "slide-right": "Page Slide Right",
+    "flip-x": "Page Flip (Horizontal)",
+    "flip-y": "Page Flip (Vertical)",
+    "blur-in": "Blur In",
+}
+
+
+
+================================================================================
+FILE: requirements.txt
+================================================================================
+annotated-types==0.8.0
+anyio==4.14.2
+argon2-cffi
+APScheduler==3.11.3
+bidict==0.23.1
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.4.9
+click==8.4.2
+colorama==0.4.6
+cryptography==50.0.0
+curl_cffi==0.16.0
+desktop-notifier==6.2.0
+granian==2.8.1
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.18
+iniconfig==2.3.0
+jaraco.classes==3.4.0
+jaraco.context==6.1.2
+jaraco.functools==4.6.0
+keyring==25.7.0
+markdown-it-py==4.2.0
+mdurl==0.1.2
+more-itertools==11.1.0
+numpy==2.5.2
+packaging==26.3
+pandas==3.0.5
+pillow==12.3.0
+platformdirs==4.11.2
+pluggy==1.6.0
+psutil==7.2.2
+pycparser==3.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+Pygments==2.20.0
+PyOTP==2.10.0
+pytest==9.1.1
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.2
+python-engineio==4.13.5
+python-multipart==0.0.32
+python-socketio==5.16.4
+pywin32-ctypes==0.2.3
+qrcode==8.2
+redis==7.4.1
+reflex==0.9.8
+reflex-base==0.9.8
+reflex-components-code==0.9.3
+reflex-components-core==0.9.8
+reflex-components-dataeditor==0.9.1
+reflex-components-gridjs==0.9.1
+reflex-components-lucide==1.0.3
+reflex-components-markdown==0.9.3
+reflex-components-moment==0.9.3
+reflex-components-plotly==0.9.4
+reflex-components-radix==0.9.7
+reflex-components-react-player==0.9.1
+reflex-components-recharts==0.9.2
+reflex-components-sonner==0.9.1
+reflex-hosting-cli==0.1.68
+requests==2.34.2
+rich==15.0.0
+simple-websocket==1.1.0
+six==1.17.0
+starlette==1.6.0
+typing-inspection==0.4.3
+typing_extensions==4.16.0
+tzdata==2026.3
+tzlocal==5.4.4
+urllib3==2.7.0
+watchfiles==1.2.0
+websocket-client==1.9.0
+websockets==17.0.1
+winrt-runtime==3.2.1
+winrt-Windows.ApplicationModel.Core==3.2.1
+winrt-Windows.Data.Xml.Dom==3.2.1
+winrt-Windows.Foundation==3.2.1
+winrt-Windows.Foundation.Collections==3.2.1
+winrt-Windows.UI.Notifications==3.2.1
+wrapt==2.1.2
+wsproto==1.3.2
+
+
+

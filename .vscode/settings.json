@@ -40,6 +40,22 @@
             "folderPath": "QuantumTrade19\\ui\\",
             "isFolderOnly": true,
             "color": "foldercolorizer.color_5fd7ff"
+        },
+        {
+            "folderPath": "QuantumTrade19\\tests\\",
+            "color": "foldercolorizer.color_00ffff"
+        },
+        {
+            "folderPath": "QuantumTrade19\\tests\\workers\\",
+            "color": "foldercolorizer.color_0000d7"
+        },
+        {
+            "folderPath": "QuantumTrade19\\tests\\workers\\poi\\",
+            "color": "foldercolorizer.color_00d7ff"
+        },
+        {
+            "folderPath": "QuantumTrade19\\ui\\pages\\",
+            "color": "foldercolorizer.color_005fd7"
         }
     ]
 }
