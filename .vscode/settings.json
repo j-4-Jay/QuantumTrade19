@@ -3,6 +3,43 @@
         {
             "folderPath": "QuantumTrade19\\engines\\workers\\security\\",
             "color": "foldercolorizer.color_af5f00"
+        },
+        {
+            "folderPath": "QuantumTrade19\\engines\\workers\\poi\\",
+            "color": "foldercolorizer.color_ffff00"
+        },
+        {
+            "folderPath": "QuantumTrade19\\engines\\workers\\market_data\\",
+            "color": "foldercolorizer.color_005fff"
+        },
+        {
+            "folderPath": "QuantumTrade19\\debug_temp\\",
+            "color": "foldercolorizer.color_eeeeee"
+        },
+        {
+            "folderPath": "QuantumTrade19\\engines\\",
+            "isFolderOnly": true,
+            "color": "foldercolorizer.color_5f5fd7"
+        },
+        {
+            "folderPath": "QuantumTrade19\\engines\\masters\\",
+            "isFolderOnly": true,
+            "color": "foldercolorizer.color_d70000"
+        },
+        {
+            "folderPath": "QuantumTrade19\\engines\\monitors\\",
+            "isFolderOnly": true,
+            "color": "foldercolorizer.color_5fffd7"
+        },
+        {
+            "folderPath": "QuantumTrade19\\engines\\workers\\",
+            "isFolderOnly": true,
+            "color": "foldercolorizer.color_0000d7"
+        },
+        {
+            "folderPath": "QuantumTrade19\\ui\\",
+            "isFolderOnly": true,
+            "color": "foldercolorizer.color_5fd7ff"
         }
     ]
 }

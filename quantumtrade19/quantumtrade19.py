@@ -1,16 +1,19 @@
-"""QuantumTrade19 - App entrypoint.
+"""QuantumTrade19 - Reflex application entrypoint.
 
-PATH: quantumtrade19/quantumtrade19.py (REPLACE ENTIRE FILE)
-
-CHANGE (Module 01 gap-closure item 8): _shell_body()'s tab content is now wrapped in its own
-box, keyed by AppState.active_tab, carrying the qt19-tab-switch class - forces a fresh mount
-on every tab change so the fade+slide animation replays every single time, the same
-remount-via-key technique already used for full-screen transitions and the login shake.
-symbol_detail_popup() stays outside that box so opening a detail card never re-triggers the
-tab animation.
+PATCH: initialize persistent runtime logging before Reflex can create
+background tasks, Workers, or thread pools. configure_logging() is idempotent
+and writes logs/quantumtrade19.log plus logs/errors.log.
 """
 from __future__ import annotations
+
+from config.logging_config import configure_logging
+
+# Must run before importing app state/components, which may construct service
+# singletons or schedule background work during import/on_load.
+configure_logging()
+
 import reflex as rx
+
 from state.app_state import AppState
 from ui.theme.global_css import qt19_global_css
 from ui.components.keyboard_shortcuts import qt19_keyboard_shortcuts
@@ -30,9 +33,6 @@ from ui.components.page_shell import qt19_page_shell
 from ui.components.symbol_detail_popup import symbol_detail_popup
 
 
-
-
-
 def _shell_body() -> rx.Component:
     return rx.fragment(
         rx.box(
@@ -47,8 +47,6 @@ def _shell_body() -> rx.Component:
         ),
         symbol_detail_popup(),
     )
-
-
 
 
 def _current_screen() -> rx.Component:
@@ -98,7 +96,8 @@ def index() -> rx.Component:
                 "--qt19-text-primary": AppState.theme_vars["text_primary"],
                 "--qt19-text-muted": AppState.theme_vars["text_muted"],
             },
-            width="100%", height="100vh",
+            width="100%",
+            height="100vh",
         ),
     )
 
