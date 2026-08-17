@@ -1,89 +1,110 @@
-"""
-engines/workers/poi/fvg_detector_worker.py
-
-Tier 1 Worker #2 of File 03. Scans HTF candles for a classic 3-candle Fair
-Value Gap and records it as a price-range POI.
-
-FIX: candle field access now goes through cf() -- see candle_access.py.
-"""
+"""File 03.1 Fair Value Gap detector with selectable zone source timeframes."""
 from __future__ import annotations
 
 import logging
-import time
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional
 
 from .candle_access import cf
 from .htf_availability import MarketDataMonitorLike
-from .poi_types import POI, POIType
+from .poi_types import POI, POIType, ZONE_SOURCE_TFS
 
 logger = logging.getLogger("poi_monitor.fvg_detector_worker")
 
-SCAN_TFS = ["4H", "1D", "1W", "1M"]
 LOOKBACK_CANDLES = 60
+LEGACY_SCAN_TFS = ("4H", "1D", "1W", "1M")
 
 
 class FVGDetectorWorker:
+    """Detect classic three-candle FVGs from selected monitor candle series."""
+
     def __init__(
         self,
         market_data_monitor: MarketDataMonitorLike,
         symbol: str,
         enabled_types: Dict[str, bool],
         on_poi_update: Callable[[str, List[POI]], None],
+        *,
+        zone_source_tf_enabled: Optional[Dict[str, bool]] = None,
+        display_enabled: Optional[Dict[str, bool]] = None,
+        strategy_enabled: Optional[Dict[str, bool]] = None,
     ) -> None:
         self.mdm = market_data_monitor
         self.symbol = symbol
         self.enabled_types = enabled_types
         self.on_poi_update = on_poi_update
+        self._legacy_source_mode = zone_source_tf_enabled is None
+        self.zone_source_tf_enabled = zone_source_tf_enabled or {}
+        self.display_enabled = display_enabled or {}
+        self.strategy_enabled = strategy_enabled or enabled_types
         self._pois: Dict[str, POI] = {}
+
+    def _selected_source_tfs(self) -> List[str]:
+        if self._legacy_source_mode:
+            return list(LEGACY_SCAN_TFS)
+        return [tf for tf in ZONE_SOURCE_TFS if self.zone_source_tf_enabled.get(tf, False)]
 
     def _scan_tf(self, tf: str) -> List[POI]:
         candles = self.mdm.get_historical_candles(self.symbol, tf, LOOKBACK_CANDLES)
         if not candles or len(candles) < 3:
             return []
         found: List[POI] = []
-        for i in range(2, len(candles)):
-            c1, c2, c3 = candles[i - 2], candles[i - 1], candles[i]
-            c1_high, c1_low = cf(c1, "high"), cf(c1, "low")
-            c3_high, c3_low = cf(c3, "high"), cf(c3, "low")
-
-            # Bullish FVG: gap up, c3.low sits above c1.high, acts as support on retest.
-            if c3_low > c1_high:
+        for index in range(2, len(candles)):
+            first, third = candles[index - 2], candles[index]
+            first_high, first_low = cf(first, "high"), cf(first, "low")
+            third_high, third_low = cf(third, "high"), cf(third, "low")
+            source_ts = getattr(third, "open_time", third.get("open_time", third.get("bucket_start_ms", 0)) if isinstance(third, dict) else 0)
+            common = {
+                "symbol": self.symbol,
+                "poi_type": POIType.FVG,
+                "source_tf": tf,
+                "formed_at_index": index,
+                "formed_at_ts": float(source_ts),
+                "display_enabled": self.display_enabled.get(POIType.FVG, tf in ("1m", "15m")),
+                "strategy_enabled": self.strategy_enabled.get(POIType.FVG, False),
+            }
+            if third_low > first_high:
                 found.append(POI(
-                    poi_id=f"{self.symbol}:FVG:{tf}:{i}:bull",
-                    symbol=self.symbol, poi_type=POIType.FVG, role="support",
-                    source_tf=tf, price_high=c3_low, price_low=c1_high,
-                    formed_at_index=i, formed_at_ts=time.time(),
-                    metadata={"direction": "bullish", "impulse_candle_index": i - 1},
+                    poi_id=f"{self.symbol}:FVG:{tf}:{index}:bull", role="support",
+                    price_high=third_low, price_low=first_high,
+                    metadata={"direction": "bullish", "impulse_candle_index": index - 1, "source_tf": tf, "broker_boundary": "UTC"},
+                    **common,
                 ))
-
-            # Bearish FVG: gap down, c3.high sits below c1.low, acts as resistance on retest.
-            if c3_high < c1_low:
+            if third_high < first_low:
                 found.append(POI(
-                    poi_id=f"{self.symbol}:FVG:{tf}:{i}:bear",
-                    symbol=self.symbol, poi_type=POIType.FVG, role="resistance",
-                    source_tf=tf, price_high=c1_low, price_low=c3_high,
-                    formed_at_index=i, formed_at_ts=time.time(),
-                    metadata={"direction": "bearish", "impulse_candle_index": i - 1},
+                    poi_id=f"{self.symbol}:FVG:{tf}:{index}:bear", role="resistance",
+                    price_high=first_low, price_low=third_high,
+                    metadata={"direction": "bearish", "impulse_candle_index": index - 1, "source_tf": tf, "broker_boundary": "UTC"},
+                    **common,
                 ))
         return found
 
     def recompute(self) -> List[POI]:
-        if not self.enabled_types.get(POIType.FVG, False):
+        if not self.strategy_enabled.get(POIType.FVG, self.enabled_types.get(POIType.FVG, False)):
             self._pois = {}
             self.on_poi_update(self.symbol, [])
             return []
         pois: List[POI] = []
-        for tf in SCAN_TFS:
+        for tf in self._selected_source_tfs():
             try:
                 pois.extend(self._scan_tf(tf))
             except Exception:  # noqa: BLE001
-                logger.exception("FVG scan failed for %s/%s", self.symbol, tf)
-        self._pois = {p.poi_id: p for p in pois}
+                logger.exception("fvg_scan_failed symbol=%s timeframe=%s", self.symbol, tf)
+        self._pois = {poi.poi_id: poi for poi in pois}
         self.on_poi_update(self.symbol, list(self._pois.values()))
         return list(self._pois.values())
 
     def set_enabled(self, enabled: bool) -> None:
-        self.enabled_types[POIType.FVG] = enabled
+        self.enabled_types[POIType.FVG] = bool(enabled)
+        self.strategy_enabled[POIType.FVG] = bool(enabled)
+        self.recompute()
+
+    def set_source_tf_enabled(self, timeframe: str, enabled: bool) -> None:
+        if timeframe not in ZONE_SOURCE_TFS:
+            raise ValueError(f"Unsupported zone source timeframe: {timeframe}")
+        if self._legacy_source_mode:
+            self._legacy_source_mode = False
+            self.zone_source_tf_enabled = {tf: tf in LEGACY_SCAN_TFS for tf in ZONE_SOURCE_TFS}
+        self.zone_source_tf_enabled[timeframe] = bool(enabled)
         self.recompute()
 
     async def run_forever(self, poll_seconds: float = 60.0) -> None:
@@ -92,5 +113,5 @@ class FVGDetectorWorker:
             try:
                 self.recompute()
             except Exception:  # noqa: BLE001
-                logger.exception("FVG_Detector_Worker failed for %s", self.symbol)
+                logger.exception("fvg_detector_worker_failed symbol=%s", self.symbol)
             await asyncio.sleep(poll_seconds)
