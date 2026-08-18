@@ -163,7 +163,7 @@ class AppState(rx.State):
         self.tab_transition_mode = settings.get("tab_transition_mode", self.tab_transition_mode)
         _engine.ensure_market_data_started()
         self.refresh_symbol_rows()
-        return None
+        return [AppState.poll_ws_status, AppState.poll_pinned_prices]
 
 
     async def run_splash_sequence(self):

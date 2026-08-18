@@ -22,6 +22,30 @@ from engines.monitors.poi_monitor import POIMonitor
 from engines.workers.poi.poi_types import DEFAULT_ENABLED, POI, POIState, POIStateRecord, POIType
 from tests.workers.poi.poi_test_helpers import FakeMarketDataMonitor, FakeSymbolRegistry, candle, flat_candles
 
+
+
+from pathlib import Path
+
+from engines.workers.poi.poi_settings import POISettingsStore
+from engines.workers.security.settings_persistence_worker import SettingsPersistenceWorker
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 SYMBOLS = ("B-BTC_USDT", "B-ETH_USDT")
 
 
@@ -56,12 +80,19 @@ def _populate_minimal_htf_data(mdm: FakeMarketDataMonitor) -> None:
 
 
 @pytest.fixture
-def monitor():
+def monitor(tmp_path: Path):
     mdm = FakeMarketDataMonitor()
     _populate_minimal_htf_data(mdm)
     registry = FakeSymbolRegistry(SYMBOLS)
-    return POIMonitor(mdm, registry)
 
+    isolated_settings = POISettingsStore(
+        SettingsPersistenceWorker(tmp_path / "settings.json")
+    )
+    return POIMonitor(
+        mdm,
+        registry,
+        settings_store=isolated_settings,
+    )
 
 def test_get_active_pois_returns_default_line_pois_for_each_symbol_independently(monitor):
     btc = monitor.get_active_pois("B-BTC_USDT")
