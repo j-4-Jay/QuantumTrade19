@@ -2,40 +2,30 @@
 
 PATH: tests/workers/market_data/test_market_data_workers.py (REPLACE ENTIRE FILE)
 
-FIX (ISSUE-001): the import on the old line 14 used the wrong casing
-(`RESTPollFallbackWorker`, all-caps REST) which does not exist -- the real,
-locked, soak-tested class is `RestPollFallbackWorker` (mixed case). Beyond
-the casing, the old `test_rest_fallback_engages_only_for_the_degraded_symbol_never_others`
-test assumed an entirely different design (async `http_client`, auto-engage
-via an event-bus subscription to `market_data.feed.degraded`, an `is_active()`
-method, and an `_on_ws_recovering()` method) that the real Worker never
-implements. The real Worker is synchronous, runs its polling loop in a
-background thread, is engaged/disengaged directly by its caller, uses
-`http_get`/`on_tick` callbacks, and exposes `is_engaged()`/`get_last_cached()`.
-
-This version replaces that one test with a corrected version that exercises
-the REAL interface instead of guessing at the code to fit a stale test. No
-other test in this file needed changes.
+UPDATE: SymbolRegistryWorker now implements BOTH Blueprint Section 8 deep-
+history eligibility paths (auto-live-traded once, OR manually added before
+first trade). The manual-add test below now exercises the real, newly-added
+add_symbol_manual()/is_deep_history_eligible() path instead of just flagging
+it as a known gap.
 """
 from __future__ import annotations
-import asyncio
 import time
 from pathlib import Path
 import pytest
 
-from engines.event_bus.bus import event_bus
 from engines.workers.market_data.symbol_registry_worker import SymbolRegistryWorker
-from engines.workers.market_data.tick_normalizer_worker import TickNormalizerWorker
+from engines.workers.market_data.tick_normalizer_worker import TickNormalizerWorker, NormalizedTick
 from engines.workers.market_data.candle_builder_worker import CandleBuilderWorker
 from engines.workers.market_data.candle_store import CandleStore
 from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
 from engines.workers.market_data.deep_history_downloader_worker import DeepHistoryDownloaderWorker
 from engines.workers.market_data.rest_poll_fallback_worker import RestPollFallbackWorker
+from engines.event_bus.bus import event_bus
 
 
 @pytest.fixture
 def tmp_registry(tmp_path: Path) -> SymbolRegistryWorker:
-    return SymbolRegistryWorker(path=tmp_path / "symbol_registry.json")
+    return SymbolRegistryWorker(path=str(tmp_path / "symbol_registry.json"))
 
 
 @pytest.fixture
@@ -43,52 +33,84 @@ def tmp_manifest(tmp_path: Path) -> HistoryManifestWorker:
     return HistoryManifestWorker(manifest_dir=tmp_path / "manifests")
 
 
-def test_symbol_registry_seeds_pinned_defaults_with_meta(tmp_registry: SymbolRegistryWorker) -> None:
-    pinned = tmp_registry.get_pinned_symbols()
-    assert set(pinned) == {"GOLD", "ETHUSD", "BTCUSD"}
-    meta = tmp_registry.get_symbol_meta("BTCUSD")
-    assert set(meta) == {"tick_size", "contract_size", "maker_fee", "taker_fee"}
+def test_symbol_registry_seeds_default_futures_symbols_with_tick_metadata(tmp_registry: SymbolRegistryWorker) -> None:
+    active = set(tmp_registry.get_active_symbols())
+    assert active == {"B-BTC_USDT", "B-ETH_USDT", "B-XAU_USDT"}
+    info = tmp_registry.get_symbol_info("B-BTC_USDT")
+    assert info is not None
+    assert info.tick_size == 0.1
+    assert info.contract_size == 0.001
+    assert info.maker_fee == 0.0005
+    assert info.taker_fee == 0.001
 
 
-def test_symbol_registry_manual_add_makes_deep_history_eligible(tmp_registry: SymbolRegistryWorker) -> None:
-    tmp_registry.add_symbol_manual("SOLUSD")
-    assert tmp_registry.is_deep_history_eligible("SOLUSD") is True
+def test_symbol_registry_add_and_mark_auto_live_traded_makes_deep_history_eligible(tmp_registry: SymbolRegistryWorker) -> None:
+    tmp_registry.add_symbol("B-SOL_USDT", tick_size=0.01, contract_size=0.01,
+                             maker_fee=0.0005, taker_fee=0.001, asset_class="crypto")
+    assert tmp_registry.is_deep_history_eligible("B-SOL_USDT") is False
+    tmp_registry.mark_auto_live_traded("B-SOL_USDT")
+    assert tmp_registry.is_deep_history_eligible("B-SOL_USDT") is True
+    assert "B-SOL_USDT" in tmp_registry.get_deep_history_eligible()
 
 
-def test_tick_normalizer_emits_canonical_shape_with_both_timestamps() -> None:
-    captured = []
-    event_bus.subscribe("market_data.tick.normalized", lambda e: captured.append(e))
-    TickNormalizerWorker()
-    event_bus.publish("market_data.tick.raw_ws", {
-        "symbol": "BTCUSD", "price": "65000.5", "quantity": "0.1", "exchange_timestamp_ms": 1000})
-    tick = captured[-1]
-    assert tick["price"] == 65000.5 and tick["source"] == "ws"
-    assert tick["exchange_timestamp_ms"] == 1000 and tick["received_timestamp_ms"] > 0
+def test_symbol_registry_manual_add_makes_deep_history_eligible_immediately(tmp_registry: SymbolRegistryWorker) -> None:
+    """Blueprint Section 8's second eligibility path: manually adding a
+    symbol before its first trade must make it deep-history eligible right
+    away, without waiting for mark_auto_live_traded()."""
+    tmp_registry.add_symbol_manual("B-XRP_USDT", tick_size=0.001, contract_size=1.0,
+                                    maker_fee=0.0005, taker_fee=0.001, asset_class="crypto")
+    assert tmp_registry.is_deep_history_eligible("B-XRP_USDT") is True
+    assert "B-XRP_USDT" in tmp_registry.get_deep_history_eligible()
+    info = tmp_registry.get_symbol_info("B-XRP_USDT")
+    assert info.auto_live_traded_once is False
+    assert info.deep_history_manual_add is True
+
+
+def test_tick_normalizer_from_ws_payload_returns_valid_normalized_tick() -> None:
+    tick = TickNormalizerWorker.from_ws_payload("B-BTC_USDT", {"ls": "65000.5", "v": "0.1", "T": 1000})
+    assert tick is not None
+    assert TickNormalizerWorker.is_valid(tick) is True
+    assert tick.price == 65000.5
+    assert tick.volume == 0.1
+    assert tick.source == "ws"
+    assert tick.exchange_ts == 1000
+
+
+def test_tick_normalizer_from_ws_payload_rejects_metadata_only_row() -> None:
+    tick = TickNormalizerWorker.from_ws_payload("B-BTC_USDT", {"bmST": 1000, "cmRT": 1000})
+    assert tick is None
 
 
 def test_candle_builder_closes_1m_on_rollover_and_builds_poi_timeframes() -> None:
     closed = []
-    event_bus.subscribe("market_data.candle.closed", lambda e: closed.append(e))
-    builder = CandleBuilderWorker()
-    builder._on_tick({"symbol": "BTCUSD", "price": 100.0, "volume": 1, "exchange_timestamp_ms": 0})
-    builder._on_tick({"symbol": "BTCUSD", "price": 110.0, "volume": 1, "exchange_timestamp_ms": 30_000})
-    builder._on_tick({"symbol": "BTCUSD", "price": 90.0, "volume": 1, "exchange_timestamp_ms": 65_000})
-    one_min = [c for c in closed if c["timeframe"] == "1m"]
-    assert one_min and one_min[0]["high"] == 110.0 and one_min[0]["low"] == 100.0
-    daily = [k for k in builder._open if k[1] == "Daily"]
-    weekly = [k for k in builder._open if k[1] == "Weekly"]
-    monthly = [k for k in builder._open if k[1] == "Monthly"]
-    assert daily and weekly and monthly
+    builder = CandleBuilderWorker(on_candle_closed=lambda c: closed.append(c))
+    ticks = [
+        NormalizedTick(symbol="BTCUSD", price=100.0, volume=1.0, exchange_ts=0, received_ts=0, source="ws"),
+        NormalizedTick(symbol="BTCUSD", price=110.0, volume=1.0, exchange_ts=30_000, received_ts=30_000, source="ws"),
+        NormalizedTick(symbol="BTCUSD", price=90.0, volume=1.0, exchange_ts=65_000, received_ts=65_000, source="ws"),
+    ]
+    for tick in ticks:
+        builder.ingest(tick, timeframes=["1m", "1D", "1W", "1M"])
+    one_min = [c for c in closed if c.timeframe == "1m"]
+    assert one_min and one_min[0].high == 110.0 and one_min[0].low == 100.0
+    assert builder.get_live_candle("BTCUSD", "1D") is not None
+    assert builder.get_live_candle("BTCUSD", "1W") is not None
+    assert builder.get_live_candle("BTCUSD", "1M") is not None
 
 
 def test_candle_builder_never_emits_duplicate_for_same_bucket() -> None:
     closed = []
-    event_bus.subscribe("market_data.candle.closed", lambda e: closed.append(e))
-    builder = CandleBuilderWorker()
+    builder = CandleBuilderWorker(on_candle_closed=lambda c: closed.append(c))
     for ts in (0, 10_000, 20_000, 61_000):
-        builder._on_tick({"symbol": "ETHUSD", "price": 50.0, "volume": 1, "exchange_timestamp_ms": ts})
-    builder._on_tick({"symbol": "ETHUSD", "price": 51.0, "volume": 1, "exchange_timestamp_ms": 5_000})
-    one_min_bucket0 = [c for c in closed if c["timeframe"] == "1m" and c["bucket_start_ms"] == 0]
+        builder.ingest(
+            NormalizedTick(symbol="ETHUSD", price=50.0, volume=1.0, exchange_ts=ts, received_ts=ts, source="ws"),
+            timeframes=["1m"],
+        )
+    builder.ingest(
+        NormalizedTick(symbol="ETHUSD", price=51.0, volume=1.0, exchange_ts=5_000, received_ts=5_000, source="ws"),
+        timeframes=["1m"],
+    )
+    one_min_bucket0 = [c for c in closed if c.timeframe == "1m" and c.open_time == 0]
     assert len(one_min_bucket0) == 1
 
 
@@ -100,28 +122,32 @@ def test_manifest_find_gaps_and_coverage(tmp_manifest: HistoryManifestWorker) ->
     assert tmp_manifest.coverage_percent("BTCUSD", "1m", 0, 1000) == 100.0
 
 
-class _FakeHTTP:
-    def __init__(self, rows_per_call=None) -> None:
-        self.calls = 0
-        self._rows_per_call = rows_per_call
+class _FakeSyncCandlesResponse:
+    def __init__(self, rows) -> None:
+        self._rows = rows
 
-    async def get_json(self, url, params=None):
-        self.calls += 1
-        if self._rows_per_call is not None:
-            return self._rows_per_call
-        if self.calls > 1:
-            return []
-        return [{"open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 10, "bucket_start_ms": params["startTime"]}]
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self):
+        return self._rows
 
 
 def test_deep_history_downloader_stops_when_exchange_has_no_more_data(tmp_manifest: HistoryManifestWorker) -> None:
-    async def run():
-        http = _FakeHTTP()
-        worker = DeepHistoryDownloaderWorker(tmp_manifest, http_client=http)
-        await worker._backfill_timeframe("BTCUSD", "1m")
-        return http.calls
-    calls = asyncio.run(run())
-    assert calls >= 1
+    call_count = {"n": 0}
+
+    def fake_http_get(url, params=None, timeout=None):
+        call_count["n"] += 1
+        return _FakeSyncCandlesResponse([])
+
+    worker = DeepHistoryDownloaderWorker(tmp_manifest, http_get=fake_http_get)
+    worker.start_download("BTCUSD", "1m")
+
+    deadline = time.time() + 2.0
+    while worker.is_downloading("BTCUSD", "1m") and time.time() < deadline:
+        time.sleep(0.05)
+
+    assert call_count["n"] >= 1
     assert tmp_manifest.get_covered_ranges("BTCUSD", "1m") != []
 
 
@@ -132,9 +158,6 @@ def test_manifest_persists_across_restart(tmp_manifest: HistoryManifestWorker) -
 
 
 class _FakeSyncHTTPResponse:
-    """Mimics the shape of a `requests.Response` object, since the real
-    RestPollFallbackWorker calls a plain synchronous `http_get(url, timeout=)`
-    callable and then does `resp.raise_for_status()` + `resp.json()`."""
     def __init__(self, payload: dict) -> None:
         self._payload = payload
 
@@ -146,11 +169,6 @@ class _FakeSyncHTTPResponse:
 
 
 def test_rest_fallback_engages_only_for_the_degraded_symbol_never_others() -> None:
-    """Exercises the REAL RestPollFallbackWorker interface: synchronous
-    `http_get` callable, direct `engage()`/`disengage()` calls (this Worker
-    has no event-bus subscription of its own -- the caller decides when to
-    engage/disengage it), `is_engaged()` for state, and the `on_tick`
-    callback firing on every successfully normalized poll."""
     ticks_received = []
 
     def fake_http_get(url, timeout=5):

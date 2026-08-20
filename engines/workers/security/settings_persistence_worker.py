@@ -2,9 +2,26 @@
 
 PATH: engines/workers/security/settings_persistence_worker.py  (REPLACE ENTIRE FILE)
 
-CHANGE: added tab_transition_effects_enabled / tab_transition_mode defaults - the tab-switch
-animation (Dashboard <-> Trading Panel <-> Journal & Reports <-> Alerts <-> Settings) is now
-independently configurable from Settings, separate from the screen-entrance transition pool.
+FIX (ISSUE-010): added an optional `force_memory` flag, mirroring the exact
+same pattern SecureKeyStorageWorker already uses. When True, this worker
+never touches the real data/settings.json file at all - it only ever
+operates on an in-memory copy of the defaults. Default is False, so every
+existing call site (which never passes this argument) behaves EXACTLY as
+before - this is a pure, backward-compatible addition, not a change to any
+existing behavior.
+
+Root cause this fixes: SecurityMonitor.__init__ already passes
+force_memory=force_memory to SecureKeyStorageWorker, but was never able to
+pass it here because this class had no such parameter - meaning every
+test using SecurityMonitor(force_memory=True) was still silently reading
+and writing the one real settings file on disk, letting state leak between
+test runs (e.g. a TOTP-enabled flag set by one test bleeding into another
+test that expected a clean slate).
+
+CHANGE (unchanged from before): added tab_transition_effects_enabled / tab_transition_mode
+defaults - the tab-switch animation (Dashboard <-> Trading Panel <-> Journal & Reports <->
+Alerts <-> Settings) is independently configurable from Settings, separate from the
+screen-entrance transition pool.
 """
 from __future__ import annotations
 import json
@@ -31,12 +48,16 @@ _DEFAULTS: dict[str, Any] = {
 
 
 class SettingsPersistenceWorker:
-    def __init__(self, path: Path = _SETTINGS_PATH) -> None:
+    def __init__(self, path: Path = _SETTINGS_PATH, force_memory: bool = False) -> None:
         self._path = path
+        self._force_memory = force_memory
         self._cache: dict[str, Any] | None = None
 
     def load(self) -> dict[str, Any]:
         if self._cache is not None:
+            return dict(self._cache)
+        if self._force_memory:
+            self._cache = dict(_DEFAULTS)
             return dict(self._cache)
         if not self._path.exists():
             self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -56,6 +77,8 @@ class SettingsPersistenceWorker:
         current = self.load()
         current.update(settings)
         self._cache = current
+        if self._force_memory:
+            return
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(json.dumps(current, indent=2))
 

@@ -2,11 +2,21 @@
 
 PATH: engines/monitors/security_monitor.py  (REPLACE ENTIRE FILE - fully overwrite, don't merge)
 
-CHANGE (Module 01 gap-closure item 10): added is_device_trusted() / trust_this_device() /
-clear_device_trust() - backs the "Remember this device" 60-day toggle on Login. login() now
-skips the TOTP check entirely when the device is currently trusted, regardless of whether
-TOTP is enabled on the account. Trust is stored via the OS keyring (same mechanism as the
-TOTP secret), so it is machine-bound - a different machine never sees it.
+FIX (ISSUE-010): SettingsPersistenceWorker() was constructed with no
+force_memory argument at all, even though SecureKeyStorageWorker right next
+to it already receives one. That meant every test using
+SecurityMonitor(force_memory=True) was still silently sharing the one real
+data/settings.json file across test runs, letting settings like
+totp_enabled leak between tests. Now forwards force_memory through, exactly
+mirroring the keystore's existing pattern.
+
+CHANGE (Module 01 gap-closure item 10, unchanged from before): added
+is_device_trusted() / trust_this_device() / clear_device_trust() - backs the
+"Remember this device" 60-day toggle on Login. login() now skips the TOTP
+check entirely when the device is currently trusted, regardless of whether
+TOTP is enabled on the account. Trust is stored via the OS keyring (same
+mechanism as the TOTP secret), so it is machine-bound - a different machine
+never sees it.
 """
 from __future__ import annotations
 import time
@@ -24,7 +34,7 @@ DEVICE_TRUST_SECONDS: int = 60 * 24 * 60 * 60  # 60 days
 class SecurityMonitor:
     def __init__(self, force_memory: bool = False) -> None:
         self.keystore = SecureKeyStorageWorker(force_memory=force_memory)
-        self.persistence = SettingsPersistenceWorker()
+        self.persistence = SettingsPersistenceWorker(force_memory=force_memory)
         self.auth = AuthLoginWorker(self.keystore)
         self.totp = Totp2FAWorker(self.keystore)
         self.app_lock = AppLockWorker()
@@ -63,6 +73,7 @@ class SecurityMonitor:
     def get_setting(self, key: str, default=None):
         return self.persistence.load().get(key, default)
 
+
     def set_setting(self, key: str, value) -> None:
         self.persistence.save({key: value})
 
@@ -70,6 +81,7 @@ class SecurityMonitor:
     # --- Per-symbol setting interface (exercised for real in Module 02) ---
     def get_per_symbol_setting(self, symbol: str, key: str, default=None):
         return self.persistence.get_per_symbol_setting(symbol, key, default)
+
 
     def set_per_symbol_setting(self, symbol: str, key: str, value) -> None:
         self.persistence.set_per_symbol_setting(symbol, key, value)
@@ -85,9 +97,11 @@ class SecurityMonitor:
         except (TypeError, ValueError):
             return False
 
+
     def trust_this_device(self) -> None:
         trust_until = int(time.time()) + DEVICE_TRUST_SECONDS
         self.keystore.set_secret("device_trust_until", str(trust_until))
+
 
     def clear_device_trust(self) -> None:
         self.keystore.delete_secret("device_trust_until")

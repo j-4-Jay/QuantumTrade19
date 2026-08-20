@@ -1,11 +1,41 @@
+"""
+PATH: tests/test_market_data_monitor.py (REPLACE ENTIRE FILE)
 
+FIX: the WS-drop/REST-fallback test used fixed-duration `time.sleep()` calls
+tuned to just barely clear `HEARTBEAT_TIMEOUT_S`. That duration happened to
+land within a fraction of a second of ws_feed_worker.py's own independent
+background reconnect retry timer (`RECONNECT_BACKOFF_START_S`), creating a
+genuine timing race between the test's fixed sleep and a real production
+background thread - sometimes passing, sometimes not, depending on thread
+scheduling jitter. This is a test-design issue, not a production bug.
+
+Replaced both fixed sleeps with a poll-until-condition helper with a
+generous timeout. This removes the race entirely and is a more robust
+pattern for testing any threaded/background system in general - never
+guess a sleep duration against a concurrently running timer you don't
+control.
+"""
+from __future__ import annotations
 import time
 import unittest
 from typing import Callable, Dict, List
 
 from engines.workers.market_data.candle_builder_worker import Candle
 from engines.workers.market_data.tick_normalizer_worker import NormalizedTick
+from engines.workers.market_data.ws_feed_worker import (
+    AGGREGATE_UPDATE_EVENT, HEARTBEAT_TIMEOUT_S, HEARTBEAT_POLL_INTERVAL_S,
+    RECONNECT_BACKOFF_START_S,
+)
 from engines.monitors.market_data_monitor import MarketDataMonitor
+
+
+def _wait_until(condition: Callable[[], bool], timeout_s: float, poll_s: float = 0.1) -> bool:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if condition():
+            return True
+        time.sleep(poll_s)
+    return False
 
 
 class FakeSocketTransport:
@@ -30,9 +60,13 @@ class FakeSocketTransport:
         return self._connected
 
     def push_tick(self, symbol, price, ts_ms, volume=1.0):
-        handler = self._handlers.get("ticker")
+        """Simulates one real CoinDCX aggregate-channel delta frame carrying
+        a price-bearing row for exactly one symbol, matching the real
+        `{"prices": {symbol: {...}}}` shape that ws_feed_worker.py actually
+        parses."""
+        handler = self._handlers.get(AGGREGATE_UPDATE_EVENT)
         if handler:
-            handler({"symbol": symbol, "p": price, "q": volume, "T": ts_ms})
+            handler({"prices": {symbol: {"ls": price, "q": volume, "T": ts_ms}}})
 
 
 class FakeHttpResponse:
@@ -47,15 +81,26 @@ class FakeHttpResponse:
 
 
 def make_fake_candle_http_get(candle_rows):
+    """Real HistoricalDataLoaderWorker expects {"data": [...]} - see
+    historical_data_loader_worker.py's verified response-shape docstring."""
     def _get(url, params=None, timeout=None):
-        return FakeHttpResponse(candle_rows)
+        return FakeHttpResponse({"data": candle_rows})
     return _get
 
 
 def make_fake_ticker_http_get(price_holder, symbol):
+    """Real RestPollFallbackWorker._extract_row_for_symbol expects a dict
+    with a "prices" (or "data") key, keyed by symbol - not a bare list."""
     def _get(url, timeout=None):
-        return FakeHttpResponse([{"market": symbol, "last_price": price_holder["price"],
-                                   "volume": 1.0, "timestamp": int(time.time() * 1000)}])
+        return FakeHttpResponse({
+            "prices": {
+                symbol: {
+                    "last_price": price_holder["price"],
+                    "volume": 1.0,
+                    "timestamp": int(time.time() * 1000),
+                }
+            }
+        })
     return _get
 
 
@@ -108,14 +153,18 @@ class TestWSDropAndRestFallback(unittest.TestCase):
         transport.push_tick(symbol, 100.0, int(time.time() * 1000))
         self.assertEqual(monitor.get_health()[symbol], "OK")
 
-        time.sleep(3.2)
-        self.assertEqual(monitor.get_health()[symbol], "DEGRADED")
-        self.assertTrue(monitor.rest_fallback.is_engaged(symbol))
+        degraded = _wait_until(
+            lambda: monitor.get_health().get(symbol) == "DEGRADED" and monitor.rest_fallback.is_engaged(symbol),
+            timeout_s=HEARTBEAT_TIMEOUT_S + RECONNECT_BACKOFF_START_S + 3.0,
+        )
+        self.assertTrue(degraded, "symbol never transitioned to DEGRADED with REST fallback engaged")
 
         transport.push_tick(symbol, 105.0, int(time.time() * 1000))
-        time.sleep(0.2)
-        self.assertFalse(monitor.rest_fallback.is_engaged(symbol))
-        self.assertEqual(monitor.get_health()[symbol], "OK")
+        restored = _wait_until(
+            lambda: not monitor.rest_fallback.is_engaged(symbol) and monitor.get_health().get(symbol) == "OK",
+            timeout_s=RECONNECT_BACKOFF_START_S + 3.0,
+        )
+        self.assertTrue(restored, "rest fallback did not disengage / health did not return to OK after a fresh tick")
 
         monitor.ws_feed.stop()
 

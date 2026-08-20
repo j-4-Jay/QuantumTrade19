@@ -1,6 +1,18 @@
 """
 FULL PATH: engines/workers/market_data/symbol_registry_worker.py (REPLACE ENTIRE FILE)
 
+ADDS: the Architecture Blueprint's Deep History section (Section 8) specifies
+two eligibility paths for deep-history backfill:
+  1. auto-live-traded at least once (already implemented: mark_auto_live_traded)
+  2. manually added before its first trade (was NOT implemented until now)
+
+This version adds the second path: a new `deep_history_manual_add` field on
+SymbolInfo, a new `add_symbol_manual()` method that sets it, and
+`get_deep_history_eligible()` now returns a symbol if EITHER path is true.
+Also added `is_deep_history_eligible(symbol)` as a convenience single-symbol
+check. Every existing field, method, and behavior is unchanged - this is a
+pure addition, not a modification of anything already locked/soak-tested.
+
 Adds favorite/unfavorite support: is_favorite field + set_favorite() +
 get_symbols_sorted() (favorites first, alphabetical within each group).
 """
@@ -27,6 +39,7 @@ class SymbolInfo:
     asset_class: str = "crypto"
     auto_live_traded_once: bool = False
     is_favorite: bool = False
+    deep_history_manual_add: bool = False
 
 
 class SymbolRegistryWorker:
@@ -43,6 +56,7 @@ class SymbolRegistryWorker:
                 raw = json.load(f)
             for row in raw:
                 row.setdefault("is_favorite", False)
+                row.setdefault("deep_history_manual_add", False)
                 info = SymbolInfo(**row)
                 self._symbols[info.symbol] = info
         else:
@@ -71,6 +85,19 @@ class SymbolRegistryWorker:
         with self._lock:
             info = SymbolInfo(symbol=symbol, tick_size=tick_size, contract_size=contract_size,
                                maker_fee=maker_fee, taker_fee=taker_fee, active=active, asset_class=asset_class)
+            self._symbols[symbol] = info
+            self._persist()
+            return info
+
+    def add_symbol_manual(self, symbol, tick_size, contract_size, maker_fee, taker_fee,
+                           asset_class="crypto", active=True) -> SymbolInfo:
+        """Blueprint Section 8, second eligibility path: a symbol manually
+        pre-added here (before its first live trade) becomes deep-history
+        eligible immediately, without waiting for mark_auto_live_traded()."""
+        with self._lock:
+            info = SymbolInfo(symbol=symbol, tick_size=tick_size, contract_size=contract_size,
+                               maker_fee=maker_fee, taker_fee=taker_fee, active=active,
+                               asset_class=asset_class, deep_history_manual_add=True)
             self._symbols[symbol] = info
             self._persist()
             return info
@@ -108,9 +135,15 @@ class SymbolRegistryWorker:
                 self._symbols[symbol].auto_live_traded_once = True
                 self._persist()
 
-    def get_deep_history_eligible(self):
+    def get_deep_history_eligible(self) -> List[str]:
         with self._lock:
-            return [s.symbol for s in self._symbols.values() if s.auto_live_traded_once]
+            return [s.symbol for s in self._symbols.values()
+                    if s.auto_live_traded_once or s.deep_history_manual_add]
+
+    def is_deep_history_eligible(self, symbol: str) -> bool:
+        with self._lock:
+            info = self._symbols.get(symbol)
+            return bool(info and (info.auto_live_traded_once or info.deep_history_manual_add))
 
     def refresh_tick_table(self, updates):
         changed = []
