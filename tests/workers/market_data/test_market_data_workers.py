@@ -1,6 +1,25 @@
-"""Check-gate tests for Module 02 Market Data Monitor -- all mocked/fabricated data, no live API calls."""
+"""Check-gate tests for Module 02 Market Data Monitor -- all mocked/fabricated data, no live API calls.
+
+PATH: tests/workers/market_data/test_market_data_workers.py (REPLACE ENTIRE FILE)
+
+FIX (ISSUE-001): the import on the old line 14 used the wrong casing
+(`RESTPollFallbackWorker`, all-caps REST) which does not exist -- the real,
+locked, soak-tested class is `RestPollFallbackWorker` (mixed case). Beyond
+the casing, the old `test_rest_fallback_engages_only_for_the_degraded_symbol_never_others`
+test assumed an entirely different design (async `http_client`, auto-engage
+via an event-bus subscription to `market_data.feed.degraded`, an `is_active()`
+method, and an `_on_ws_recovering()` method) that the real Worker never
+implements. The real Worker is synchronous, runs its polling loop in a
+background thread, is engaged/disengaged directly by its caller, uses
+`http_get`/`on_tick` callbacks, and exposes `is_engaged()`/`get_last_cached()`.
+
+This version replaces that one test with a corrected version that exercises
+the REAL interface instead of guessing at the code to fit a stale test. No
+other test in this file needed changes.
+"""
 from __future__ import annotations
 import asyncio
+import time
 from pathlib import Path
 import pytest
 
@@ -11,7 +30,7 @@ from engines.workers.market_data.candle_builder_worker import CandleBuilderWorke
 from engines.workers.market_data.candle_store import CandleStore
 from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
 from engines.workers.market_data.deep_history_downloader_worker import DeepHistoryDownloaderWorker
-from engines.workers.market_data.rest_poll_fallback_worker import RESTPollFallbackWorker
+from engines.workers.market_data.rest_poll_fallback_worker import RestPollFallbackWorker
 
 
 @pytest.fixture
@@ -112,19 +131,54 @@ def test_manifest_persists_across_restart(tmp_manifest: HistoryManifestWorker) -
     assert reloaded.get_covered_ranges("ETHUSD", "15m") == [(0, 900_000)]
 
 
+class _FakeSyncHTTPResponse:
+    """Mimics the shape of a `requests.Response` object, since the real
+    RestPollFallbackWorker calls a plain synchronous `http_get(url, timeout=)`
+    callable and then does `resp.raise_for_status()` + `resp.json()`."""
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._payload
+
+
 def test_rest_fallback_engages_only_for_the_degraded_symbol_never_others() -> None:
-    async def run():
-        http = _FakeHTTP(rows_per_call=[{"last_price": 100, "volume": 1}])
-        worker = RESTPollFallbackWorker(http_client=http)
-        event_bus.publish("market_data.feed.degraded", {"symbol": "BTCUSD", "reason": "stall"})
-        await asyncio.sleep(0.05)
-        engaged_btc = worker.is_active("BTCUSD")
-        engaged_eth = worker.is_active("ETHUSD")
-        worker._on_ws_recovering({"symbol": "BTCUSD"})
-        return engaged_btc, engaged_eth
-    engaged_btc, engaged_eth = asyncio.run(run())
+    """Exercises the REAL RestPollFallbackWorker interface: synchronous
+    `http_get` callable, direct `engage()`/`disengage()` calls (this Worker
+    has no event-bus subscription of its own -- the caller decides when to
+    engage/disengage it), `is_engaged()` for state, and the `on_tick`
+    callback firing on every successfully normalized poll."""
+    ticks_received = []
+
+    def fake_http_get(url, timeout=5):
+        return _FakeSyncHTTPResponse({"prices": {"BTCUSD": {"last_price": 100.0}}})
+
+    worker = RestPollFallbackWorker(
+        on_tick=lambda symbol, tick: ticks_received.append((symbol, tick)),
+        http_get=fake_http_get,
+        poll_interval_s=0.05,
+    )
+
+    worker.engage("BTCUSD")
+    time.sleep(0.2)
+
+    engaged_btc = worker.is_engaged("BTCUSD")
+    engaged_eth = worker.is_engaged("ETHUSD")
+
+    worker.disengage("BTCUSD")
+    time.sleep(0.1)
+    disengaged_btc = worker.is_engaged("BTCUSD")
+
     assert engaged_btc is True
     assert engaged_eth is False
+    assert disengaged_btc is False
+    assert len(ticks_received) >= 1
+    assert ticks_received[0][0] == "BTCUSD"
+    assert ticks_received[0][1]["last_price"] == 100.0
+    assert worker.get_last_cached("BTCUSD")["last_price"] == 100.0
 
 
 def test_candle_store_serves_live_and_historical_candles() -> None:
