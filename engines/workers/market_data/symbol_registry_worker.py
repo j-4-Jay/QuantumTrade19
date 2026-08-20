@@ -1,17 +1,18 @@
 """
 FULL PATH: engines/workers/market_data/symbol_registry_worker.py (REPLACE ENTIRE FILE)
 
-ADDS: the Architecture Blueprint's Deep History section (Section 8) specifies
-two eligibility paths for deep-history backfill:
-  1. auto-live-traded at least once (already implemented: mark_auto_live_traded)
-  2. manually added before its first trade (was NOT implemented until now)
+FIX (File 03.1 Batch 3): added get_tick_size(symbol) -> float. The
+File 03.1 POI Monitor's tests (and their FakeSymbolRegistry test double)
+expect the registry to expose tick size directly via get_tick_size(), not
+only through get_symbol_info().tick_size. Pure addition - a thin wrapper
+around the field that already exists on SymbolInfo. No existing method,
+field, or behavior changed.
 
-This version adds the second path: a new `deep_history_manual_add` field on
-SymbolInfo, a new `add_symbol_manual()` method that sets it, and
-`get_deep_history_eligible()` now returns a symbol if EITHER path is true.
-Also added `is_deep_history_eligible(symbol)` as a convenience single-symbol
-check. Every existing field, method, and behavior is unchanged - this is a
-pure addition, not a modification of anything already locked/soak-tested.
+Also carries the earlier addition: the Architecture Blueprint's Deep History
+section (Section 8) specifies two eligibility paths for deep-history
+backfill:
+  1. auto-live-traded at least once (mark_auto_live_traded)
+  2. manually added before its first trade (add_symbol_manual)
 
 Adds favorite/unfavorite support: is_favorite field + set_favorite() +
 get_symbols_sorted() (favorites first, alphabetical within each group).
@@ -80,6 +81,13 @@ class SymbolRegistryWorker:
     def get_symbol_info(self, symbol: str) -> Optional[SymbolInfo]:
         with self._lock:
             return self._symbols.get(symbol)
+
+    def get_tick_size(self, symbol: str) -> float:
+        with self._lock:
+            info = self._symbols.get(symbol)
+            if info is None:
+                raise KeyError(f"Unknown symbol: {symbol}")
+            return info.tick_size
 
     def add_symbol(self, symbol, tick_size, contract_size, maker_fee, taker_fee, asset_class="crypto", active=True):
         with self._lock:

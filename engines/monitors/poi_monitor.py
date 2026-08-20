@@ -1,4 +1,22 @@
-"""File 03.1 POI Monitor: persistent display, strategy and zone-source controls."""
+"""File 03.1 POI Monitor: persistent display, strategy and zone-source controls.
+
+PATH: engines/monitors/poi_monitor.py (REPLACE ENTIRE FILE)
+
+FIX 1 (corrected): reverted the tick_size lookup back to
+`self.symbol_registry.get_tick_size(symbol)`. An earlier pass had changed
+this to `get_symbol_info(symbol).tick_size`, assuming get_tick_size() was
+missing entirely - but the File 03.1 test suite's own FakeSymbolRegistry
+test double expects get_tick_size() directly, confirming that was the
+correct, intended contract all along. The real fix was adding
+get_tick_size() to the real SymbolRegistryWorker (done separately), not
+changing this call site.
+
+FIX 2 (unchanged from before): set_poi_display_enabled() now also updates
+the display_enabled dict directly on the three zone workers
+(FVG/OrderBlock/InverseFVG), which have no set_display_enabled() method of
+their own - without this, toggling chart-display visibility for those POI
+types would silently do nothing.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -98,6 +116,13 @@ class POIMonitor:
         self._settings = self._settings_store.get()
         for symbol in self.symbol_registry.get_active_symbols():
             self._level_workers[symbol].set_display_enabled(poi_type, enabled)
+            # The three zone workers have no set_display_enabled() method of
+            # their own - each holds an independent display_enabled dict
+            # that only ever gets read at scan time, so it must be updated
+            # directly here to actually take effect.
+            self._fvg_workers[symbol].display_enabled[poi_type] = bool(enabled)
+            self._ob_workers[symbol].display_enabled[poi_type] = bool(enabled)
+            self._inv_workers[symbol].display_enabled[poi_type] = bool(enabled)
             self._recompute_symbol(symbol)
 
     def set_poi_strategy_enabled(self, poi_type: str, enabled: bool) -> None:
