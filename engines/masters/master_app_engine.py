@@ -2,17 +2,28 @@
 
 PATH: engines/masters/master_app_engine.py (REPLACE ENTIRE FILE - fully overwrite, don't merge)
 
-CHANGE (Module 01 gap-closure item 10): attempt_login() now accepts remember_device - on
-successful login, if checked, it calls security.trust_this_device() to persist the 60-day
-device-trust timestamp. Also added go_to_register() (bugfix from earlier this session).
+CHANGE (File 03.1 Scope E): added a lazily-started POIMonitor plus passthrough
+methods for the new Settings card. Deliberately NOT constructed in __init__ -
+POIMonitor's constructor immediately probes historical candles for every
+active symbol across all 8 timeframes, which would mean every test that
+constructs MasterAppEngine(force_memory=True) would suddenly trigger real
+network calls. Uses the exact same lazy-start pattern as
+ensure_market_data_started() for this reason.
+
+CHANGE (Module 01 gap-closure item 10, unchanged): attempt_login() accepts
+remember_device - on successful login, if checked, calls
+security.trust_this_device() to persist the 60-day device-trust timestamp.
 """
 from __future__ import annotations
 from enum import Enum
+from typing import Optional
 from engines.monitors.security_monitor import SecurityMonitor
 from engines.monitors.ui_experience_monitor import UIExperienceMonitor
 from engines.monitors.market_data_monitor import MarketDataMonitor
+from engines.monitors.poi_monitor import POIMonitor
 from engines.workers.market_data.coindcx_socket_transport import CoinDCXSocketTransport
 from engines.event_bus.bus import event_bus
+
 
 class ShellScreen(str, Enum):
     SPLASH = "splash"
@@ -23,12 +34,15 @@ class ShellScreen(str, Enum):
     SHELL = "shell"
     LOCKED = "locked"
 
+
 class MasterAppEngine:
     def __init__(self, force_memory: bool = False) -> None:
         self.security = SecurityMonitor(force_memory=force_memory)
         self.ui = UIExperienceMonitor()
         self.market_data = MarketDataMonitor(transport=CoinDCXSocketTransport())
         self._market_data_started = False
+        self.poi_monitor: Optional[POIMonitor] = None
+        self._poi_monitor_started = False
         self.screen: ShellScreen = ShellScreen.SPLASH
         self.paper_mode: bool = True
 
@@ -37,6 +51,29 @@ class MasterAppEngine:
         if not self._market_data_started:
             self.market_data.start()
             self._market_data_started = True
+
+    def ensure_poi_monitor_started(self) -> None:
+        """Call this once when the app shell loads, after market data is
+        available. Safe to call many times. Deliberately lazy - see module
+        docstring for why this is not constructed in __init__."""
+        if not self._poi_monitor_started:
+            self.poi_monitor = POIMonitor(self.market_data, self.market_data.symbol_registry)
+            self._poi_monitor_started = True
+
+    def get_poi_settings(self) -> dict:
+        return self.poi_monitor.get_poi_settings() if self.poi_monitor else {}
+
+    def set_poi_display_enabled(self, poi_type: str, enabled: bool) -> None:
+        if self.poi_monitor:
+            self.poi_monitor.set_poi_display_enabled(poi_type, enabled)
+
+    def set_poi_strategy_enabled(self, poi_type: str, enabled: bool) -> None:
+        if self.poi_monitor:
+            self.poi_monitor.set_poi_strategy_enabled(poi_type, enabled)
+
+    def set_poi_zone_source_tf_enabled(self, timeframe: str, enabled: bool) -> None:
+        if self.poi_monitor:
+            self.poi_monitor.set_zone_source_tf_enabled(timeframe, enabled)
 
     def get_market_data_health(self) -> str:
         """Collapses per-symbol health into one value for the topbar dot:

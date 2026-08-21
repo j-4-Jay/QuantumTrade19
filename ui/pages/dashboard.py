@@ -2,18 +2,31 @@
 
 PATH: ui/pages/dashboard.py (REPLACE ENTIRE FILE)
 
-FIX: clicking the favorite star no longer opens the Symbol Detail popup.
-Uses rx.stop_propagation so the star's click event never bubbles up to
-the row's on_click handler -- clicking anywhere else in the row still
-opens the popup as before.
+FIX (live prices / WS status never updating): poll_ws_status and
+poll_pinned_prices already exist as safe, self-guarded background event
+handlers in AppState, but nothing ever started them. `ws_status` and
+`pinned_prices` were sitting on their hardcoded defaults ("connected" /
+{}) forever - which is why the header pill always looked "Connected" and
+every pinned card always showed "--", regardless of real WebSocket health.
+Added on_mount=[AppState.poll_ws_status, AppState.poll_pinned_prices] to
+the page root. Both handlers already guard against duplicate concurrent
+runs, so remounting this page (e.g. switching tabs and back) is safe - it
+will simply no-op if a poller is already running, not start a second one.
+
+FIX (unchanged from before): clicking the favorite star no longer opens the
+Symbol Detail popup. Uses rx.stop_propagation so the star's click event
+never bubbles up to the row's on_click handler -- clicking anywhere else in
+the row still opens the popup as before.
 """
 from __future__ import annotations
 import reflex as rx
 from state.app_state import AppState
 from ui.theme.glass import GLASS_CARD_STYLE
 
+
 _PINNED = ["Gold", "ETHUSD", "BTCUSD"]
 _COLUMNS = ["Fav", "Trade Allowed", "Instrument", "Trend", "Liquidity TF", "Interaction", "Risk", "Bias", "Confidence Score"]
+
 
 
 def _pinned_card(name: str) -> rx.Component:
@@ -28,8 +41,10 @@ def _pinned_card(name: str) -> rx.Component:
     )
 
 
+
 def _header_cell(label: str) -> rx.Component:
     return rx.table.column_header_cell(label, color="var(--qt19-text-primary)", font_weight="700")
+
 
 
 def _favorite_star(row: dict) -> rx.Component:
@@ -43,6 +58,7 @@ def _favorite_star(row: dict) -> rx.Component:
         cursor="pointer",
         on_click=[AppState.toggle_favorite(row["symbol"]), rx.stop_propagation],
     )
+
 
 
 def _symbol_row(row: dict) -> rx.Component:
@@ -59,6 +75,7 @@ def _symbol_row(row: dict) -> rx.Component:
         on_click=lambda: AppState.open_detail_popup(row["symbol"]),
         cursor="pointer",
     )
+
 
 
 def dashboard_page() -> rx.Component:
@@ -79,4 +96,5 @@ def dashboard_page() -> rx.Component:
             width="100%", margin_top="1rem",
         ),
         width="100%", spacing="4",
+        on_mount=[AppState.poll_ws_status, AppState.poll_pinned_prices],
     )

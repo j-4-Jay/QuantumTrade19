@@ -2,16 +2,21 @@
 
 PATH: ui/pages/settings.py (REPLACE ENTIRE FILE)
 
-CHANGE: cards are now grouped into logical rx.tabs matching the categories
-named in the locked mockup (Appearance, Data & Connection, and placeholders
-for categories not yet built), and arranged in a responsive multi-column
-grid instead of one full-width vstack, eliminating large empty side gaps.
+CHANGE (File 03.1 Scope E): the "POI Timeframes" coming-soon placeholder in
+the Trading Defaults tab is now the real POI Engine & Chart Visibility card.
+
+CHANGE (unchanged from before): cards are grouped into logical rx.tabs
+matching the categories named in the locked mockup (Appearance, Data &
+Connection, and placeholders for categories not yet built), and arranged in
+a responsive multi-column grid instead of one full-width vstack.
 """
 from __future__ import annotations
 import reflex as rx
 from state.app_state import AppState
 from ui.theme.glass import GLASS_CARD_3XL_STYLE
 from ui.components.deep_historical_data_card import deep_historical_data_card
+from ui.components.poi_engine_settings_card import poi_engine_settings_card
+
 
 
 def _effect_checkbox(opt: dict[str, str]) -> rx.Component:
@@ -25,6 +30,7 @@ def _effect_checkbox(opt: dict[str, str]) -> rx.Component:
     )
 
 
+
 def _tab_effect_checkbox(opt: dict[str, str]) -> rx.Component:
     return rx.hstack(
         rx.checkbox(
@@ -34,6 +40,7 @@ def _tab_effect_checkbox(opt: dict[str, str]) -> rx.Component:
         rx.text(opt["label"], font_size="0.82rem"),
         spacing="2", align_items="center", width="100%",
     )
+
 
 
 def _transition_effects_card() -> rx.Component:
@@ -57,6 +64,7 @@ def _transition_effects_card() -> rx.Component:
         ),
         spacing="3", width="100%", style=GLASS_CARD_3XL_STYLE,
     )
+
 
 
 def _tab_transition_card() -> rx.Component:
@@ -83,6 +91,7 @@ def _tab_transition_card() -> rx.Component:
     )
 
 
+
 def _coming_soon_card(title: str, note: str) -> rx.Component:
     return rx.vstack(
         rx.heading(title, size="4"),
@@ -90,6 +99,7 @@ def _coming_soon_card(title: str, note: str) -> rx.Component:
         rx.badge("Coming in a later module", variant="soft", margin_top="0.5rem"),
         spacing="2", width="100%", style=GLASS_CARD_3XL_STYLE,
     )
+
 
 
 def _appearance_tab() -> rx.Component:
@@ -102,6 +112,7 @@ def _appearance_tab() -> rx.Component:
     )
 
 
+
 def _data_connection_tab() -> rx.Component:
     return rx.grid(
         deep_historical_data_card(),
@@ -110,6 +121,7 @@ def _data_connection_tab() -> rx.Component:
         columns=rx.breakpoints(initial="1", sm="1", md="2", lg="2"),
         spacing="4", width="100%", margin_top="1rem",
     )
+
 
 
 def _security_tab() -> rx.Component:
@@ -122,14 +134,16 @@ def _security_tab() -> rx.Component:
     )
 
 
+
 def _trading_tab() -> rx.Component:
     return rx.grid(
-        _coming_soon_card("POI Timeframes", "Toggle PDH/PDL, 4H H/L, FVG, Order Block, etc."),
+        poi_engine_settings_card(),
         _coming_soon_card("Signal Bias Filter", "Market-aware auto-disable rules for filters."),
         _coming_soon_card("Paper Trading", "Paper/Live toggle defaults and simulator settings."),
-        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="3"),
+        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="2"),
         spacing="4", width="100%", margin_top="1rem",
     )
+
 
 
 def settings_page() -> rx.Component:
