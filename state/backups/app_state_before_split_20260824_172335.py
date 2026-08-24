@@ -1,4 +1,4 @@
-﻿"""Reflex State - thin UI binding layer over the Master App Engine (no business logic here).
+"""Reflex State - thin UI binding layer over the Master App Engine (no business logic here).
 
 PATH: state/app_state.py  (REPLACE ENTIRE FILE)
 
@@ -113,7 +113,6 @@ _engine = MasterAppEngine()
 
 
 class AppState(rx.State):
-
     screen: str = ShellScreen.SPLASH.value
     active_tab: str = "Dashboard"
     theme_key: str = DEFAULT_THEME_KEY
@@ -257,7 +256,6 @@ class AppState(rx.State):
 
 
 
-
     def on_load(self) -> None:
         self.theme_key = _engine.ui.theme.get_active_key()
         self.paper_mode = _engine.paper_mode
@@ -275,7 +273,6 @@ class AppState(rx.State):
 
 
     @rx.event(background=True)
-
     async def start_poi_monitor_background(self):
         """POIMonitor's construction makes many blocking network calls
         (every active symbol x every POI Worker type x up to 8 timeframes).
@@ -293,7 +290,6 @@ class AppState(rx.State):
         finally:
             async with self:
                 self._poi_monitor_starting = False
-
 
 
 
@@ -341,10 +337,8 @@ class AppState(rx.State):
 
 
 
-
     def set_reg_username(self, value: str) -> None:
         self.reg_username = value
-
 
 
 
@@ -353,10 +347,8 @@ class AppState(rx.State):
 
 
 
-
     def set_reg_confirm_password(self, value: str) -> None:
         self.reg_confirm_password = value
-
 
 
 
@@ -365,10 +357,8 @@ class AppState(rx.State):
 
 
 
-
     def toggle_reg_enable_totp(self, checked: bool) -> None:
         self.reg_enable_totp = checked
-
 
 
 
@@ -377,10 +367,8 @@ class AppState(rx.State):
 
 
 
-
     def toggle_show_reg_confirm_password(self) -> None:
         self.show_reg_confirm_password = not self.show_reg_confirm_password
-
 
 
 
@@ -393,14 +381,12 @@ class AppState(rx.State):
 
 
 
-
     def _pick_tab_transition_effect(self) -> None:
         effect, next_index = _engine.ui.transitions.pick(
             self.tab_transition_effects_enabled, self.tab_transition_mode, self._tab_transition_sequence_index
         )
         self.tab_transition_active_effect = effect
         self._tab_transition_sequence_index = next_index
-
 
 
 
@@ -429,7 +415,6 @@ class AppState(rx.State):
 
 
 
-
     def confirm_totp_setup(self) -> None:
         if not self.reg_totp_code.strip():
             self.reg_error = "Enter the 6-digit code from your authenticator app."
@@ -444,7 +429,6 @@ class AppState(rx.State):
 
 
 
-
     def skip_totp_setup(self) -> None:
         self.reg_enable_totp = False
         if _engine.finish_registration_without_totp(self.reg_username, self.reg_password):
@@ -454,11 +438,9 @@ class AppState(rx.State):
 
 
 
-
     def go_to_login(self) -> None:
         self._pick_transition_effect()
         self.screen = _engine.go_to_login().value
-
 
 
 
@@ -476,11 +458,9 @@ class AppState(rx.State):
 
 
 
-
     def set_login_username(self, value: str) -> None:
         self.login_username = value
         self.login_credentials_match = _engine.security.auth.verify(self.login_username, self.login_password)
-
 
 
 
@@ -490,10 +470,8 @@ class AppState(rx.State):
 
 
 
-
     def set_login_totp(self, value: str) -> None:
         self.login_totp = value
-
 
 
 
@@ -502,16 +480,13 @@ class AppState(rx.State):
 
 
 
-
     def toggle_show_lock_password(self) -> None:
         self.show_lock_password = not self.show_lock_password
 
 
 
-
     def toggle_login_remember_device(self, checked: bool) -> None:
         self.login_remember_device = checked
-
 
 
 
@@ -536,13 +511,11 @@ class AppState(rx.State):
 
 
 
-
     def lock_app(self) -> None:
         _engine.lock()
         self._pick_transition_effect()
         self.screen = _engine.screen.value
         self.is_locked = True
-
 
 
 
@@ -560,7 +533,6 @@ class AppState(rx.State):
             self.is_locked = False
         else:
             self.login_error = "Invalid credentials or authenticator code."
-
 
 
 
@@ -586,10 +558,8 @@ class AppState(rx.State):
 
 
 
-
     def set_manage_username(self, value: str) -> None:
         self.manage_username = value
-
 
 
 
@@ -598,10 +568,8 @@ class AppState(rx.State):
 
 
 
-
     def toggle_show_manage_password(self) -> None:
         self.show_manage_password = not self.show_manage_password
-
 
 
 
@@ -615,17 +583,14 @@ class AppState(rx.State):
 
 
 
-
     def start_enable_totp(self) -> None:
         self.manage_totp_qr = _engine.manage_totp_begin_enable(self.manage_username)
         self.manage_stage = "totp_qr"
 
 
 
-
     def set_manage_totp_code(self, value: str) -> None:
         self.manage_totp_code = value
-
 
 
 
@@ -642,11 +607,9 @@ class AppState(rx.State):
 
 
 
-
     def disable_totp(self) -> None:
         _engine.manage_totp_disable()
         self.totp_required = False
-
 
 
 
@@ -655,16 +618,13 @@ class AppState(rx.State):
 
 
 
-
     def set_tg_chat_id(self, value: str) -> None:
         self.tg_chat_id = value
 
 
 
-
     def toggle_tg_enabled(self, checked: bool) -> None:
         self.tg_enabled = checked
-
 
 
 
@@ -676,11 +636,9 @@ class AppState(rx.State):
 
 
 
-
     def test_telegram(self) -> None:
         success, detail = _engine.manage_test_telegram()
         self.tg_message = detail
-
 
 
 
@@ -689,10 +647,8 @@ class AppState(rx.State):
 
 
 
-
     def toggle_dc_enabled(self, checked: bool) -> None:
         self.dc_enabled = checked
-
 
 
 
@@ -704,18 +660,15 @@ class AppState(rx.State):
 
 
 
-
     def test_discord(self) -> None:
         success, detail = _engine.manage_test_discord()
         self.dc_message = detail
 
 
 
-
     def finish_manage_security(self) -> None:
         self._pick_transition_effect()
         self.screen = _engine.finish_manage_security().value
-
 
 
 
@@ -735,14 +688,12 @@ class AppState(rx.State):
 
 
 
-
     def cancel_forgot_password(self) -> None:
         self.forgot_new_password = ""
         self.forgot_confirm_password = ""
         self.forgot_error = ""
         self._pick_transition_effect()
         self.screen = _engine.cancel_forgot_password().value
-
 
 
 
@@ -760,7 +711,6 @@ class AppState(rx.State):
 
 
 
-
     def resend_forgot_otp(self) -> None:
         if self.forgot_selected_method in ("telegram", "discord"):
             _engine.send_forgot_otp(self.forgot_selected_method)
@@ -768,10 +718,8 @@ class AppState(rx.State):
 
 
 
-
     def set_forgot_code(self, value: str) -> None:
         self.forgot_code = value
-
 
 
 
@@ -788,10 +736,8 @@ class AppState(rx.State):
 
 
 
-
     def set_forgot_new_password(self, value: str) -> None:
         self.forgot_new_password = value
-
 
 
 
@@ -800,16 +746,13 @@ class AppState(rx.State):
 
 
 
-
     def toggle_show_forgot_new_password(self) -> None:
         self.show_forgot_new_password = not self.show_forgot_new_password
 
 
 
-
     def toggle_show_forgot_confirm_password(self) -> None:
         self.show_forgot_confirm_password = not self.show_forgot_confirm_password
-
 
 
 
@@ -833,17 +776,14 @@ class AppState(rx.State):
 
 
 
-
     def open_logout_dialog(self) -> None:
         self.logout_stage = "trade_choice" if _engine.has_open_trades() else "confirm"
         self.show_logout_dialog = True
 
 
 
-
     def close_logout_dialog(self) -> None:
         self.show_logout_dialog = False
-
 
 
 
@@ -859,10 +799,8 @@ class AppState(rx.State):
 
 
 
-
     def confirm_logout_no_trades(self) -> None:
         self._do_logout(None)
-
 
 
 
@@ -871,10 +809,8 @@ class AppState(rx.State):
 
 
 
-
     def confirm_logout_keep_trades(self) -> None:
         self._do_logout(False)
-
 
 
 
@@ -889,18 +825,15 @@ class AppState(rx.State):
 
 
 
-
     def set_theme(self, key: str) -> None:
         if _engine.ui.theme.set_active_key(key):
             self.theme_key = key
 
 
 
-
     def toggle_sound(self) -> None:
         is_on = _engine.ui.sound.toggle_master()
         self.sound_muted = not is_on
-
 
 
 
@@ -916,7 +849,6 @@ class AppState(rx.State):
 
 
     @rx.event(background=True)
-
     async def poll_ws_status(self):
         async with self:
             if self._ws_poll_running:
@@ -935,7 +867,6 @@ class AppState(rx.State):
 
 
     @rx.event(background=True)
-
     async def poll_pinned_prices(self):
         async with self:
             if getattr(self, "_price_poll_running", False):
@@ -959,10 +890,8 @@ class AppState(rx.State):
 
 
 
-
     def toggle_paper_live(self) -> None:
         self.paper_mode = _engine.toggle_paper_live()
-
 
 
     def refresh_symbol_rows(self) -> None:
@@ -981,7 +910,6 @@ class AppState(rx.State):
 
 
 
-
     def toggle_favorite(self, symbol: str) -> None:
         registry = _engine.market_data.symbol_registry
         info = registry.get_symbol_info(symbol)
@@ -992,11 +920,9 @@ class AppState(rx.State):
 
 
 
-
     def set_deep_history_symbol(self, value: str) -> None:
         self.deep_history_symbol = value
         self.refresh_deep_history_status()
-
 
 
     def set_deep_history_timeframe(self, value: str) -> None:
@@ -1004,17 +930,14 @@ class AppState(rx.State):
         self.refresh_deep_history_status()
 
 
-
     def set_deep_history_target_days(self, value: str) -> None:
         self.deep_history_target_days = value
-
 
 
     def check_deep_history_ceiling(self):
         self.deep_history_status_message = "Checking real ceiling... this can take a few minutes for 1m/5m."
         _engine.market_data.start_ceiling_probe(self.deep_history_symbol, self.deep_history_timeframe)
         return AppState.poll_deep_history_status
-
 
 
     def refresh_deep_history_status(self) -> None:
@@ -1024,7 +947,6 @@ class AppState(rx.State):
         self.deep_history_covered_days = str(progress["covered_days"])
         ceiling = _engine.market_data.get_ceiling_days(self.deep_history_symbol, self.deep_history_timeframe)
         self.deep_history_ceiling_days = f"{ceiling} days" if ceiling is not None else "Not checked yet"
-
 
 
     def start_deep_history_download(self):
@@ -1039,12 +961,10 @@ class AppState(rx.State):
         return AppState.poll_deep_history_status
 
 
-
     def cancel_deep_history_download(self) -> None:
         _engine.market_data.cancel_deep_history(self.deep_history_symbol, self.deep_history_timeframe)
         self.deep_history_is_downloading = False
         self.deep_history_status_message = "Cancelled."
-
 
 
     def delete_deep_history_data(self) -> None:
@@ -1054,7 +974,6 @@ class AppState(rx.State):
 
 
     @rx.event(background=True)
-
     async def poll_deep_history_status(self):
         async with self:
             if self._deep_history_poll_running:
@@ -1084,7 +1003,6 @@ class AppState(rx.State):
 
 
 
-
     def load_poi_settings(self) -> None:
         settings = _engine.get_poi_settings()
         self.poi_display_enabled = settings.get("display_enabled", {})
@@ -1102,7 +1020,6 @@ class AppState(rx.State):
 
 
     @rx.event(background=True)
-
     async def toggle_poi_display(self, poi_type: str, checked: bool):
         """Updates the checkbox immediately, then offloads the real,
         network-bound recompute POIMonitor triggers internally to a
@@ -1118,7 +1035,6 @@ class AppState(rx.State):
 
 
     @rx.event(background=True)
-
     async def toggle_poi_strategy(self, poi_type: str, checked: bool):
         async with self:
             self.poi_strategy_enabled = {**self.poi_strategy_enabled, poi_type: checked}
@@ -1131,7 +1047,6 @@ class AppState(rx.State):
 
 
     @rx.event(background=True)
-
     async def toggle_poi_zone_source_tf(self, timeframe: str, checked: bool):
         async with self:
             self.poi_zone_source_tf_enabled = {**self.poi_zone_source_tf_enabled, timeframe: checked}
@@ -1141,7 +1056,6 @@ class AppState(rx.State):
         finally:
             async with self:
                 self.poi_backend_busy = False
-
 
 
     def _save_poi_visual_settings(self) -> None:
@@ -1156,11 +1070,9 @@ class AppState(rx.State):
         }})
 
 
-
     def toggle_poi_show_labels(self, checked: bool) -> None:
         self.poi_show_labels = checked
         self._save_poi_visual_settings()
-
 
 
     def toggle_poi_show_tooltips(self, checked: bool) -> None:
@@ -1168,11 +1080,9 @@ class AppState(rx.State):
         self._save_poi_visual_settings()
 
 
-
     def toggle_poi_show_source_tf_badge(self, checked: bool) -> None:
         self.poi_show_source_tf_badge = checked
         self._save_poi_visual_settings()
-
 
 
     def toggle_poi_show_logical_id(self, checked: bool) -> None:
@@ -1180,17 +1090,14 @@ class AppState(rx.State):
         self._save_poi_visual_settings()
 
 
-
     def toggle_poi_reduced_motion(self, checked: bool) -> None:
         self.poi_reduced_motion = checked
         self._save_poi_visual_settings()
 
 
-
     def set_poi_line_transparency(self, value: list[float]) -> None:
         self.poi_line_transparency = int(value[0])
         self._save_poi_visual_settings()
-
 
 
     def set_poi_zone_opacity(self, value: list[float]) -> None:
@@ -1199,7 +1106,6 @@ class AppState(rx.State):
 
 
     @rx.event(background=True)
-
     async def poi_show_all(self):
         async with self:
             poi_types = list(self.poi_display_enabled.keys())
@@ -1218,7 +1124,6 @@ class AppState(rx.State):
 
 
     @rx.event(background=True)
-
     async def poi_hide_all(self):
         async with self:
             poi_types = list(self.poi_display_enabled.keys())
@@ -1237,7 +1142,6 @@ class AppState(rx.State):
 
 
     @rx.event(background=True)
-
     async def poi_enable_default_strategy(self):
         async with self:
             poi_types = list(self.poi_strategy_enabled.keys())
@@ -1256,7 +1160,6 @@ class AppState(rx.State):
 
 
     @rx.event(background=True)
-
     async def poi_disable_all_strategy(self):
         async with self:
             poi_types = list(self.poi_strategy_enabled.keys())
@@ -1274,7 +1177,6 @@ class AppState(rx.State):
                 self.poi_backend_busy = False
 
 
-
     def poi_reset_chart_filters(self) -> None:
         """Temporary chart filters are session-only per spec and never
         persisted - this is a placeholder no-op until Scope C's chart exists
@@ -1283,10 +1185,8 @@ class AppState(rx.State):
 
 
     # --- File 03.1 Scope B: Trading Panel chart methods (react-klinecharts) ---
-
     def _chart_workspace_key(self, symbol: str, tf: str) -> str:
         return f"chart_display_days::{symbol}::{tf}"
-
 
 
     def _load_trading_panel_display_days(self) -> None:
@@ -1296,19 +1196,16 @@ class AppState(rx.State):
         self.trading_panel_display_days_input = str(saved) if saved else "5"
 
 
-
     def set_trading_panel_symbol(self, value: str) -> None:
         self.trading_panel_symbol = value
         self._load_trading_panel_display_days()
         self.refresh_trading_panel_chart()
 
 
-
     def set_trading_panel_chart_tf(self, value: str) -> None:
         self.trading_panel_chart_tf = value
         self._load_trading_panel_display_days()
         self.refresh_trading_panel_chart()
-
 
 
     def set_trading_panel_display_days(self, value: str) -> None:
@@ -1330,7 +1227,6 @@ class AppState(rx.State):
         self.refresh_trading_panel_chart()
 
 
-
     def set_trading_panel_chart_theme(self, value: str) -> None:
         """Chart-local only - never touches the app-wide theme_key.
         NOT YET WIRED into react-klinecharts' `styles` prop - the exact
@@ -1340,7 +1236,6 @@ class AppState(rx.State):
         dropped."""
         self.trading_panel_chart_theme = value
         _engine.security.persistence.save({"trading_panel_chart_theme": value})
-
 
 
     def refresh_trading_panel_chart(self) -> None:
@@ -1407,7 +1302,6 @@ class AppState(rx.State):
 
 
     @rx.event(background=True)
-
     async def poll_trading_panel_chart(self):
         """Same guarded-loop pattern as poll_ws_status/poll_pinned_prices.
         KNOWN SIMPLIFICATION: does not stop when the user leaves the Trading
@@ -1427,17 +1321,14 @@ class AppState(rx.State):
 
 
 
-
     def open_detail_popup(self, symbol: str) -> None:
         self.detail_popup_symbol = symbol
         self.detail_popup_open = True
 
 
 
-
     def close_detail_popup(self) -> None:
         self.detail_popup_open = False
-
 
 
 
@@ -1454,11 +1345,9 @@ class AppState(rx.State):
 
 
 
-
     def set_transition_mode(self, mode: str) -> None:
         self.transition_mode = mode
         _engine.security.persistence.save({"transition_mode": mode})
-
 
 
 
@@ -1475,7 +1364,6 @@ class AppState(rx.State):
 
 
 
-
     def set_tab_transition_mode(self, mode: str) -> None:
         self.tab_transition_mode = mode
         _engine.security.persistence.save({"tab_transition_mode": mode})
@@ -1483,7 +1371,6 @@ class AppState(rx.State):
 
 
     @rx.var
-
     def theme_vars(self) -> dict[str, str]:
         t = THEMES[self.theme_key]
         return {
@@ -1495,28 +1382,24 @@ class AppState(rx.State):
 
 
     @rx.var
-
     def sidebar_tabs(self) -> list[str]:
         return SIDEBAR_TABS
 
 
 
     @rx.var
-
     def theme_options(self) -> list[dict[str, str]]:
         return [{"key": k, "label": THEME_LABELS[k]} for k in THEME_ORDER]
 
 
 
     @rx.var
-
     def transition_effect_options(self) -> list[dict[str, str]]:
         return [{"key": k, "label": v} for k, v in TRANSITION_EFFECTS.items()]
 
 
 
     @rx.var
-
     def poi_line_rows(self) -> list[dict]:
         rows = []
         for tf in POI_LINE_TF_ORDER:
@@ -1534,7 +1417,6 @@ class AppState(rx.State):
 
 
     @rx.var
-
     def poi_zone_type_rows(self) -> list[dict]:
         return [{
             "type": t, "label": label,
@@ -1545,21 +1427,18 @@ class AppState(rx.State):
 
 
     @rx.var
-
     def poi_zone_source_tf_rows(self) -> list[dict]:
         return [{"tf": tf, "enabled": self.poi_zone_source_tf_enabled.get(tf, False)} for tf in POI_LINE_TF_ORDER]
 
 
 
     @rx.var
-
     def trading_panel_symbol_options(self) -> list[str]:
         return _engine.market_data.symbol_registry.get_symbols_sorted(active_only=True)
 
 
 
     @rx.var
-
     def trading_panel_symbol_info(self) -> dict:
         """Shape expected by <KLineChart symbol={...}>: {ticker, precision}.
         precision (decimal places) is derived from the real tick_size on
@@ -1577,7 +1456,5 @@ class AppState(rx.State):
 
 
     @rx.var
-
     def trading_panel_period(self) -> dict:
         return TRADING_PANEL_PERIOD_MAP.get(self.trading_panel_chart_tf, TRADING_PANEL_PERIOD_MAP["5m"])
-

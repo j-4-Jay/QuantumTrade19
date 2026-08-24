@@ -1,0 +1,52 @@
+﻿{
+    "source_file":  "app_state.py",
+    "source_sha256_before_split":  "C0184C1A9715C790441F8650F06BF1EFBA18BE0BD17CF893C528B9981C6DF69A",
+    "part_count":  6,
+    "encoding":  "UTF-8 without BOM",
+    "line_ending":  "LF",
+    "source_ended_with_newline":  true,
+    "parts":  [
+                  {
+                      "part":  1,
+                      "file":  "app_state_part_01.txt",
+                      "start_line":  1,
+                      "end_line":  241,
+                      "sha256":  "586FBF4665A81E7A9E5476FF33496659B930A95C93883622C7B994F43F416A94"
+                  },
+                  {
+                      "part":  2,
+                      "file":  "app_state_part_02.txt",
+                      "start_line":  242,
+                      "end_line":  485,
+                      "sha256":  "5638DF88D05C88E362F61DC9399B1032E6BDCD004878000658100327FD57930E"
+                  },
+                  {
+                      "part":  3,
+                      "file":  "app_state_part_03.txt",
+                      "start_line":  486,
+                      "end_line":  725,
+                      "sha256":  "3829780C1A5CCFE0412987D535873492508606B6CFED24D18560887ED7155B73"
+                  },
+                  {
+                      "part":  4,
+                      "file":  "app_state_part_04.txt",
+                      "start_line":  726,
+                      "end_line":  969,
+                      "sha256":  "C6332C91167B7EAE646B685BE21D0AC41BA2C860B8935C33B5B87A48E7CB407F"
+                  },
+                  {
+                      "part":  5,
+                      "file":  "app_state_part_05.txt",
+                      "start_line":  970,
+                      "end_line":  1210,
+                      "sha256":  "6C7BE0C445B6D0BEE9E962CFF06A39D2AE217096BE1F3ED9ACE362CB9CA00228"
+                  },
+                  {
+                      "part":  6,
+                      "file":  "app_state_part_06.txt",
+                      "start_line":  1211,
+                      "end_line":  1460,
+                      "sha256":  "5D90E702ED1D8155BAC2C78CAC196799167B6633C59EA2EDC2A42949BF686403"
+                  }
+              ]
+}

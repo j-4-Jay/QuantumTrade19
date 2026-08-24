@@ -1,16 +1,20 @@
-"""
-FULL PATH: engines/monitors/market_data_monitor.py (REPLACE ENTIRE FILE)
-File 02 — Market Data Monitor (Tier 2 Assembly)
+"""Market Data Monitor (Tier 2 Assembly).
 
-PATCH v4:
-- Compatible with CoinDCX aggregate stream partial-delta semantics.
-- Removes false warning-per-delta behavior. A rejected normalizer result is
-  now warning-logged only if WSFeedWorker has already proven the row contains
-  a usable price candidate; this should be rare and represents a genuinely
-  malformed price-bearing payload.
-- Uses DEBUG for ordinary rejected REST rows (REST Worker already logs its
-  own normalization/poll failure context).
-- Retains health, baseline, failover, deep-history, and lifecycle logging.
+PATH: engines/monitors/market_data_monitor.py (REPLACE ENTIRE FILE)
+
+PATCH v5 — local-only Trading Panel reader:
+- Adds get_chart_candles(symbol, timeframe, days).
+- This chart-specific API reads ONLY CandleBuilderWorker's in-memory series.
+- It never calls HistoricalDataLoaderWorker, REST, WebSocket, or CoinDCX.
+- The returned series includes the current forming candle exactly once because
+  CandleBuilderWorker.get_series() already returns closed candles plus current.
+- get_chart_coverage_days() reports actual retained in-memory candle span;
+  it does not use the deep-history manifest because that manifest currently
+  records coverage metadata, not locally readable candle storage.
+
+The existing get_historical_candles() remains intentionally unchanged for
+explicit broker-history operations outside the Trading Panel. The UI chart
+must use get_chart_candles(), never get_historical_candles().
 """
 from __future__ import annotations
 
@@ -25,11 +29,15 @@ from engines.workers.market_data.rest_poll_fallback_worker import RestPollFallba
 from engines.workers.market_data.historical_data_loader_worker import HistoricalDataLoaderWorker
 from engines.workers.market_data.tick_normalizer_worker import TickNormalizerWorker
 from engines.workers.market_data.candle_builder_worker import (
-    CandleBuilderWorker, Candle, TRADING_TFS, POI_TFS,
+    CandleBuilderWorker,
+    Candle,
+    TRADING_TFS,
+    POI_TFS,
 )
 from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
 from engines.workers.market_data.deep_history_downloader_worker import DeepHistoryDownloaderWorker
 from engines.workers.market_data.history_depth_prober_worker import HistoryDepthProberWorker
+
 
 logger = logging.getLogger("market_data.monitor")
 
@@ -110,14 +118,76 @@ class MarketDataMonitor:
         return self.candle_builder.get_live_candle(symbol, timeframe)
 
     def get_historical_candles(self, symbol: str, timeframe: str, days: int) -> List[Candle]:
+        """Explicit broker-history read.
+
+        This method may call CoinDCX through HistoricalDataLoaderWorker.
+        It is not permitted for Trading Panel rendering or chart polling.
+        Use get_chart_candles() for chart data.
+        """
         end_ms = self._now_ms()
         start_ms = end_ms - days * 24 * 60 * 60 * 1000
         candles = self.historical_loader.fetch_range(symbol, timeframe, start_ms, end_ms)
         logger.debug(
             "market_data_historical_fetch symbol=%s timeframe=%s days=%d candles=%d",
-            symbol, timeframe, days, len(candles),
+            symbol,
+            timeframe,
+            days,
+            len(candles),
         )
         return candles
+
+    def get_chart_candles(self, symbol: str, timeframe: str, days: int) -> List[Candle]:
+        """Return local-only chart candles, oldest to newest.
+
+        Reads CandleBuilderWorker's retained RAM series only. It makes no
+        network request and never reaches HistoricalDataLoaderWorker. The
+        worker's get_series() result already has the current forming candle
+        as its final item, so no caller should append get_live_candle().
+        """
+        if days <= 0:
+            return []
+
+        series = self.candle_builder.get_series(symbol, timeframe)
+        if not series:
+            logger.debug(
+                "market_data_chart_local_read symbol=%s timeframe=%s requested_days=%d candles=0",
+                symbol,
+                timeframe,
+                days,
+            )
+            return []
+
+        cutoff_ms = self._now_ms() - days * 24 * 60 * 60 * 1000
+        filtered = [candle for candle in series if candle.open_time >= cutoff_ms]
+
+        # Defensive deduplication: CandleBuilderWorker already guarantees this,
+        # but the chart boundary must never emit duplicate timestamps.
+        unique: Dict[int, Candle] = {}
+        for candle in filtered:
+            unique[candle.open_time] = candle
+        result = [unique[open_time] for open_time in sorted(unique)]
+
+        logger.debug(
+            "market_data_chart_local_read symbol=%s timeframe=%s requested_days=%d candles=%d",
+            symbol,
+            timeframe,
+            days,
+            len(result),
+        )
+        return result
+
+    def get_chart_coverage_days(self, symbol: str, timeframe: str) -> float:
+        """Return actual in-memory chart coverage in days.
+
+        This deliberately measures retained CandleBuilderWorker data rather
+        than manifest coverage. A manifest can describe broker/download
+        coverage even when that candle payload is not locally readable yet.
+        """
+        series = self.candle_builder.get_series(symbol, timeframe)
+        if len(series) < 2:
+            return 0.0
+        span_ms = max(0, series[-1].open_time - series[0].open_time)
+        return round(span_ms / (24 * 60 * 60 * 1000), 1)
 
     def get_health(self) -> Dict[str, str]:
         report: Dict[str, str] = {}
@@ -145,7 +215,11 @@ class MarketDataMonitor:
         self.deep_history_downloader.cancel_download(symbol, timeframe)
 
     def get_deep_history_progress(self, symbol: str, timeframe: str) -> dict:
-        from engines.workers.market_data.deep_history_downloader_worker import covered_days, is_fully_downloaded
+        from engines.workers.market_data.deep_history_downloader_worker import (
+            covered_days,
+            is_fully_downloaded,
+        )
+
         return {
             "covered_days": covered_days(self.history_manifest, symbol, timeframe),
             "is_complete": is_fully_downloaded(self.history_manifest, symbol, timeframe),
@@ -169,25 +243,26 @@ class MarketDataMonitor:
         logger.info("baseline_seed_started symbol=%s timeframes=%s", symbol, TRADING_TFS)
         baseline = self.historical_loader.backfill_baseline(symbol)
         counts: Dict[str, int] = {}
-        for tf, candles in baseline.items():
-            self.candle_builder.seed_historical(symbol, tf, candles)
-            counts[tf] = len(candles)
+        for timeframe, candles in baseline.items():
+            self.candle_builder.seed_historical(symbol, timeframe, candles)
+            counts[timeframe] = len(candles)
         logger.info(
             "baseline_seed_complete symbol=%s counts=%s duration_s=%.3f",
-            symbol, counts, time.monotonic() - started,
+            symbol,
+            counts,
+            time.monotonic() - started,
         )
 
     def _handle_ws_tick(self, symbol: str, payload: dict) -> None:
-        """Called only for price-bearing aggregate deltas by WSFeedWorker.
-        A failure here therefore indicates a real malformed candidate price,
-        not the normal CoinDCX metadata-only delta behavior."""
+        """Handle only price-bearing aggregate deltas from WSFeedWorker."""
         tick = TickNormalizerWorker.from_ws_payload(symbol, payload)
         if TickNormalizerWorker.is_valid(tick):
             self.candle_builder.ingest(tick, timeframes=TRADING_TFS + POI_TFS)
         else:
             logger.warning(
                 "ws_price_bearing_delta_rejected_by_normalizer symbol=%s keys=%s",
-                symbol, sorted(payload.keys()) if isinstance(payload, dict) else type(payload).__name__,
+                symbol,
+                sorted(payload.keys()) if isinstance(payload, dict) else type(payload).__name__,
             )
 
     def _handle_rest_tick(self, symbol: str, payload: dict) -> None:
@@ -214,12 +289,20 @@ class MarketDataMonitor:
             logger.info("ws_restored_rest_fallback_disengaged symbol=%s", symbol)
 
     def _handle_deep_history_chunk(self, symbol: str, timeframe: str, candles: list) -> None:
-        logger.debug("deep_history_chunk_received symbol=%s timeframe=%s candles=%d", symbol, timeframe, len(candles))
+        logger.debug(
+            "deep_history_chunk_received symbol=%s timeframe=%s candles=%d",
+            symbol,
+            timeframe,
+            len(candles),
+        )
 
     def _publish_candle_closed(self, candle: Candle) -> None:
         logger.debug(
             "candle_closed symbol=%s timeframe=%s open_time=%d close=%s",
-            candle.symbol, candle.timeframe, candle.open_time, candle.close,
+            candle.symbol,
+            candle.timeframe,
+            candle.open_time,
+            candle.close,
         )
 
     def _log_health_transition(self, symbol: str, health: str) -> None:
@@ -231,7 +314,9 @@ class MarketDataMonitor:
             logger.log(
                 level,
                 "market_data_health_transition symbol=%s previous=%s current=%s",
-                symbol, previous or "UNSET", health,
+                symbol,
+                previous or "UNSET",
+                health,
             )
 
     @staticmethod
