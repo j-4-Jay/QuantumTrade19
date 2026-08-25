@@ -1,0 +1,22 @@
+﻿QuantumTrade19 v0.3.4 baseline verification
+Created: 2026-08-25 09:36:16 +05:30
+Project root: E:\QuantumTrade19
+
+Required files:
+state\app_state.py
+state\app_state_parts\01_core_shell.py
+state\app_state_parts\02_auth_security.py
+state\app_state_parts\03_market_dashboard.py
+state\app_state_parts\04_poi_settings.py
+state\app_state_parts\05_trading_panel.py
+state\backups\app_state_before_split_20260824_172335.py
+ui\components\kline_chart.py
+ui\components\trading_panel_chart.py
+ui\pages\trading_panel.py
+
+Missing files:
+None
+
+python -m py_compile state\app_state.py exit code: 0
+
+Compiler output:
