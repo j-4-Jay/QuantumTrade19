@@ -2,17 +2,17 @@
 
 PATH: ui/theme/glass.py  (REPLACE ENTIRE FILE)
 
-CHANGE (Module 01 gap-closure item 5): added a uniform 0.9s cross-fade transition to every
-style dict whose background/border/box-shadow/color values are driven by the --qt19-* CSS
-custom properties set in page_shell.py's _theme_style_vars(). Custom properties themselves
-can't be transitioned, but the consuming elements can - as long as they declare the
-transition, which none of these previously did (only PAGE_BG_STYLE had a partial one, and
-PILL_BUTTON_STYLE's existing transform transition is preserved alongside the new one).
+CHANGE (v0.3.7): added HOVER_GLOW_CLASS constant - pass this as class_name
+on any card-style component to get the soft, theme-contrast hover glow
+defined in ui/theme/global_css.py (.qt19-hover-glow). Nothing else in this
+file changed from the previous locked version.
 """
 from __future__ import annotations
 
 
 _THEME_CROSSFADE = "background 0.9s ease, border-color 0.9s ease, box-shadow 0.9s ease, color 0.9s ease"
+
+HOVER_GLOW_CLASS: str = "qt19-hover-glow"
 
 
 GLASS_CARD_STYLE: dict = {
@@ -77,7 +77,6 @@ AUTH_BG_STYLE: dict = {
     "justify_content": "center",
     "cursor": "auto",
 }
-
 
 
 def heartbeat_pill_style(pulse_color) -> dict:

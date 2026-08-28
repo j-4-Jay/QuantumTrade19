@@ -1,0 +1,199 @@
+"""Trading Panel tab - Futures-only chart foundation.
+
+PATH: ui/pages/trading_panel.py  (REPLACE ENTIRE FILE)
+
+CHANGE (v0.3.8 - fix right-click menu not opening): replaced the previous
+rx.context_menu attempt (which relied on the browser's native "contextmenu"
+event - never fired because klinecharts' own <canvas> already calls
+preventDefault() on it) with a fully custom, Reflex-rendered popup menu.
+ui/components/kline_chart.py now exposes a genuine on_context_menu event
+trigger that fires reliably regardless of what the chart library itself
+does with the native event. Menu position is set from the real click
+coordinates (AppState.open_trading_panel_menu) and rendered via a plain
+absolutely-positioned box - no dependency on any library's context-menu
+internals.
+
+Also (still true from v0.3.7): no repeated "Trading Panel" heading, Grid/
+Reset View/Day-Night/Follow Live/Go Live are the menu's only items,
+double-click on the chart also resets the view, and Display Days applies
+per-symbol across all three timeframes.
+"""
+from __future__ import annotations
+
+import reflex as rx
+
+from state.app_state import AppState, TRADING_PANEL_TF_OPTIONS
+from ui.components.trading_panel_chart import trading_panel_chart
+from ui.theme.glass import GLASS_CARD_3XL_STYLE, GLASS_CARD_STYLE, HOVER_GLOW_CLASS
+
+
+def _ohlc_pill(label: str, value) -> rx.Component:
+    return rx.hstack(
+        rx.text(label, font_size="0.7rem", color="var(--qt19-text-muted)"),
+        rx.text(value, font_size="0.82rem", font_weight="700"),
+        spacing="1",
+    )
+
+
+def _tf_buttons() -> rx.Component:
+    return rx.hstack(
+        *[
+            rx.button(
+                tf,
+                size="1",
+                variant=rx.cond(
+                    AppState.trading_panel_chart_tf == tf,
+                    "solid",
+                    "outline",
+                ),
+                on_click=AppState.set_trading_panel_chart_tf(tf),
+            )
+            for tf in TRADING_PANEL_TF_OPTIONS
+        ],
+        spacing="1",
+    )
+
+
+def _header() -> rx.Component:
+    return rx.hstack(
+        rx.select(
+            AppState.trading_panel_symbol_options,
+            value=AppState.trading_panel_symbol,
+            on_change=AppState.set_trading_panel_symbol,
+            width="170px",
+        ),
+        _tf_buttons(),
+        rx.spacer(),
+        _ohlc_pill("O", AppState.trading_panel_current_open),
+        _ohlc_pill("H", AppState.trading_panel_current_high),
+        _ohlc_pill("L", AppState.trading_panel_current_low),
+        _ohlc_pill("C", AppState.trading_panel_current_close),
+        rx.badge(AppState.ws_status, variant="soft"),
+        width="100%",
+        align_items="center",
+        spacing="4",
+        wrap="wrap",
+    )
+
+
+def _display_window_controls() -> rx.Component:
+    return rx.hstack(
+        rx.text("Display Last:", font_size="0.8rem"),
+        rx.input(
+            value=AppState.trading_panel_display_days_draft,
+            on_change=AppState.set_trading_panel_display_days_draft,
+            on_blur=AppState.commit_trading_panel_display_days,
+            width="70px",
+            size="1",
+        ),
+        rx.text("Days (applies to 1m/5m/15m for this symbol)", font_size="0.75rem", color="var(--qt19-text-muted)"),
+        rx.button(
+            "Apply",
+            size="1",
+            variant="outline",
+            on_click=AppState.commit_trading_panel_display_days,
+        ),
+        rx.divider(orientation="vertical", height="1.2rem"),
+        rx.text(
+            f"Local: {AppState.trading_panel_local_days} days",
+            font_size="0.75rem",
+            color="var(--qt19-text-muted)",
+        ),
+        rx.text(
+            f"Broker: {AppState.trading_panel_broker_days}",
+            font_size="0.75rem",
+            color="var(--qt19-text-muted)",
+        ),
+        rx.cond(
+            AppState.trading_panel_notice != "",
+            rx.badge(
+                AppState.trading_panel_notice,
+                color_scheme="orange",
+                variant="soft",
+            ),
+        ),
+        spacing="3",
+        align_items="center",
+        wrap="wrap",
+    )
+
+
+def _menu_item(label, on_click) -> rx.Component:
+    return rx.box(
+        rx.text(label, font_size="0.82rem", font_weight="500"),
+        on_click=[on_click, AppState.close_trading_panel_menu],
+        padding="0.5rem 0.9rem",
+        border_radius="0.6rem",
+        cursor="pointer",
+        width="100%",
+        _hover={"background": "var(--qt19-accent)", "color": "white"},
+    )
+
+
+def _menu_divider() -> rx.Component:
+    return rx.divider(margin_y="0.2rem")
+
+
+def _custom_context_menu() -> rx.Component:
+    return rx.cond(
+        AppState.trading_panel_menu_open,
+        rx.fragment(
+            rx.box(
+                position="fixed",
+                top="0", left="0", right="0", bottom="0",
+                z_index="998",
+                on_click=AppState.close_trading_panel_menu,
+                on_context_menu=[rx.prevent_default, AppState.close_trading_panel_menu],
+            ),
+            rx.box(
+                _menu_item(
+                    rx.cond(AppState.trading_panel_grid_enabled, "Hide Grid", "Show Grid"),
+                    AppState.toggle_trading_panel_grid,
+                ),
+                _menu_divider(),
+                _menu_item("Reset View", AppState.reset_trading_panel_view),
+                _menu_divider(),
+                _menu_item(
+                    rx.cond(AppState.trading_panel_chart_theme == "night", "Day Mode", "Night Mode"),
+                    AppState.set_trading_panel_chart_theme(
+                        rx.cond(AppState.trading_panel_chart_theme == "night", "day", "night")
+                    ),
+                ),
+                _menu_divider(),
+                _menu_item(
+                    rx.cond(AppState.trading_panel_follow_live, "Follow Live: Turn OFF", "Follow Live: Turn ON"),
+                    AppState.toggle_trading_panel_follow_live,
+                ),
+                _menu_item("Go to Live", AppState.go_live_trading_panel),
+                position="fixed",
+                z_index="999",
+                min_width="200px",
+                padding="0.4rem",
+                style={**GLASS_CARD_STYLE, **AppState.trading_panel_menu_position},
+            ),
+        ),
+    )
+
+
+def _chart_with_context_menu() -> rx.Component:
+    return rx.box(
+        rx.box(
+            trading_panel_chart(),
+            on_double_click=AppState.reset_trading_panel_view,
+            width="100%",
+        ),
+        _custom_context_menu(),
+        width="100%",
+    )
+
+
+def trading_panel_page() -> rx.Component:
+    return rx.box(
+        _header(),
+        _display_window_controls(),
+        _chart_with_context_menu(),
+        spacing="3",
+        style=GLASS_CARD_3XL_STYLE,
+        class_name=HOVER_GLOW_CLASS,
+        width="100%",
+    )

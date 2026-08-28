@@ -4,12 +4,10 @@ PATH: state/app_state.py  (REPLACE ENTIRE FILE)
 
 Composes executable mixins from state/app_state_mixins/.
 
-CHANGE (v0.3.8): added trading_panel_menu_open/trading_panel_menu_x/
-trading_panel_menu_y - drive the custom, fully Reflex-rendered right-click
-menu on the Trading Panel chart (see trading_panel_mixin.py + ui/pages/
-trading_panel.py). Replaces the previous rx.context_menu attempt, which
-never opened because klinecharts' own canvas already calls
-preventDefault() on the native contextmenu event.
+CHANGE (v0.3.7): added sidebar_collapsed (persisted; drives the collapsible
+App Shell sidebar). Trading Panel fields unchanged from v0.3.6 except that
+trading_panel_display_days_input/_draft are now interpreted as PER-SYMBOL
+(see trading_panel_mixin.py), not per symbol+timeframe.
 """
 from __future__ import annotations
 
@@ -159,8 +157,3 @@ class AppState(
     trading_panel_follow_live: bool = False
     _trading_panel_poll_running: bool = False
     _trading_panel_last_candle_ts: float = 0.0
-
-    # --- Custom right-click chart menu (v0.3.8) ---
-    trading_panel_menu_open: bool = False
-    trading_panel_menu_x: int = 0
-    trading_panel_menu_y: int = 0

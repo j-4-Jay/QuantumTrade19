@@ -2,9 +2,14 @@
 
 PATH: ui/components/page_shell.py  (REPLACE ENTIRE FILE)
 
-CHANGE: removed the per-shell transition class_name/key - the transition now lives once,
-globally, in quantumtrade19/quantumtrade19.py, wrapping every screen (not just the Dashboard).
-Keeping it here too would have caused the shell to animate twice.
+CHANGE (v0.3.7): restructured so the topbar spans the FULL width of the
+screen (top row), with the sidebar + content area as a row underneath it,
+instead of sidebar + (topbar+content) side by side. This is what makes the
+header full-width and the sidebar correspondingly shorter. The content box
+automatically fills whatever width the (now-collapsible) sidebar frees up -
+no extra logic needed, since the sidebar's own width transition (see
+ui/components/sidebar.py) combined with this row's flex="1" content box
+handles the expand/collapse resize automatically.
 """
 from __future__ import annotations
 import reflex as rx
@@ -26,11 +31,13 @@ def _theme_style_vars() -> dict:
 
 
 def qt19_page_shell(content: rx.Component, show_nav: bool = True) -> rx.Component:
-    body = rx.hstack(
-        rx.cond(show_nav, qt19_sidebar(), rx.fragment()),
-        rx.vstack(rx.cond(show_nav, qt19_topbar(), rx.fragment()),
-                   rx.box(content, width="100%", padding="1.5rem", flex="1", overflow_y="auto"),
-                   width="100%", height="100vh", spacing="0"),
-        width="100%", height="100vh", spacing="0", align_items="stretch", style=PAGE_BG_STYLE,
+    body = rx.vstack(
+        rx.cond(show_nav, qt19_topbar(), rx.fragment()),
+        rx.hstack(
+            rx.cond(show_nav, qt19_sidebar(), rx.fragment()),
+            rx.box(content, width="100%", padding="1.5rem", flex="1", overflow_y="auto"),
+            width="100%", height="100%", spacing="0", align_items="stretch",
+        ),
+        width="100%", height="100vh", spacing="0", style=PAGE_BG_STYLE,
     )
     return rx.box(qt19_cursor_glow(), body, qt19_logout_dialog(), style=_theme_style_vars(), height="100vh", width="100%")

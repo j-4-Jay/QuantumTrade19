@@ -2,10 +2,14 @@
 
 PATH: ui/theme/global_css.py  (REPLACE ENTIRE FILE)
 
-CHANGE (v0.3.8): reduced .qt19-hover-glow intensity to 75% of the previous
-version for a more premium, restrained look - blur 22px->16px, spread
-3px->2px, and the glow color itself is blended to 75% opacity via
-color-mix() so it reads as a gentle ambient lift rather than a bright ring.
+CHANGE (v0.3.7): added .qt19-hover-glow. Applied to any card, this makes a
+very soft, theme-contrasting glow appear around the card the cursor is
+currently inside, and fade back out smoothly when the cursor leaves. The
+"fast in, slow out" feel is achieved with two different transition
+durations: the base (no-hover) rule owns the slow fade-out duration, and
+the :hover rule overrides with a quicker fade-in duration - a standard,
+reliable CSS technique (no JS needed, so it can never desync from actual
+mouse state).
 """
 from __future__ import annotations
 import reflex as rx
@@ -85,7 +89,7 @@ input:-webkit-autofill { animation-name: qt19-autofill-detect; animation-duratio
   transition: box-shadow 1.4s ease;
 }
 .qt19-hover-glow:hover {
-  box-shadow: 0 0 16px 2px color-mix(in srgb, var(--qt19-accent-glow) 75%, transparent);
+  box-shadow: 0 0 22px 3px var(--qt19-accent-glow);
   transition: box-shadow 0.3s ease;
 }
 

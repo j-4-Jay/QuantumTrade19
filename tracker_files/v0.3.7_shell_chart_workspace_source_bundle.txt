@@ -1,0 +1,2205 @@
+﻿QUANTUMTRADE19 v0.3.7 SOURCE BUNDLE
+
+====================================================================================================
+BEGIN FILE: ui\components\page_shell.py
+====================================================================================================
+"""Shared page-shell component.
+
+PATH: ui/components/page_shell.py  (REPLACE ENTIRE FILE)
+
+CHANGE: removed the per-shell transition class_name/key - the transition now lives once,
+globally, in quantumtrade19/quantumtrade19.py, wrapping every screen (not just the Dashboard).
+Keeping it here too would have caused the shell to animate twice.
+"""
+from __future__ import annotations
+import reflex as rx
+from state.app_state import AppState
+from ui.components.sidebar import qt19_sidebar
+from ui.components.topbar import qt19_topbar
+from ui.components.cursor_glow import qt19_cursor_glow
+from ui.components.logout_dialog import qt19_logout_dialog
+from ui.theme.glass import PAGE_BG_STYLE
+
+
+def _theme_style_vars() -> dict:
+    return {
+        "--qt19-accent": AppState.theme_vars["accent"], "--qt19-accent-glow": AppState.theme_vars["accent_glow"],
+        "--qt19-bg-from": AppState.theme_vars["bg_from"], "--qt19-bg-to": AppState.theme_vars["bg_to"],
+        "--qt19-glass-bg": AppState.theme_vars["glass_bg"], "--qt19-glass-border": AppState.theme_vars["glass_border"],
+        "--qt19-text-primary": AppState.theme_vars["text_primary"], "--qt19-text-muted": AppState.theme_vars["text_muted"],
+    }
+
+
+def qt19_page_shell(content: rx.Component, show_nav: bool = True) -> rx.Component:
+    body = rx.hstack(
+        rx.cond(show_nav, qt19_sidebar(), rx.fragment()),
+        rx.vstack(rx.cond(show_nav, qt19_topbar(), rx.fragment()),
+                   rx.box(content, width="100%", padding="1.5rem", flex="1", overflow_y="auto"),
+                   width="100%", height="100vh", spacing="0"),
+        width="100%", height="100vh", spacing="0", align_items="stretch", style=PAGE_BG_STYLE,
+    )
+    return rx.box(qt19_cursor_glow(), body, qt19_logout_dialog(), style=_theme_style_vars(), height="100vh", width="100%")
+
+====================================================================================================
+END FILE: ui\components\page_shell.py
+
+====================================================================================================
+BEGIN FILE: ui\theme\global_css.py
+====================================================================================================
+"""Global CSS keyframes + forced cursor override + autofill detection.
+
+PATH: ui/theme/global_css.py  (REPLACE ENTIRE FILE)
+
+CHANGE (Module 01 gap-closure item 8): added qt19-tab-switch - a fast (0.35s) fade+slide used
+for Dashboard <-> Trading Panel <-> Journal & Reports <-> Alerts <-> Settings tab changes.
+Deliberately separate from the slower qt19-transition-* screen-entrance effects (those are
+tuned for full-screen Login->Dashboard hand-offs, not rapid in-shell tab clicks).
+"""
+from __future__ import annotations
+import reflex as rx
+
+
+_CSS = """
+* { cursor: auto !important; }
+button, a, [role="button"], input[type="checkbox"], input[type="radio"] { cursor: pointer !important; }
+
+[data-radius="full"] { overflow: hidden !important; }
+
+@keyframes qt19-autofill-detect { from {} to {} }
+input:-webkit-autofill { animation-name: qt19-autofill-detect; animation-duration: 0.001s; }
+
+:root {
+  --qt19-pulse-blur-min: 2px;
+  --qt19-pulse-blur-max: 6px;
+  --qt19-pulse-spread-min: 0px;
+  --qt19-pulse-spread-max: 1px;
+}
+
+@keyframes qt19-heartbeat {
+  0%   { box-shadow: 0 0 var(--qt19-pulse-blur-min) var(--qt19-pulse-spread-min) var(--qt19-pulse-color, #DC143C); }
+  10%  { box-shadow: 0 0 var(--qt19-pulse-blur-max) var(--qt19-pulse-spread-max) var(--qt19-pulse-color, #DC143C); }
+  20%  { box-shadow: 0 0 var(--qt19-pulse-blur-min) var(--qt19-pulse-spread-min) var(--qt19-pulse-color, #DC143C); }
+  30%  { box-shadow: 0 0 var(--qt19-pulse-blur-max) var(--qt19-pulse-spread-max) var(--qt19-pulse-color, #DC143C); }
+  45%  { box-shadow: 0 0 var(--qt19-pulse-blur-min) var(--qt19-pulse-spread-min) var(--qt19-pulse-color, #DC143C); }
+  100% { box-shadow: 0 0 var(--qt19-pulse-blur-min) var(--qt19-pulse-spread-min) var(--qt19-pulse-color, #DC143C); }
+}
+.qt19-heartbeat { animation: qt19-heartbeat 1.6s ease-in-out infinite; transition: background 0.35s ease; }
+
+@keyframes qt19-shake {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-8px); }
+  30% { transform: translateX(7px); }
+  45% { transform: translateX(-6px); }
+  60% { transform: translateX(5px); }
+  75% { transform: translateX(-3px); }
+  90% { transform: translateX(2px); }
+}
+.qt19-shake { animation: qt19-shake 0.4s ease; }
+
+@keyframes qt19-tab-switch {
+  from { opacity: 0; transform: translateX(12px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.qt19-tab-switch { animation: qt19-tab-switch 0.35s cubic-bezier(0.22,1,0.36,1) both; }
+
+@keyframes qt19-border-chase-move {
+  from { offset-distance: 0%; }
+  to   { offset-distance: 100%; }
+}
+
+@keyframes qt19-anim-dissolve { from { opacity: 0; } to { opacity: 1; } }
+@keyframes qt19-anim-zoom-in { from { opacity: 0; transform: scale(0.85); } to { opacity: 1; transform: scale(1); } }
+@keyframes qt19-anim-zoom-out { from { opacity: 0; transform: scale(1.15); } to { opacity: 1; transform: scale(1); } }
+@keyframes qt19-anim-slide-up { from { opacity: 0; transform: translateY(40px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes qt19-anim-slide-down { from { opacity: 0; transform: translateY(-40px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes qt19-anim-slide-left { from { opacity: 0; transform: translateX(60px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes qt19-anim-slide-right { from { opacity: 0; transform: translateX(-60px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes qt19-anim-flip-x { from { opacity: 0; transform: perspective(800px) rotateX(35deg); } to { opacity: 1; transform: perspective(800px) rotateX(0deg); } }
+@keyframes qt19-anim-flip-y { from { opacity: 0; transform: perspective(800px) rotateY(35deg); } to { opacity: 1; transform: perspective(800px) rotateY(0deg); } }
+@keyframes qt19-anim-blur-in { from { opacity: 0; filter: blur(10px); } to { opacity: 1; filter: blur(0); } }
+
+.qt19-transition-dissolve { animation: qt19-anim-dissolve 1.0s ease both; }
+.qt19-transition-zoom-in { animation: qt19-anim-zoom-in 0.9s cubic-bezier(0.34,1.56,0.64,1) both; }
+.qt19-transition-zoom-out { animation: qt19-anim-zoom-out 0.9s cubic-bezier(0.34,1.56,0.64,1) both; }
+.qt19-transition-slide-up { animation: qt19-anim-slide-up 0.9s cubic-bezier(0.22,1,0.36,1) both; }
+.qt19-transition-slide-down { animation: qt19-anim-slide-down 0.9s cubic-bezier(0.22,1,0.36,1) both; }
+.qt19-transition-slide-left { animation: qt19-anim-slide-left 0.9s cubic-bezier(0.22,1,0.36,1) both; }
+.qt19-transition-slide-right { animation: qt19-anim-slide-right 0.9s cubic-bezier(0.22,1,0.36,1) both; }
+.qt19-transition-flip-x { animation: qt19-anim-flip-x 1.0s ease both; }
+.qt19-transition-flip-y { animation: qt19-anim-flip-y 1.0s ease both; }
+.qt19-transition-blur-in { animation: qt19-anim-blur-in 1.0s ease both; }
+"""
+
+
+def qt19_global_css() -> rx.Component:
+    """Render the single shared <style> block. Include this exactly once, at the app root."""
+    return rx.html(f"<style>{_CSS}</style>")
+====================================================================================================
+END FILE: ui\theme\global_css.py
+
+====================================================================================================
+BEGIN FILE: ui\theme\glass.py
+====================================================================================================
+"""Shared glassmorphism style primitives.
+
+PATH: ui/theme/glass.py  (REPLACE ENTIRE FILE)
+
+CHANGE (Module 01 gap-closure item 5): added a uniform 0.9s cross-fade transition to every
+style dict whose background/border/box-shadow/color values are driven by the --qt19-* CSS
+custom properties set in page_shell.py's _theme_style_vars(). Custom properties themselves
+can't be transitioned, but the consuming elements can - as long as they declare the
+transition, which none of these previously did (only PAGE_BG_STYLE had a partial one, and
+PILL_BUTTON_STYLE's existing transform transition is preserved alongside the new one).
+"""
+from __future__ import annotations
+
+
+_THEME_CROSSFADE = "background 0.9s ease, border-color 0.9s ease, box-shadow 0.9s ease, color 0.9s ease"
+
+
+GLASS_CARD_STYLE: dict = {
+    "background": "var(--qt19-glass-bg)",
+    "backdrop_filter": "blur(18px)",
+    "border": "1px solid var(--qt19-glass-border)",
+    "border_radius": "1.5rem",
+    "box_shadow": "0 8px 32px rgba(0,0,0,0.18)",
+    "padding": "1.25rem",
+    "transition": _THEME_CROSSFADE,
+}
+
+
+GLASS_CARD_3XL_STYLE: dict = {**GLASS_CARD_STYLE, "border_radius": "1.75rem"}
+
+
+PILL_BUTTON_STYLE: dict = {
+    "border_radius": "9999px",
+    "padding_x": "1.25rem",
+    "padding_y": "0.55rem",
+    "background": "var(--qt19-accent)",
+    "color": "white",
+    "box_shadow": "0 0 16px 2px var(--qt19-accent-glow)",
+    "border": "none",
+    "cursor": "pointer",
+    "font_weight": "600",
+    "transition": f"transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), {_THEME_CROSSFADE}",
+    "_hover": {"transform": "scale(1.05)"},
+}
+
+
+GLOW_RING_STYLE: dict = {
+    "border": "2px solid var(--qt19-accent)",
+    "box_shadow": "0 0 12px 3px var(--qt19-accent-glow)",
+    "border_radius": "9999px",
+    "transition": _THEME_CROSSFADE,
+}
+
+
+PAGE_BG_STYLE: dict = {
+    "background": "linear-gradient(160deg, var(--qt19-bg-from), var(--qt19-bg-to))",
+    "min_height": "100vh",
+    "color": "var(--qt19-text-primary)",
+    "transition": _THEME_CROSSFADE,
+    "cursor": "auto",
+}
+
+
+AUTH_BG_STYLE: dict = {
+    "background": (
+        "radial-gradient(circle at 30% 28%, rgba(30,143,255,0.22) 0%, transparent 38%),"
+        "radial-gradient(circle at 70% 28%, rgba(147,51,234,0.16) 0%, transparent 34%),"
+        "radial-gradient(circle at 50% 85%, rgba(30,143,255,0.10) 0%, transparent 42%),"
+        "linear-gradient(160deg, #00060f 0%, #000208 100%)"
+    ),
+    "background_attachment": "fixed",
+    "min_height": "100vh",
+    "width": "100%",
+    "color": "#EAF4FF",
+    "display": "flex",
+    "align_items": "center",
+    "justify_content": "center",
+    "cursor": "auto",
+}
+
+
+
+def heartbeat_pill_style(pulse_color) -> dict:
+    """Return a pill-button *style dict* with a CSS custom property set for the heartbeat
+    glow color. Pass this to `style=`; separately pass `class_name="qt19-heartbeat"` on the
+    same button so the @keyframes qt19-heartbeat animation (defined once in global_css.py)
+    picks up `--qt19-pulse-color` and animates it."""
+    return {
+        "border_radius": "9999px",
+        "padding_x": "1.75rem",
+        "padding_y": "0.65rem",
+        "background": "rgba(20,20,25,0.85)",
+        "border": "1px solid rgba(255,255,255,0.15)",
+        "color": "white",
+        "font_weight": "700",
+        "cursor": "pointer",
+        "--qt19-pulse-color": pulse_color,
+    }
+====================================================================================================
+END FILE: ui\theme\glass.py
+
+====================================================================================================
+BEGIN FILE: config\settings.py
+====================================================================================================
+"""Module 01 - UI/UX & App Shell. Global static config.
+
+PATH: config/settings.py  (REPLACE ENTIRE FILE)
+
+CHANGE: SPLASH_DURATION_SECONDS 6.0 -> 5.0, per request (still followed by SPLASH_HOLD_SECONDS
+= 2.0 at 100% before the dissolve into Login).
+"""
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Literal
+
+APP_NAME: str = "QuantumTrade19"
+APP_SUBHEADING: str = "by Jayprakash Pattnaik"
+APP_TAGLINE: str = "Precision. Quantum. Profits."
+APP_VERSION: str = "v0.1.0-alpha"
+SIDEBAR_TABS: list[str] = ["Dashboard", "Trading Panel", "Journal & Reports", "Alerts", "Settings"]
+SPLASH_DURATION_SECONDS: float = 5.0
+SPLASH_HOLD_SECONDS: float = 2.0
+
+ThemeHue = Literal["yellow", "saffron", "blue"]
+ThemeMode = Literal["day", "night"]
+
+
+@dataclass(frozen=True)
+class ThemeDefinition:
+    hue: ThemeHue
+    mode: ThemeMode
+    accent: str
+    accent_glow: str
+    bg_from: str
+    bg_to: str
+    glass_bg: str
+    glass_border: str
+    text_primary: str
+    text_muted: str
+
+
+THEMES: dict[str, ThemeDefinition] = {
+    "yellow-day": ThemeDefinition("yellow", "day", "#F5C518", "#FFE68A", "#FFF9E5", "#FDEFC0", "rgba(255,255,255,0.55)", "rgba(245,197,24,0.45)", "#2B2400", "#6B5E00"),
+    "yellow-night": ThemeDefinition("yellow", "night", "#F5C518", "#FFE68A", "#141200", "#232000", "rgba(20,18,0,0.55)", "rgba(245,197,24,0.35)", "#FFF4CC", "#C9B65B"),
+    "saffron-day": ThemeDefinition("saffron", "day", "#FF7A18", "#FFB067", "#FFF1E5", "#FFE0C2", "rgba(255,255,255,0.55)", "rgba(255,122,24,0.45)", "#361A00", "#8A4E12"),
+    "saffron-night": ThemeDefinition("saffron", "night", "#FF7A18", "#FFB067", "#1A0D00", "#2B1500", "rgba(26,13,0,0.55)", "rgba(255,122,24,0.35)", "#FFE3C6", "#D69A64"),
+    "blue-day": ThemeDefinition("blue", "day", "#1E8FFF", "#8FCBFF", "#E9F4FF", "#CFE7FF", "rgba(255,255,255,0.55)", "rgba(30,143,255,0.45)", "#00203B", "#2E5D85"),
+    "blue-night": ThemeDefinition("blue", "night", "#1E8FFF", "#8FCBFF", "#00060F", "#001A33", "rgba(0,6,15,0.55)", "rgba(30,143,255,0.35)", "#D6ECFF", "#6FA6D9"),
+}
+DEFAULT_THEME_KEY: str = "blue-night"
+THEME_ORDER: list[str] = ["yellow-day", "yellow-night", "saffron-day", "saffron-night", "blue-day", "blue-night"]
+THEME_LABELS: dict[str, str] = {
+    "yellow-day": "Yellow \u00b7 Day", "yellow-night": "Yellow \u00b7 Night",
+    "saffron-day": "Saffron \u00b7 Day", "saffron-night": "Saffron \u00b7 Night",
+    "blue-day": "Blue \u00b7 Day", "blue-night": "Blue \u00b7 Night",
+}
+
+LIVE_GLOW_COLOR: str = "#EF4444"
+LIVE_GLOW_SHADOW: str = "rgba(239,68,68,0.55)"
+LOGO_IMAGE_PATH: str = "/branding/logo.png"
+FAVICON_NOTE: str = "Place favicon.ico directly in assets/favicon.ico (NOT assets/branding/)."
+MIN_PASSWORD_LENGTH: int = 4
+
+CURSOR_DEFAULT_IMAGE_PATH: str = "/branding/cursor_default.png"
+CURSOR_ACTIVE_IMAGE_PATH: str = "/branding/cursor_active.png"
+
+TRANSITION_EFFECTS: dict[str, str] = {
+    "dissolve": "Dissolve",
+    "zoom-in": "Zoom In",
+    "zoom-out": "Zoom Out",
+    "slide-up": "Page Slide Up",
+    "slide-down": "Page Slide Down",
+    "slide-left": "Page Slide Left",
+    "slide-right": "Page Slide Right",
+    "flip-x": "Page Flip (Horizontal)",
+    "flip-y": "Page Flip (Vertical)",
+    "blur-in": "Blur In",
+}
+
+====================================================================================================
+END FILE: config\settings.py
+
+====================================================================================================
+BEGIN FILE: state\app_state.py
+====================================================================================================
+"""Reflex State - thin UI binding layer over the Master App Engine (no business logic here).
+
+PATH: state/app_state.py  (REPLACE ENTIRE FILE)
+
+Composes executable mixins from state/app_state_mixins/.
+
+CHANGE (v0.3.6): added trading_panel_grid_enabled (default False - grid off
+by default so POI lines/zones stay visually clean per project decision),
+trading_panel_display_days_draft (typing buffer for the Display Last X Days
+input - fixes the input being stuck), and _trading_panel_last_candle_ts
+(tracks the last-seen candle open_time so Follow Live can detect a genuine
+candle close instead of jumping on every 3-second poll tick).
+"""
+from __future__ import annotations
+
+import reflex as rx
+
+from config.settings import DEFAULT_THEME_KEY
+from state.app_state_mixins.shared import SHELL_STATE_CLASS
+from state.app_state_mixins.core_shell_mixin import CoreShellMixin
+from state.app_state_mixins.auth_security_mixin import AuthSecurityMixin
+from state.app_state_mixins.market_dashboard_mixin import MarketDashboardMixin
+from state.app_state_mixins.poi_settings_mixin import PoiSettingsMixin
+from state.app_state_mixins.trading_panel_mixin import TradingPanelMixin
+
+TRADING_PANEL_TF_OPTIONS = ["1m", "5m", "15m"]
+TRADING_PANEL_DAY_PRESETS = ["1", "3", "5", "7", "14", "30", "90"]
+
+
+class AppState(
+    CoreShellMixin,
+    AuthSecurityMixin,
+    MarketDashboardMixin,
+    PoiSettingsMixin,
+    TradingPanelMixin,
+    rx.State,
+):
+    screen: str = SHELL_STATE_CLASS.SPLASH.value
+    active_tab: str = "Dashboard"
+    theme_key: str = DEFAULT_THEME_KEY
+    paper_mode: bool = True
+    is_locked: bool = False
+    sound_muted: bool = False
+
+    totp_required: bool = False
+
+    reg_username: str = ""
+    reg_password: str = ""
+    reg_confirm_password: str = ""
+    reg_enable_totp: bool = False
+    reg_error: str = ""
+    reg_stage: str = "form"
+    reg_qr_data_uri: str = ""
+    reg_totp_code: str = ""
+    show_reg_password: bool = False
+    show_reg_confirm_password: bool = False
+
+    login_username: str = ""
+    login_password: str = ""
+    login_totp: str = ""
+    login_error: str = ""
+    show_login_password: bool = False
+    show_lock_password: bool = False
+    login_credentials_match: bool = False
+    login_error_seq: int = 0
+    login_remember_device: bool = False
+
+    manage_username: str = ""
+    manage_password: str = ""
+    manage_error: str = ""
+    manage_stage: str = "verify"
+    manage_totp_qr: str = ""
+    manage_totp_code: str = ""
+    show_manage_password: bool = False
+    tg_bot_token: str = ""
+    tg_chat_id: str = ""
+    tg_enabled: bool = False
+    tg_configured: bool = False
+    tg_message: str = ""
+    dc_webhook_url: str = ""
+    dc_enabled: bool = False
+    dc_configured: bool = False
+    dc_message: str = ""
+
+    forgot_stage: str = "choose"
+    forgot_selected_method: str = ""
+    forgot_code: str = ""
+    forgot_otp_sent: bool = False
+    forgot_verified: bool = False
+    forgot_new_password: str = ""
+    forgot_confirm_password: str = ""
+    forgot_error: str = ""
+    show_forgot_new_password: bool = False
+    show_forgot_confirm_password: bool = False
+    forgot_available_methods: list[str] = []
+    forgot_has_any_method: bool = False
+
+    show_logout_dialog: bool = False
+    logout_stage: str = "confirm"
+
+    detail_popup_open: bool = False
+    detail_popup_symbol: str = ""
+    ws_status: str = "connected"
+    pinned_prices: dict[str, str] = {}
+    symbol_rows: list[dict] = []
+    deep_history_symbol: str = "B-BTC_USDT"
+    deep_history_timeframe: str = "1m"
+    deep_history_target_days: str = ""
+    deep_history_ceiling_days: str = "Not checked yet"
+    deep_history_covered_days: str = "0"
+    deep_history_is_downloading: bool = False
+    deep_history_status_message: str = ""
+
+    poi_settings_loaded: bool = False
+    poi_display_enabled: dict[str, bool] = {}
+    poi_strategy_enabled: dict[str, bool] = {}
+    poi_zone_source_tf_enabled: dict[str, bool] = {}
+    poi_show_labels: bool = True
+    poi_show_tooltips: bool = True
+    poi_line_transparency: int = 100
+    poi_zone_opacity: int = 30
+    poi_show_source_tf_badge: bool = True
+    poi_show_logical_id: bool = False
+    poi_reduced_motion: bool = False
+    poi_backend_busy: bool = False
+
+    transition_effects_enabled: list[str] = ["dissolve", "zoom-in", "slide-up", "flip-x", "blur-in"]
+    transition_mode: str = "shuffle"
+    transition_active_effect: str = "dissolve"
+    _transition_sequence_index: int = 0
+
+    tab_transition_effects_enabled: list[str] = ["slide-left"]
+    tab_transition_mode: str = "single"
+    tab_transition_active_effect: str = "slide-left"
+    _tab_transition_sequence_index: int = 0
+
+    _splash_task_running: bool = False
+    _ws_poll_running: bool = False
+    _price_poll_running: bool = False
+    _deep_history_poll_running: bool = False
+    _poi_monitor_starting: bool = False
+
+    # --- Trading Panel chart state (react-klinecharts) ---
+    trading_panel_symbol: str = "B-BTC_USDT"
+    trading_panel_chart_tf: str = "5m"
+    trading_panel_display_days_input: str = "5"
+    trading_panel_display_days_draft: str = "5"
+    trading_panel_chart_theme: str = "night"
+    trading_panel_grid_enabled: bool = False
+    trading_panel_candles: list[dict] = []
+    trading_panel_current_open: str = "--"
+    trading_panel_current_high: str = "--"
+    trading_panel_current_low: str = "--"
+    trading_panel_current_close: str = "--"
+    trading_panel_local_days: str = "0"
+    trading_panel_broker_days: str = "Not checked yet"
+    trading_panel_notice: str = ""
+    trading_panel_follow_live: bool = False
+    _trading_panel_poll_running: bool = False
+    _trading_panel_last_candle_ts: float = 0.0
+
+====================================================================================================
+END FILE: state\app_state.py
+
+====================================================================================================
+BEGIN FILE: state\app_state_mixins\shared.py
+====================================================================================================
+"""Shared imports and constants for executable AppState mixins.
+
+PATH: state/app_state_mixins/shared.py
+"""
+from __future__ import annotations
+
+from engines.masters.master_app_engine import MasterAppEngine, ShellScreen
+from config.settings import (
+    DEFAULT_THEME_KEY,
+    SIDEBAR_TABS,
+    SPLASH_DURATION_SECONDS,
+    SPLASH_HOLD_SECONDS,
+    THEMES,
+    THEME_LABELS,
+    THEME_ORDER,
+    TRANSITION_EFFECTS,
+)
+
+_engine = MasterAppEngine()
+
+PINNED_SYMBOL_MAP = {
+    "BTCUSD": "B-BTC_USDT",
+    "ETHUSD": "B-ETH_USDT",
+    "Gold": "B-XAU_USDT",
+}
+
+POI_LINE_TF_ORDER = ["1m", "5m", "15m", "1H", "4H", "1D", "1W", "1M"]
+POI_LINE_TF_LABELS = {
+    "1m": "1 Minute", "5m": "5 Minute", "15m": "15 Minute", "1H": "1 Hour",
+    "4H": "4 Hour", "1D": "Daily", "1W": "Weekly", "1M": "Monthly",
+}
+POI_LINE_TYPE_MAP = {
+    "1m": ("P1M_HIGH", "P1M_LOW"), "5m": ("P5M_HIGH", "P5M_LOW"), "15m": ("P15M_HIGH", "P15M_LOW"),
+    "1H": ("P1H_HIGH", "P1H_LOW"), "4H": ("4H_HIGH", "4H_LOW"), "1D": ("PDH", "PDL"),
+    "1W": ("1W_HIGH", "1W_LOW"), "1M": ("1M_HIGH", "1M_LOW"),
+}
+POI_ZONE_TYPES = [
+    ("RESISTANCE_FLIP", "Resistance Flip"),
+    ("SUPPORT_FLIP", "Support Flip"),
+    ("FVG", "Fair Value Gap"),
+    ("INVERSE_FVG", "Inverse FVG"),
+    ("ORDER_BLOCK", "Order Block"),
+]
+POI_DEFAULT_STRATEGY_TYPES = {"4H_HIGH", "4H_LOW", "PDH", "PDL"}
+
+TRADING_PANEL_TF_OPTIONS = ["1m", "5m", "15m"]
+TRADING_PANEL_DAY_PRESETS = ["1", "3", "5", "7", "14", "30", "90"]
+TRADING_PANEL_PERIOD_MAP = {
+    "1m": {"type": "minute", "span": 1},
+    "5m": {"type": "minute", "span": 5},
+    "15m": {"type": "minute", "span": 15},
+}
+
+# Stable DOM id for the KLineChart instance. Must match the id used by
+# ui/components/trading_panel_chart.py and the window.QT19_CHARTS registry
+# key set in ui/components/kline_chart.py's onReady handler.
+TRADING_PANEL_CHART_ID = "qt19-trading-panel-kline"
+
+SHELL_STATE_CLASS = ShellScreen
+
+====================================================================================================
+END FILE: state\app_state_mixins\shared.py
+
+====================================================================================================
+BEGIN FILE: state\app_state_mixins\core_shell_mixin.py
+====================================================================================================
+"""Executable AppState mixin: core shell, splash, transitions, tabs, sounds.
+
+PATH: state/app_state_mixins/core_shell_mixin.py
+"""
+from __future__ import annotations
+
+import asyncio
+import reflex as rx
+
+from state.app_state_mixins.shared import (
+    _engine,
+    SHELL_STATE_CLASS,
+    SPLASH_DURATION_SECONDS,
+    SPLASH_HOLD_SECONDS,
+    THEMES,
+    THEME_LABELS,
+    THEME_ORDER,
+    TRANSITION_EFFECTS,
+    SIDEBAR_TABS,
+)
+
+
+class CoreShellMixin(rx.State, mixin=True):
+    async def on_load(self) -> None:
+        self.theme_key = _engine.ui.theme.get_active_key()
+        self.paper_mode = _engine.paper_mode
+        self.sound_muted = not _engine.ui.sound.is_master_on()
+        settings = _engine.security.persistence.load()
+        self.transition_effects_enabled = settings.get("transition_effects_enabled", self.transition_effects_enabled)
+        self.transition_mode = settings.get("transition_mode", self.transition_mode)
+        self.tab_transition_effects_enabled = settings.get("tab_transition_effects_enabled", self.tab_transition_effects_enabled)
+        self.tab_transition_mode = settings.get("tab_transition_mode", self.tab_transition_mode)
+        self.trading_panel_chart_theme = settings.get("trading_panel_chart_theme", self.trading_panel_chart_theme)
+        _engine.ensure_market_data_started()
+        self.refresh_symbol_rows()
+        return type(self).start_poi_monitor_background
+
+    @rx.event(background=True)
+    async def start_poi_monitor_background(self):
+        """POIMonitor's construction makes many blocking network calls
+        (every active symbol x every POI Worker type x up to 8 timeframes).
+        Running it via asyncio.to_thread() offloads that blocking work to a
+        separate OS thread so it never freezes the shared asyncio event
+        loop the rest of the app depends on.
+        """
+        async with self:
+            if self._poi_monitor_starting:
+                return
+            self._poi_monitor_starting = True
+        try:
+            await asyncio.to_thread(_engine.ensure_poi_monitor_started)
+            async with self:
+                self.load_poi_settings()
+        finally:
+            async with self:
+                self._poi_monitor_starting = False
+
+    async def run_splash_sequence(self):
+        """Fires the bar-fill animation fresh via rx.call_script, waits the fill duration,
+        holds at 100%, then dissolves to Register/Login (hardcoded, never the random pool).
+        Guarded against React Strict Mode's double-invocation of on_mount - see module docstring.
+        """
+        if self._splash_task_running:
+            return
+        self._splash_task_running = True
+        try:
+            duration_ms = int(SPLASH_DURATION_SECONDS * 1000)
+            yield rx.call_script(
+                f"""
+                (function() {{
+                    const fill = document.getElementById('qt19-splash-bar-fill');
+                    const pct = document.getElementById('qt19-splash-pct');
+                    if (fill) {{
+                        fill.style.transition = 'none';
+                        fill.style.transform = 'scaleX(0)';
+                        void fill.offsetWidth;
+                        fill.style.transition = 'transform {SPLASH_DURATION_SECONDS}s linear';
+                        requestAnimationFrame(function() {{ fill.style.transform = 'scaleX(1)'; }});
+                    }}
+                    if (pct) {{ pct.textContent = '0%'; }}
+                    const start = Date.now();
+                    const durationMs = {duration_ms};
+                    const interval = setInterval(function() {{
+                        const elapsed = Date.now() - start;
+                        const percent = Math.min(100, Math.round((elapsed / durationMs) * 100));
+                        if (pct) {{ pct.textContent = percent + '%'; }}
+                        if (elapsed >= durationMs) {{ clearInterval(interval); }}
+                    }}, 100);
+                }})();
+                """
+            )
+            await asyncio.sleep(SPLASH_DURATION_SECONDS)
+            await asyncio.sleep(SPLASH_HOLD_SECONDS)
+            self.totp_required = _engine.security.is_totp_enabled() and not _engine.security.is_device_trusted()
+            self.transition_active_effect = "dissolve"
+            self.screen = _engine.finish_splash().value
+        finally:
+            self._splash_task_running = False
+
+    def _pick_transition_effect(self) -> None:
+        effect, next_index = _engine.ui.transitions.pick(
+            self.transition_effects_enabled, self.transition_mode, self._transition_sequence_index
+        )
+        self.transition_active_effect = effect
+        self._transition_sequence_index = next_index
+
+    def _pick_tab_transition_effect(self) -> None:
+        effect, next_index = _engine.ui.transitions.pick(
+            self.tab_transition_effects_enabled, self.tab_transition_mode, self._tab_transition_sequence_index
+        )
+        self.tab_transition_active_effect = effect
+        self._tab_transition_sequence_index = next_index
+
+    def set_active_tab(self, tab: str) -> None:
+        self.active_tab = tab
+        self.detail_popup_open = False
+        self._pick_tab_transition_effect()
+        if tab == "Trading Panel":
+            self.refresh_trading_panel_chart()
+            return [self.play_sound("tab-slide"), type(self).poll_trading_panel_chart]
+        return self.play_sound("tab-slide")
+
+    def set_theme(self, key: str) -> None:
+        if _engine.ui.theme.set_active_key(key):
+            self.theme_key = key
+
+    def toggle_sound(self) -> None:
+        is_on = _engine.ui.sound.toggle_master()
+        self.sound_muted = not is_on
+
+    def play_sound(self, event_name: str):
+        url = _engine.ui.play_sound(event_name)
+        if not url:
+            return
+        return rx.call_script(
+            f"(function(){{ try {{ new Audio('{url}').play().catch(function(){{}}); }} "
+            f"catch(e) {{}} }})();"
+        )
+
+    def toggle_transition_effect(self, effect: str, checked: bool) -> None:
+        current = list(self.transition_effects_enabled)
+        if checked and effect not in current:
+            current.append(effect)
+        elif not checked and effect in current:
+            current.remove(effect)
+        if not current:
+            current = [effect]
+        self.transition_effects_enabled = current
+        _engine.security.persistence.save({"transition_effects_enabled": current})
+
+    def set_transition_mode(self, mode: str) -> None:
+        self.transition_mode = mode
+        _engine.security.persistence.save({"transition_mode": mode})
+
+    def toggle_tab_transition_effect(self, effect: str, checked: bool) -> None:
+        current = list(self.tab_transition_effects_enabled)
+        if checked and effect not in current:
+            current.append(effect)
+        elif not checked and effect in current:
+            current.remove(effect)
+        if not current:
+            current = [effect]
+        self.tab_transition_effects_enabled = current
+        _engine.security.persistence.save({"tab_transition_effects_enabled": current})
+
+    def set_tab_transition_mode(self, mode: str) -> None:
+        self.tab_transition_mode = mode
+        _engine.security.persistence.save({"tab_transition_mode": mode})
+
+    @rx.var
+    def theme_vars(self) -> dict[str, str]:
+        t = THEMES[self.theme_key]
+        return {
+            "accent": t.accent, "accent_glow": t.accent_glow, "bg_from": t.bg_from, "bg_to": t.bg_to,
+            "glass_bg": t.glass_bg, "glass_border": t.glass_border,
+            "text_primary": t.text_primary, "text_muted": t.text_muted,
+        }
+
+    @rx.var
+    def sidebar_tabs(self) -> list[str]:
+        return SIDEBAR_TABS
+
+    @rx.var
+    def theme_options(self) -> list[dict[str, str]]:
+        return [{"key": k, "label": THEME_LABELS[k]} for k in THEME_ORDER]
+
+    @rx.var
+    def transition_effect_options(self) -> list[dict[str, str]]:
+        return [{"key": k, "label": v} for k, v in TRANSITION_EFFECTS.items()]
+
+====================================================================================================
+END FILE: state\app_state_mixins\core_shell_mixin.py
+
+====================================================================================================
+BEGIN FILE: state\app_state_mixins\trading_panel_mixin.py
+====================================================================================================
+"""Executable AppState mixin: Trading Panel chart state and methods (react-klinecharts).
+
+PATH: state/app_state_mixins/trading_panel_mixin.py
+
+CHANGE (v0.3.6 - real chart control + no-jump + editable Display Days):
+
+1. refresh_trading_panel_chart() (full reload) now also records the newest
+   candle's timestamp into _trading_panel_last_candle_ts, used to detect a
+   genuine candle close for Follow Live.
+
+2. refresh_trading_panel_ohlc_only() still only updates displayed O/H/L/C and
+   never touches trading_panel_candles - this is what keeps the chart's
+   scroll position fixed while the user reviews history.
+
+3. poll_trading_panel_chart() now also checks, on every 3s tick, whether the
+   current live candle's timestamp has changed (i.e. the previous candle on
+   this timeframe actually closed). If so, AND Follow Live is ON, it yields
+   an rx.call_script that tells the real klinecharts Chart instance (via
+   window.QT19_CHARTS, populated by ui/components/kline_chart.py) to
+   scrollToRealTime(). If Follow Live is OFF, nothing is scrolled - the
+   user's scroll/pan position is left exactly where it was.
+
+4. New: toggle_trading_panel_grid, reset_trading_panel_view,
+   go_live_trading_panel - Grid is now a real reactive style (via
+   trading_panel_styles computed var); Reset View and Go Live use direct
+   Chart-instance method calls through the registry, not DOM guessing.
+
+5. New: trading_panel_display_days_draft + set_trading_panel_display_days_draft
+   + commit_trading_panel_display_days - fixes the input box that was stuck
+   on "5". The input is now bound to the draft var (updates on every
+   keystroke) and only commits (persists + triggers a full reload) on
+   blur/Apply, never silently overwritten mid-typing.
+"""
+from __future__ import annotations
+
+import asyncio
+import reflex as rx
+
+from state.app_state_mixins.shared import (
+    _engine,
+    TRADING_PANEL_CHART_ID,
+    TRADING_PANEL_PERIOD_MAP,
+    TRADING_PANEL_TF_OPTIONS,
+    TRADING_PANEL_DAY_PRESETS,
+)
+
+
+class TradingPanelMixin(rx.State, mixin=True):
+    def _chart_workspace_key(self, symbol: str, tf: str) -> str:
+        return f"chart_display_days::{symbol}::{tf}"
+
+    def _load_trading_panel_display_days(self) -> None:
+        saved = _engine.security.persistence.load().get(
+            self._chart_workspace_key(self.trading_panel_symbol, self.trading_panel_chart_tf)
+        )
+        value = str(saved) if saved else "5"
+        self.trading_panel_display_days_input = value
+        self.trading_panel_display_days_draft = value
+
+    def set_trading_panel_symbol(self, value: str) -> None:
+        self.trading_panel_symbol = value
+        self._load_trading_panel_display_days()
+        self.refresh_trading_panel_chart()
+
+    def set_trading_panel_chart_tf(self, value: str) -> None:
+        self.trading_panel_chart_tf = value
+        self._load_trading_panel_display_days()
+        self.refresh_trading_panel_chart()
+
+    def set_trading_panel_display_days_draft(self, value: str) -> None:
+        """Updates on every keystroke. Never persisted, never reloads the
+        chart - purely lets the user type freely without the server
+        overwriting what they're typing."""
+        self.trading_panel_display_days_draft = value
+
+    def commit_trading_panel_display_days(self) -> None:
+        """Call this on blur or when the user clicks Apply. Validates,
+        persists, and triggers the actual full candle reload."""
+        self.set_trading_panel_display_days(self.trading_panel_display_days_draft)
+
+    def set_trading_panel_display_days(self, value: str) -> None:
+        """Never silently calls the broker - only changes how many *locally
+        available* days are rendered. If X > A, refresh_trading_panel_chart()
+        surfaces a notice instead of fetching anything."""
+        self.trading_panel_display_days_input = value
+        self.trading_panel_display_days_draft = value
+        try:
+            days = int(value)
+            if days <= 0:
+                self.trading_panel_notice = "Enter a positive whole number of days."
+                return
+        except ValueError:
+            self.trading_panel_notice = "Enter a positive whole number of days."
+            return
+        _engine.security.persistence.save({
+            self._chart_workspace_key(self.trading_panel_symbol, self.trading_panel_chart_tf): days
+        })
+        self.refresh_trading_panel_chart()
+
+    def set_trading_panel_chart_theme(self, value: str) -> None:
+        """Chart-local only - never touches the app-wide theme_key.
+        Now wired for real: trading_panel_styles (a computed var) reads
+        this value and produces real klinecharts Styles."""
+        self.trading_panel_chart_theme = value
+        _engine.security.persistence.save({"trading_panel_chart_theme": value})
+
+    def toggle_trading_panel_grid(self) -> None:
+        """Grid default is OFF (best for viewing POI lines/zones cleanly).
+        This is a real reactive style change via trading_panel_styles -
+        no JS call needed."""
+        self.trading_panel_grid_enabled = not self.trading_panel_grid_enabled
+        _engine.security.persistence.save({"trading_panel_grid_enabled": self.trading_panel_grid_enabled})
+
+    def toggle_trading_panel_follow_live(self) -> None:
+        self.trading_panel_follow_live = not self.trading_panel_follow_live
+        _engine.security.persistence.save({"trading_panel_follow_live": self.trading_panel_follow_live})
+
+    def reset_trading_panel_view(self):
+        """Resets only zoom/bar-spacing (X-axis scale). klinecharts
+        auto-scales the Y axis to the visible data already, so this alone
+        gives a clean 'reset zoom' without moving the chart to the live
+        candle."""
+        return rx.call_script(
+            f"""
+            (function() {{
+                var chart = window.QT19_CHARTS && window.QT19_CHARTS["{TRADING_PANEL_CHART_ID}"];
+                if (chart && typeof chart.setBarSpace === "function") {{
+                    chart.setBarSpace(6);
+                }}
+            }})();
+            """
+        )
+
+    def go_live_trading_panel(self):
+        """Immediate jump to the newest candle - the ONLY control that
+        deliberately moves the viewport on demand."""
+        return rx.call_script(
+            f"""
+            (function() {{
+                var chart = window.QT19_CHARTS && window.QT19_CHARTS["{TRADING_PANEL_CHART_ID}"];
+                if (chart && typeof chart.scrollToRealTime === "function") {{
+                    chart.scrollToRealTime();
+                }}
+            }})();
+            """
+        )
+
+    def refresh_trading_panel_chart(self) -> None:
+        """Full reload: rebuilds the entire candle array. Call this ONLY on
+        Trading Panel open, symbol change, timeframe change, or Display Last
+        X Days change. Never call this from the 3-second polling loop."""
+        try:
+            requested_days = int(self.trading_panel_display_days_input)
+        except ValueError:
+            requested_days = 5
+
+        progress = _engine.market_data.get_deep_history_progress(
+            self.trading_panel_symbol, self.trading_panel_chart_tf
+        )
+        local_days = progress["covered_days"]
+        self.trading_panel_local_days = str(local_days)
+
+        ceiling = _engine.market_data.get_ceiling_days(self.trading_panel_symbol, self.trading_panel_chart_tf)
+        self.trading_panel_broker_days = f"{ceiling} days" if ceiling is not None else "Not checked yet"
+
+        effective_days = min(requested_days, local_days) if local_days else requested_days
+        if local_days and requested_days > local_days:
+            self.trading_panel_notice = f"{requested_days} days requested \u2022 {local_days} days available locally"
+        elif not local_days:
+            self.trading_panel_notice = "No local historical coverage yet for this symbol/timeframe."
+        else:
+            self.trading_panel_notice = ""
+
+        candles = _engine.market_data.get_chart_candles(
+            self.trading_panel_symbol,
+            self.trading_panel_chart_tf,
+            effective_days,
+        )
+
+        # ASSUMPTION FLAGGED: Candle fields assumed to be open/high/low/close/open_time.
+        # Confirm against candle_builder_worker.py's real Candle dataclass before running.
+        # Volume is NOT confirmed available on Candle - defaulted to 0.0 here.
+        # Row keys match react-klinecharts' KLineData shape directly (timestamp/open/high/low/close/volume).
+        rows = [
+            {
+                "timestamp": c.open_time,
+                "open": float(c.open),
+                "high": float(c.high),
+                "low": float(c.low),
+                "close": float(c.close),
+                "volume": float(c.volume),
+            }
+            for c in candles
+        ]
+
+        self.trading_panel_candles = rows
+
+        current = candles[-1] if candles else None
+        if current:
+            self.trading_panel_current_open = f"{current.open:,.2f}"
+            self.trading_panel_current_high = f"{current.high:,.2f}"
+            self.trading_panel_current_low = f"{current.low:,.2f}"
+            self.trading_panel_current_close = f"{current.close:,.2f}"
+            self._trading_panel_last_candle_ts = float(current.open_time)
+        else:
+            self.trading_panel_current_open = self.trading_panel_current_high = \
+                self.trading_panel_current_low = self.trading_panel_current_close = "--"
+            self._trading_panel_last_candle_ts = 0.0
+
+    def refresh_trading_panel_ohlc_only(self) -> bool:
+        """OHLC-only refresh: updates ONLY the displayed Open/High/Low/Close
+        text values from the current live candle. NEVER rebuilds or replaces
+        trading_panel_candles - this is what keeps the chart's scroll/
+        viewport position stable while the user studies historical price
+        action.
+
+        Returns True if the current candle's timestamp changed since the
+        last check (i.e. the previous candle just closed and a new one
+        started), so the caller can decide whether to snap to live under
+        Follow Live."""
+        live = _engine.market_data.get_live_candle(
+            self.trading_panel_symbol, self.trading_panel_chart_tf
+        )
+        if not live:
+            return False
+
+        self.trading_panel_current_open = f"{live.open:,.2f}"
+        self.trading_panel_current_high = f"{live.high:,.2f}"
+        self.trading_panel_current_low = f"{live.low:,.2f}"
+        self.trading_panel_current_close = f"{live.close:,.2f}"
+
+        candle_closed = (
+            self._trading_panel_last_candle_ts != 0.0
+            and float(live.open_time) != self._trading_panel_last_candle_ts
+        )
+        self._trading_panel_last_candle_ts = float(live.open_time)
+        return candle_closed
+
+    @rx.event(background=True)
+    async def poll_trading_panel_chart(self):
+        """Same guarded-loop pattern as poll_ws_status/poll_pinned_prices.
+        CHANGE (v0.3.6): calls refresh_trading_panel_ohlc_only() - updates
+        OHLC display values only, never replaces the full candle array. If
+        Follow Live is ON and a candle just closed, yields a script that
+        snaps the real chart to the live candle. If Follow Live is OFF, the
+        viewport is never touched, no matter how many candles close.
+        KNOWN SIMPLIFICATION: does not stop when the user leaves the Trading
+        Panel tab - deliberately deferred, not an oversight."""
+        async with self:
+            if self._trading_panel_poll_running:
+                return
+            self._trading_panel_poll_running = True
+        try:
+            while True:
+                should_snap = False
+                async with self:
+                    candle_closed = self.refresh_trading_panel_ohlc_only()
+                    if candle_closed and self.trading_panel_follow_live:
+                        should_snap = True
+                if should_snap:
+                    yield rx.call_script(
+                        f"""
+                        (function() {{
+                            var chart = window.QT19_CHARTS && window.QT19_CHARTS["{TRADING_PANEL_CHART_ID}"];
+                            if (chart && typeof chart.scrollToRealTime === "function") {{
+                                chart.scrollToRealTime();
+                            }}
+                        }})();
+                        """
+                    )
+                await asyncio.sleep(3)
+        finally:
+            async with self:
+                self._trading_panel_poll_running = False
+
+    @rx.var
+    def trading_panel_symbol_options(self) -> list[str]:
+        return _engine.market_data.symbol_registry.get_symbols_sorted(active_only=True)
+
+    @rx.var
+    def trading_panel_symbol_info(self) -> dict:
+        """Shape expected by <KLineChart symbol={...}>: {ticker, precision}.
+        precision (decimal places) is derived from the real tick_size on
+        SymbolRegistryWorker - falls back to 2 if the symbol isn't found."""
+        registry = _engine.market_data.symbol_registry
+        info = registry.get_symbol_info(self.trading_panel_symbol)
+        if info is None or not info.tick_size:
+            return {"ticker": self.trading_panel_symbol, "precision": 2}
+        tick = info.tick_size
+        precision = 0
+        while round(tick, precision) != tick and precision < 8:
+            precision += 1
+        return {"ticker": self.trading_panel_symbol, "precision": precision}
+
+    @rx.var
+    def trading_panel_period(self) -> dict:
+        return TRADING_PANEL_PERIOD_MAP.get(self.trading_panel_chart_tf, TRADING_PANEL_PERIOD_MAP["5m"])
+
+    @rx.var
+    def trading_panel_styles(self) -> dict:
+        """Real klinecharts Styles object. Grid on/off and Day/Night are
+        both driven declaratively from here - toggling either AppState
+        field re-renders the chart with the correct styles automatically,
+        with no JS-side DOM manipulation required."""
+        day = self.trading_panel_chart_theme == "day"
+        grid_show = self.trading_panel_grid_enabled
+        foreground = "#152238" if day else "#dce8f7"
+        grid_color = "rgba(56,78,108,.14)" if day else "rgba(151,176,207,.15)"
+        return {
+            "grid": {
+                "show": grid_show,
+                "horizontal": {"show": grid_show, "color": grid_color},
+                "vertical": {"show": grid_show, "color": grid_color},
+            },
+            "candle": {
+                "bar": {
+                    "upColor": "#16c784",
+                    "downColor": "#ea3943",
+                    "noChangeColor": "#8b98aa",
+                },
+            },
+            "xAxis": {
+                "axisLine": {"color": grid_color},
+                "tickLine": {"color": grid_color},
+                "tickText": {"color": foreground},
+            },
+            "yAxis": {
+                "axisLine": {"color": grid_color},
+                "tickLine": {"color": grid_color},
+                "tickText": {"color": foreground},
+            },
+        }
+
+====================================================================================================
+END FILE: state\app_state_mixins\trading_panel_mixin.py
+
+====================================================================================================
+BEGIN FILE: ui\components\kline_chart.py
+====================================================================================================
+"""Interactive React KLineCharts wrapper for Reflex.
+
+PATH: ui/components/kline_chart.py
+
+CHANGE (v0.3.6 - real Chart-instance registry): react-klinecharts v1.0.1
+(wrapping klinecharts v10.0.2) exposes a real forwardRef + onReady(chart)
+callback that hands back the actual klinecharts `Chart` instance. This file
+now defines a tiny wrapper component that captures that instance into
+window.QT19_CHARTS[chartId] on mount and removes it on unmount.
+
+This replaces the old approach (scanning the DOM for an object with a
+setStyles/scrollToRealTime method), which was unreliable and only ever
+worked for CSS-level changes (background color). Grid and Day/Night are now
+driven declaratively through the real `styles` prop (see
+ui/components/trading_panel_chart.py + AppState.trading_panel_styles).
+Reset View, Go Live, and the Follow-Live candle-close snap use the real
+Chart instance via window.QT19_CHARTS[chartId], called from
+state/app_state_mixins/trading_panel_mixin.py through rx.call_script.
+"""
+from __future__ import annotations
+
+import reflex as rx
+from reflex.utils.imports import ImportVar
+
+
+class KLineChart(rx.Component):
+    """Registry-backed wrapper around react-klinecharts' <KLineChart>."""
+
+    tag = "QT19KLineChart"
+
+    data: rx.Var[list[dict]]
+    symbol: rx.Var[dict]
+    period: rx.Var[dict]
+    styles: rx.Var[dict]
+    zoom_enabled: rx.Var[bool] = True
+    scroll_enabled: rx.Var[bool] = True
+    chart_id: rx.Var[str]
+
+    def add_imports(self) -> dict[str, list[ImportVar]]:
+        return {
+            "react": [ImportVar(tag="useEffect"), ImportVar(tag="useRef")],
+            "react-klinecharts": [ImportVar(tag="KLineChart", alias="RKLineChart")],
+        }
+
+    def add_custom_code(self) -> list[str]:
+        return [
+            r"""
+function QT19KLineChart(props) {
+  const { chartId, data, symbol, period, styles, zoomEnabled, scrollEnabled, ...rest } = props;
+  const chartRef = useRef(null);
+
+  const handleReady = (chart) => {
+    chartRef.current = chart;
+    if (typeof window !== "undefined") {
+      window.QT19_CHARTS = window.QT19_CHARTS || {};
+      window.QT19_CHARTS[chartId] = chart;
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (typeof window !== "undefined" && window.QT19_CHARTS) {
+        delete window.QT19_CHARTS[chartId];
+      }
+    };
+  }, [chartId]);
+
+  return (
+    <RKLineChart
+      data={data}
+      symbol={symbol}
+      period={period}
+      styles={styles}
+      zoomEnabled={zoomEnabled}
+      scrollEnabled={scrollEnabled}
+      onReady={handleReady}
+      {...rest}
+    />
+  );
+}
+"""
+        ]
+
+
+kline_chart = KLineChart.create
+
+====================================================================================================
+END FILE: ui\components\kline_chart.py
+
+====================================================================================================
+BEGIN FILE: ui\components\trading_panel_chart.py
+====================================================================================================
+"""Trading Panel interactive candlestick chart component.
+
+PATH: ui/components/trading_panel_chart.py
+
+CHANGE (v0.3.6): styles now comes from AppState.trading_panel_styles, a
+computed var that reactively encodes both the Grid on/off setting and the
+Day/Night chart theme. This removes the need for any JS-side DOM styling
+hacks - toggling grid or theme in AppState now re-renders the chart with the
+correct real klinecharts styles automatically.
+"""
+from __future__ import annotations
+
+import reflex as rx
+
+from state.app_state import AppState
+from state.app_state_mixins.shared import TRADING_PANEL_CHART_ID
+from ui.components.kline_chart import kline_chart
+
+
+def trading_panel_chart() -> rx.Component:
+    """Render the interactive KLineCharts surface."""
+    return rx.box(
+        kline_chart(
+            data=AppState.trading_panel_candles,
+            symbol=AppState.trading_panel_symbol_info,
+            period=AppState.trading_panel_period,
+            styles=AppState.trading_panel_styles,
+            chart_id=TRADING_PANEL_CHART_ID,
+            id=TRADING_PANEL_CHART_ID,
+            style={
+                "width": "100%",
+                "height": "520px",
+                "min_height": "520px",
+                "border_radius": "14px",
+                "border": "1px solid rgba(147, 173, 205, 0.18)",
+                "background": rx.cond(
+                    AppState.trading_panel_chart_theme == "day",
+                    "#f7f9fc",
+                    "#101722",
+                ),
+            },
+        ),
+        width="100%",
+        height="520px",
+    )
+
+====================================================================================================
+END FILE: ui\components\trading_panel_chart.py
+
+====================================================================================================
+BEGIN FILE: ui\pages\trading_panel.py
+====================================================================================================
+"""Trading Panel tab - Futures-only chart foundation.
+
+PATH: ui/pages/trading_panel.py
+
+CHANGE (v0.3.6):
+- Removed the unreliable right-click context menu entirely.
+- Added always-visible, reliable buttons: Grid On/Off, Reset View,
+  Day/Night, Follow Live, Go Live. All are driven either by real reactive
+  AppState vars (Grid, Day/Night) or real Chart-instance calls through the
+  window.QT19_CHARTS registry (Reset View, Go Live).
+- Fixed the Display Last X Days input: now bound to a draft var that
+  updates on every keystroke, with an explicit Apply button (and on_blur)
+  to commit + trigger the actual reload. It no longer gets stuck.
+"""
+from __future__ import annotations
+
+import reflex as rx
+
+from state.app_state import AppState, TRADING_PANEL_TF_OPTIONS
+from ui.components.trading_panel_chart import trading_panel_chart
+from ui.theme.glass import GLASS_CARD_3XL_STYLE
+
+
+def _ohlc_pill(label: str, value) -> rx.Component:
+    return rx.hstack(
+        rx.text(label, font_size="0.7rem", color="var(--qt19-text-muted)"),
+        rx.text(value, font_size="0.82rem", font_weight="700"),
+        spacing="1",
+    )
+
+
+def _tf_buttons() -> rx.Component:
+    return rx.hstack(
+        *[
+            rx.button(
+                tf,
+                size="1",
+                variant=rx.cond(
+                    AppState.trading_panel_chart_tf == tf,
+                    "solid",
+                    "outline",
+                ),
+                on_click=AppState.set_trading_panel_chart_tf(tf),
+            )
+            for tf in TRADING_PANEL_TF_OPTIONS
+        ],
+        spacing="1",
+    )
+
+
+def _theme_toggle() -> rx.Component:
+    return rx.hstack(
+        rx.button(
+            "Night",
+            size="1",
+            variant=rx.cond(
+                AppState.trading_panel_chart_theme == "night",
+                "solid",
+                "outline",
+            ),
+            on_click=AppState.set_trading_panel_chart_theme("night"),
+        ),
+        rx.button(
+            "Day",
+            size="1",
+            variant=rx.cond(
+                AppState.trading_panel_chart_theme == "day",
+                "solid",
+                "outline",
+            ),
+            on_click=AppState.set_trading_panel_chart_theme("day"),
+        ),
+        spacing="1",
+    )
+
+
+def _grid_toggle() -> rx.Component:
+    return rx.button(
+        rx.cond(AppState.trading_panel_grid_enabled, "Grid: ON", "Grid: OFF"),
+        size="1",
+        variant=rx.cond(AppState.trading_panel_grid_enabled, "solid", "outline"),
+        on_click=AppState.toggle_trading_panel_grid,
+    )
+
+
+def _follow_live_toggle() -> rx.Component:
+    return rx.button(
+        rx.cond(
+            AppState.trading_panel_follow_live,
+            "Follow Live: ON",
+            "Follow Live: OFF",
+        ),
+        size="1",
+        variant=rx.cond(
+            AppState.trading_panel_follow_live,
+            "solid",
+            "outline",
+        ),
+        on_click=AppState.toggle_trading_panel_follow_live,
+    )
+
+
+def _reset_view_button() -> rx.Component:
+    return rx.button(
+        "Reset View",
+        size="1",
+        variant="outline",
+        on_click=AppState.reset_trading_panel_view,
+    )
+
+
+def _go_live_button() -> rx.Component:
+    return rx.button(
+        "Go to Live",
+        size="1",
+        variant="outline",
+        on_click=AppState.go_live_trading_panel,
+    )
+
+
+def _header() -> rx.Component:
+    return rx.hstack(
+        rx.select(
+            AppState.trading_panel_symbol_options,
+            value=AppState.trading_panel_symbol,
+            on_change=AppState.set_trading_panel_symbol,
+            width="170px",
+        ),
+        _tf_buttons(),
+        rx.spacer(),
+        _ohlc_pill("O", AppState.trading_panel_current_open),
+        _ohlc_pill("H", AppState.trading_panel_current_high),
+        _ohlc_pill("L", AppState.trading_panel_current_low),
+        _ohlc_pill("C", AppState.trading_panel_current_close),
+        rx.badge(AppState.ws_status, variant="soft"),
+        width="100%",
+        align_items="center",
+        spacing="4",
+        wrap="wrap",
+    )
+
+
+def _chart_controls_bar() -> rx.Component:
+    return rx.hstack(
+        _grid_toggle(),
+        _reset_view_button(),
+        _theme_toggle(),
+        _follow_live_toggle(),
+        _go_live_button(),
+        spacing="2",
+        align_items="center",
+        wrap="wrap",
+    )
+
+
+def _display_window_controls() -> rx.Component:
+    return rx.hstack(
+        rx.text("Display Last:", font_size="0.8rem"),
+        rx.input(
+            value=AppState.trading_panel_display_days_draft,
+            on_change=AppState.set_trading_panel_display_days_draft,
+            on_blur=AppState.commit_trading_panel_display_days,
+            width="70px",
+            size="1",
+        ),
+        rx.text("Days", font_size="0.8rem"),
+        rx.button(
+            "Apply",
+            size="1",
+            variant="outline",
+            on_click=AppState.commit_trading_panel_display_days,
+        ),
+        rx.divider(orientation="vertical", height="1.2rem"),
+        rx.text(
+            f"Local: {AppState.trading_panel_local_days} days",
+            font_size="0.75rem",
+            color="var(--qt19-text-muted)",
+        ),
+        rx.text(
+            f"Broker: {AppState.trading_panel_broker_days}",
+            font_size="0.75rem",
+            color="var(--qt19-text-muted)",
+        ),
+        rx.cond(
+            AppState.trading_panel_notice != "",
+            rx.badge(
+                AppState.trading_panel_notice,
+                color_scheme="orange",
+                variant="soft",
+            ),
+        ),
+        spacing="3",
+        align_items="center",
+        wrap="wrap",
+    )
+
+
+def trading_panel_page() -> rx.Component:
+    return rx.vstack(
+        rx.heading("Trading Panel", size="6"),
+        rx.box(
+            _header(),
+            _chart_controls_bar(),
+            _display_window_controls(),
+            trading_panel_chart(),
+            spacing="3",
+            style=GLASS_CARD_3XL_STYLE,
+            width="100%",
+            margin_top="1rem",
+        ),
+        width="100%",
+        spacing="3",
+    )
+
+====================================================================================================
+END FILE: ui\pages\trading_panel.py
+
+====================================================================================================
+BEGIN FILE: ui\pages\dashboard.py
+====================================================================================================
+"""Dashboard tab - shell scaffold per locked mockup: pinned cards + main table + footer.
+
+PATH: ui/pages/dashboard.py (REPLACE ENTIRE FILE)
+
+FIX (live prices / WS status never updating): poll_ws_status and
+poll_pinned_prices already exist as safe, self-guarded background event
+handlers in AppState, but nothing ever started them. `ws_status` and
+`pinned_prices` were sitting on their hardcoded defaults ("connected" /
+{}) forever - which is why the header pill always looked "Connected" and
+every pinned card always showed "--", regardless of real WebSocket health.
+Added on_mount=[AppState.poll_ws_status, AppState.poll_pinned_prices] to
+the page root. Both handlers already guard against duplicate concurrent
+runs, so remounting this page (e.g. switching tabs and back) is safe - it
+will simply no-op if a poller is already running, not start a second one.
+
+FIX (unchanged from before): clicking the favorite star no longer opens the
+Symbol Detail popup. Uses rx.stop_propagation so the star's click event
+never bubbles up to the row's on_click handler -- clicking anywhere else in
+the row still opens the popup as before.
+"""
+from __future__ import annotations
+import reflex as rx
+from state.app_state import AppState
+from ui.theme.glass import GLASS_CARD_STYLE
+
+
+_PINNED = ["Gold", "ETHUSD", "BTCUSD"]
+_COLUMNS = ["Fav", "Trade Allowed", "Instrument", "Trend", "Liquidity TF", "Interaction", "Risk", "Bias", "Confidence Score"]
+
+
+
+def _pinned_card(name: str) -> rx.Component:
+    return rx.vstack(
+        rx.text(name, font_weight="700", font_size="1rem", color="var(--qt19-text-primary)"),
+        rx.text(
+            AppState.pinned_prices.get(name, "--"),
+            font_size="1.1rem", font_weight="600", color="var(--qt19-text-primary)",
+        ),
+        style=GLASS_CARD_STYLE, min_width="180px",
+        on_click=lambda: AppState.open_detail_popup(name), cursor="pointer",
+    )
+
+
+
+def _header_cell(label: str) -> rx.Component:
+    return rx.table.column_header_cell(label, color="var(--qt19-text-primary)", font_weight="700")
+
+
+
+def _favorite_star(row: dict) -> rx.Component:
+    return rx.box(
+        rx.icon(
+            "star",
+            fill=rx.cond(row["is_favorite"], "#FFD700", "none"),
+            color=rx.cond(row["is_favorite"], "#FFD700", "var(--qt19-text-muted)"),
+            size=18,
+        ),
+        cursor="pointer",
+        on_click=[AppState.toggle_favorite(row["symbol"]), rx.stop_propagation],
+    )
+
+
+
+def _symbol_row(row: dict) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(_favorite_star(row)),
+        rx.table.cell("--", color="var(--qt19-text-primary)"),
+        rx.table.cell(row["symbol"], color="var(--qt19-text-primary)", font_weight="600"),
+        rx.table.cell("--", color="var(--qt19-text-primary)"),
+        rx.table.cell("--", color="var(--qt19-text-primary)"),
+        rx.table.cell("--", color="var(--qt19-text-primary)"),
+        rx.table.cell("--", color="var(--qt19-text-primary)"),
+        rx.table.cell("--", color="var(--qt19-text-primary)"),
+        rx.table.cell("--", color="var(--qt19-text-primary)"),
+        on_click=lambda: AppState.open_detail_popup(row["symbol"]),
+        cursor="pointer",
+    )
+
+
+
+def dashboard_page() -> rx.Component:
+    return rx.vstack(
+        rx.hstack(*[_pinned_card(n) for n in _PINNED], spacing="4"),
+        rx.box(
+            rx.table.root(
+                rx.table.header(rx.table.row(*[_header_cell(c) for c in _COLUMNS])),
+                rx.table.body(rx.foreach(AppState.symbol_rows, _symbol_row)),
+                width="100%",
+            ),
+            style=GLASS_CARD_STYLE, width="100%", margin_top="1.25rem",
+        ),
+        rx.hstack(
+            rx.input(placeholder="Search symbol...", border_radius="1rem", width="240px"),
+            rx.spacer(),
+            rx.text("Live date/time --:--:--", font_size="0.75rem", color="var(--qt19-text-muted)"),
+            width="100%", margin_top="1rem",
+        ),
+        width="100%", spacing="4",
+        on_mount=[AppState.poll_ws_status, AppState.poll_pinned_prices],
+    )
+
+====================================================================================================
+END FILE: ui\pages\dashboard.py
+
+====================================================================================================
+BEGIN FILE: ui\pages\journal.py
+====================================================================================================
+from __future__ import annotations
+import reflex as rx
+from ui.theme.glass import GLASS_CARD_3XL_STYLE
+
+def journal_page():
+    return rx.vstack(rx.heading("Journal & Reports", size="6"),
+        rx.box(rx.text("Equity curve, filter-contribution table, and Auto-Learning panel land in the Journal Monitor module.", color="var(--qt19-text-muted)", font_size="0.85rem"), style=GLASS_CARD_3XL_STYLE, width="100%", margin_top="1rem"),
+        width="100%", spacing="3")
+
+====================================================================================================
+END FILE: ui\pages\journal.py
+
+====================================================================================================
+BEGIN FILE: ui\pages\alerts.py
+====================================================================================================
+from __future__ import annotations
+import reflex as rx
+from ui.theme.glass import GLASS_CARD_3XL_STYLE
+
+def alerts_page():
+    return rx.vstack(rx.heading("Alerts", size="6"),
+        rx.box(rx.text("Live fired-alert feed lands in the Alert Monitor module; this is the App-Shell placeholder.", color="var(--qt19-text-muted)", font_size="0.85rem"), style=GLASS_CARD_3XL_STYLE, width="100%", margin_top="1rem"),
+        width="100%", spacing="3")
+
+====================================================================================================
+END FILE: ui\pages\alerts.py
+
+====================================================================================================
+BEGIN FILE: ui\pages\settings.py
+====================================================================================================
+"""Settings tab - App-Shell placeholder page, now tab-segregated + grid-arranged.
+
+PATH: ui/pages/settings.py (REPLACE ENTIRE FILE)
+
+CHANGE (File 03.1 Scope E): the "POI Timeframes" coming-soon placeholder in
+the Trading Defaults tab is now the real POI Engine & Chart Visibility card.
+
+CHANGE (unchanged from before): cards are grouped into logical rx.tabs
+matching the categories named in the locked mockup (Appearance, Data &
+Connection, and placeholders for categories not yet built), and arranged in
+a responsive multi-column grid instead of one full-width vstack.
+"""
+from __future__ import annotations
+import reflex as rx
+from state.app_state import AppState
+from ui.theme.glass import GLASS_CARD_3XL_STYLE
+from ui.components.deep_historical_data_card import deep_historical_data_card
+from ui.components.poi_engine_settings_card import poi_engine_settings_card
+
+
+
+def _effect_checkbox(opt: dict[str, str]) -> rx.Component:
+    return rx.hstack(
+        rx.checkbox(
+            checked=AppState.transition_effects_enabled.contains(opt["key"]),
+            on_change=lambda checked: AppState.toggle_transition_effect(opt["key"], checked),
+        ),
+        rx.text(opt["label"], font_size="0.82rem"),
+        spacing="2", align_items="center", width="100%",
+    )
+
+
+
+def _tab_effect_checkbox(opt: dict[str, str]) -> rx.Component:
+    return rx.hstack(
+        rx.checkbox(
+            checked=AppState.tab_transition_effects_enabled.contains(opt["key"]),
+            on_change=lambda checked: AppState.toggle_tab_transition_effect(opt["key"], checked),
+        ),
+        rx.text(opt["label"], font_size="0.82rem"),
+        spacing="2", align_items="center", width="100%",
+    )
+
+
+
+def _transition_effects_card() -> rx.Component:
+    return rx.vstack(
+        rx.heading("Login \u2192 Dashboard Transition", size="4"),
+        rx.text("Pick which entrance animations are allowed, and how they're chosen each time you log in.",
+                font_size="0.8rem", color="var(--qt19-text-muted)"),
+        rx.hstack(
+            rx.text("Mode:", font_size="0.82rem", font_weight="600"),
+            rx.select(
+                ["single", "sequential", "shuffle"],
+                value=AppState.transition_mode,
+                on_change=AppState.set_transition_mode,
+                width="180px",
+            ),
+            spacing="3", align_items="center",
+        ),
+        rx.grid(
+            rx.foreach(AppState.transition_effect_options, _effect_checkbox),
+            columns="2", spacing="2", width="100%", margin_top="0.5rem",
+        ),
+        spacing="3", width="100%", style=GLASS_CARD_3XL_STYLE,
+    )
+
+
+
+def _tab_transition_card() -> rx.Component:
+    return rx.vstack(
+        rx.heading("Tab Switch Animation", size="4"),
+        rx.text("Controls the effect used when switching between Dashboard, Trading Panel, "
+                "Journal & Reports, Alerts, and Settings.",
+                font_size="0.8rem", color="var(--qt19-text-muted)"),
+        rx.hstack(
+            rx.text("Mode:", font_size="0.82rem", font_weight="600"),
+            rx.select(
+                ["single", "sequential", "shuffle"],
+                value=AppState.tab_transition_mode,
+                on_change=AppState.set_tab_transition_mode,
+                width="180px",
+            ),
+            spacing="3", align_items="center",
+        ),
+        rx.grid(
+            rx.foreach(AppState.transition_effect_options, _tab_effect_checkbox),
+            columns="2", spacing="2", width="100%", margin_top="0.5rem",
+        ),
+        spacing="3", width="100%", style=GLASS_CARD_3XL_STYLE,
+    )
+
+
+
+def _coming_soon_card(title: str, note: str) -> rx.Component:
+    return rx.vstack(
+        rx.heading(title, size="4"),
+        rx.text(note, font_size="0.8rem", color="var(--qt19-text-muted)"),
+        rx.badge("Coming in a later module", variant="soft", margin_top="0.5rem"),
+        spacing="2", width="100%", style=GLASS_CARD_3XL_STYLE,
+    )
+
+
+
+def _appearance_tab() -> rx.Component:
+    return rx.grid(
+        _transition_effects_card(),
+        _tab_transition_card(),
+        _coming_soon_card("Theme", "6 selectable themes (Yellow/Saffron/Blue x Day/Night)."),
+        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="3"),
+        spacing="4", width="100%", margin_top="1rem",
+    )
+
+
+
+def _data_connection_tab() -> rx.Component:
+    return rx.grid(
+        deep_historical_data_card(),
+        _coming_soon_card("Symbols & Rows", "Choose which symbols appear on the Dashboard."),
+        _coming_soon_card("Tick Bands & Alerts", "Per-symbol tick-size and alert-band configuration."),
+        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="2"),
+        spacing="4", width="100%", margin_top="1rem",
+    )
+
+
+
+def _security_tab() -> rx.Component:
+    return rx.grid(
+        _coming_soon_card("Login & 2FA", "Manage password and TOTP authenticator settings."),
+        _coming_soon_card("Notification Channels", "Telegram / Discord multi-recipient setup."),
+        _coming_soon_card("Startup & Tray", "Run-on-startup and system tray behavior."),
+        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="3"),
+        spacing="4", width="100%", margin_top="1rem",
+    )
+
+
+
+def _trading_tab() -> rx.Component:
+    return rx.grid(
+        poi_engine_settings_card(),
+        _coming_soon_card("Signal Bias Filter", "Market-aware auto-disable rules for filters."),
+        _coming_soon_card("Paper Trading", "Paper/Live toggle defaults and simulator settings."),
+        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="2"),
+        spacing="4", width="100%", margin_top="1rem",
+    )
+
+
+
+def settings_page() -> rx.Component:
+    return rx.vstack(
+        rx.heading("Settings", size="6"),
+        rx.tabs.root(
+            rx.tabs.list(
+                rx.tabs.trigger("Appearance", value="appearance"),
+                rx.tabs.trigger("Data & Connection", value="data"),
+                rx.tabs.trigger("Security & Notifications", value="security"),
+                rx.tabs.trigger("Trading Defaults", value="trading"),
+            ),
+            rx.tabs.content(_appearance_tab(), value="appearance"),
+            rx.tabs.content(_data_connection_tab(), value="data"),
+            rx.tabs.content(_security_tab(), value="security"),
+            rx.tabs.content(_trading_tab(), value="trading"),
+            default_value="appearance",
+            width="100%",
+        ),
+        width="100%", spacing="3",
+    )
+
+====================================================================================================
+END FILE: ui\pages\settings.py
+
+====================================================================================================
+BEGIN FILE: quantumtrade19\quantumtrade19.py
+====================================================================================================
+"""QuantumTrade19 - Reflex application entrypoint.
+
+PATCH: initialize persistent runtime logging before Reflex can create
+background tasks, Workers, or thread pools. configure_logging() is idempotent
+and writes logs/quantumtrade19.log plus logs/errors.log.
+"""
+from __future__ import annotations
+
+from config.logging_config import configure_logging
+
+# Must run before importing app state/components, which may construct service
+# singletons or schedule background work during import/on_load.
+configure_logging()
+
+import reflex as rx
+
+from state.app_state import AppState
+from ui.theme.global_css import qt19_global_css
+from ui.components.keyboard_shortcuts import qt19_keyboard_shortcuts
+from ui.components.autofill_sync import qt19_autofill_sync
+from ui.pages.splash import splash_screen
+from ui.pages.register import register_screen
+from ui.pages.login import login_screen
+from ui.pages.forgot_password import forgot_password_screen
+from ui.pages.manage_security import manage_security_screen
+from ui.pages.app_lock import app_lock_screen
+from ui.pages.dashboard import dashboard_page
+from ui.pages.trading_panel import trading_panel_page
+from ui.pages.journal import journal_page
+from ui.pages.alerts import alerts_page
+from ui.pages.settings import settings_page
+from ui.components.page_shell import qt19_page_shell
+from ui.components.symbol_detail_popup import symbol_detail_popup
+
+
+def _shell_body() -> rx.Component:
+    return rx.fragment(
+        rx.box(
+            rx.cond(AppState.active_tab == "Dashboard", dashboard_page()),
+            rx.cond(AppState.active_tab == "Trading Panel", trading_panel_page()),
+            rx.cond(AppState.active_tab == "Journal & Reports", journal_page()),
+            rx.cond(AppState.active_tab == "Alerts", alerts_page()),
+            rx.cond(AppState.active_tab == "Settings", settings_page()),
+            key=AppState.active_tab,
+            class_name="qt19-transition-" + AppState.tab_transition_active_effect,
+            width="100%",
+        ),
+        symbol_detail_popup(),
+    )
+
+
+def _current_screen() -> rx.Component:
+    return rx.cond(
+        AppState.screen == "splash",
+        splash_screen(),
+        rx.cond(
+            AppState.screen == "register",
+            register_screen(),
+            rx.cond(
+                AppState.screen == "login",
+                login_screen(),
+                rx.cond(
+                    AppState.screen == "manage_security",
+                    manage_security_screen(),
+                    rx.cond(
+                        AppState.screen == "forgot_password",
+                        forgot_password_screen(),
+                        rx.cond(
+                            AppState.screen == "locked",
+                            app_lock_screen(),
+                            qt19_page_shell(_shell_body()),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
+def index() -> rx.Component:
+    return rx.fragment(
+        qt19_global_css(),
+        qt19_keyboard_shortcuts(),
+        qt19_autofill_sync(),
+        rx.box(
+            _current_screen(),
+            class_name="qt19-transition-" + AppState.transition_active_effect,
+            key=AppState.screen,
+            style={
+                "--qt19-accent": AppState.theme_vars["accent"],
+                "--qt19-accent-glow": AppState.theme_vars["accent_glow"],
+                "--qt19-bg-from": AppState.theme_vars["bg_from"],
+                "--qt19-bg-to": AppState.theme_vars["bg_to"],
+                "--qt19-glass-bg": AppState.theme_vars["glass_bg"],
+                "--qt19-glass-border": AppState.theme_vars["glass_border"],
+                "--qt19-text-primary": AppState.theme_vars["text_primary"],
+                "--qt19-text-muted": AppState.theme_vars["text_muted"],
+            },
+            width="100%",
+            height="100vh",
+        ),
+    )
+
+
+app = rx.App()
+app.add_page(index, route="/", on_load=AppState.on_load, title="QuantumTrade19")
+
+====================================================================================================
+END FILE: quantumtrade19\quantumtrade19.py
+
+====================================================================================================
+BEGIN FILE: engines\workers\security\settings_persistence_worker.py
+====================================================================================================
+"""Settings_Persistence_Worker - reads/writes non-secret runtime settings to data/settings.json.
+
+PATH: engines/workers/security/settings_persistence_worker.py  (REPLACE ENTIRE FILE)
+
+FIX (ISSUE-010): added an optional `force_memory` flag, mirroring the exact
+same pattern SecureKeyStorageWorker already uses. When True, this worker
+never touches the real data/settings.json file at all - it only ever
+operates on an in-memory copy of the defaults. Default is False, so every
+existing call site (which never passes this argument) behaves EXACTLY as
+before - this is a pure, backward-compatible addition, not a change to any
+existing behavior.
+
+Root cause this fixes: SecurityMonitor.__init__ already passes
+force_memory=force_memory to SecureKeyStorageWorker, but was never able to
+pass it here because this class had no such parameter - meaning every
+test using SecurityMonitor(force_memory=True) was still silently reading
+and writing the one real settings file on disk, letting state leak between
+test runs (e.g. a TOTP-enabled flag set by one test bleeding into another
+test that expected a clean slate).
+
+CHANGE (unchanged from before): added tab_transition_effects_enabled / tab_transition_mode
+defaults - the tab-switch animation (Dashboard <-> Trading Panel <-> Journal & Reports <->
+Alerts <-> Settings) is independently configurable from Settings, separate from the
+screen-entrance transition pool.
+"""
+from __future__ import annotations
+import json
+from pathlib import Path
+from typing import Any
+
+
+_SETTINGS_PATH = Path("data") / "settings.json"
+_DEFAULTS: dict[str, Any] = {
+    "theme_key": "blue-night",
+    "sound_master_on": True,
+    "dnd_on": False,
+    "paper_mode": True,
+    "run_on_startup": False,
+    "totp_enabled": False,
+    "telegram_notify_enabled": False,
+    "discord_notify_enabled": False,
+    "transition_effects_enabled": ["dissolve", "zoom-in", "slide-up", "flip-x", "blur-in"],
+    "transition_mode": "shuffle",
+    "tab_transition_effects_enabled": ["slide-left"],
+    "tab_transition_mode": "single",
+    "per_symbol_settings": {},
+}
+
+
+class SettingsPersistenceWorker:
+    def __init__(self, path: Path = _SETTINGS_PATH, force_memory: bool = False) -> None:
+        self._path = path
+        self._force_memory = force_memory
+        self._cache: dict[str, Any] | None = None
+
+    def load(self) -> dict[str, Any]:
+        if self._cache is not None:
+            return dict(self._cache)
+        if self._force_memory:
+            self._cache = dict(_DEFAULTS)
+            return dict(self._cache)
+        if not self._path.exists():
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text(json.dumps(_DEFAULTS, indent=2))
+            self._cache = dict(_DEFAULTS)
+            return dict(self._cache)
+        try:
+            on_disk = json.loads(self._path.read_text())
+        except json.JSONDecodeError:
+            on_disk = {}
+        merged = dict(_DEFAULTS)
+        merged.update(on_disk)
+        self._cache = merged
+        return dict(merged)
+
+    def save(self, settings: dict[str, Any]) -> None:
+        current = self.load()
+        current.update(settings)
+        self._cache = current
+        if self._force_memory:
+            return
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.write_text(json.dumps(current, indent=2))
+
+    def get_per_symbol_setting(self, symbol: str, key: str, default=None):
+        per_symbol = self.load().get("per_symbol_settings", {})
+        return per_symbol.get(symbol, {}).get(key, default)
+
+    def set_per_symbol_setting(self, symbol: str, key: str, value) -> None:
+        current = self.load()
+        per_symbol = dict(current.get("per_symbol_settings", {}))
+        symbol_bucket = dict(per_symbol.get(symbol, {}))
+        symbol_bucket[key] = value
+        per_symbol[symbol] = symbol_bucket
+        self.save({"per_symbol_settings": per_symbol})
+
+====================================================================================================
+END FILE: engines\workers\security\settings_persistence_worker.py
+
+====================================================================================================
+BEGIN FILE: engines\monitors\security_monitor.py
+====================================================================================================
+"""Security Monitor - groups the Security Workers behind one clean interface upward.
+
+PATH: engines/monitors/security_monitor.py  (REPLACE ENTIRE FILE - fully overwrite, don't merge)
+
+FIX (ISSUE-010): SettingsPersistenceWorker() was constructed with no
+force_memory argument at all, even though SecureKeyStorageWorker right next
+to it already receives one. That meant every test using
+SecurityMonitor(force_memory=True) was still silently sharing the one real
+data/settings.json file across test runs, letting settings like
+totp_enabled leak between tests. Now forwards force_memory through, exactly
+mirroring the keystore's existing pattern.
+
+CHANGE (Module 01 gap-closure item 10, unchanged from before): added
+is_device_trusted() / trust_this_device() / clear_device_trust() - backs the
+"Remember this device" 60-day toggle on Login. login() now skips the TOTP
+check entirely when the device is currently trusted, regardless of whether
+TOTP is enabled on the account. Trust is stored via the OS keyring (same
+mechanism as the TOTP secret), so it is machine-bound - a different machine
+never sees it.
+"""
+from __future__ import annotations
+import time
+from engines.workers.security.secure_keystorage_worker import SecureKeyStorageWorker
+from engines.workers.security.settings_persistence_worker import SettingsPersistenceWorker
+from engines.workers.security.auth_login_worker import AuthLoginWorker
+from engines.workers.security.totp_2fa_worker import Totp2FAWorker
+from engines.workers.security.app_lock_worker import AppLockWorker
+from engines.workers.security.otp_delivery_worker import OtpDeliveryWorker
+
+
+DEVICE_TRUST_SECONDS: int = 60 * 24 * 60 * 60  # 60 days
+
+
+class SecurityMonitor:
+    def __init__(self, force_memory: bool = False) -> None:
+        self.keystore = SecureKeyStorageWorker(force_memory=force_memory)
+        self.persistence = SettingsPersistenceWorker(force_memory=force_memory)
+        self.auth = AuthLoginWorker(self.keystore)
+        self.totp = Totp2FAWorker(self.keystore)
+        self.app_lock = AppLockWorker()
+        self.otp = OtpDeliveryWorker(self.keystore)
+
+
+    def is_first_run(self) -> bool:
+        stored = self.keystore.get_secret("auth_username")
+        return stored is None or not stored.strip()
+
+
+    def is_totp_enabled(self) -> bool:
+        return bool(self.persistence.load().get("totp_enabled", False))
+
+
+    def register_credentials(self, username: str, password: str) -> bool:
+        return self.auth.set_credentials(username, password)
+
+
+    def begin_totp_enrollment(self, username: str) -> str:
+        return self.totp.qr_code_data_uri(username)
+
+
+    def confirm_totp_enrollment(self, code: str) -> bool:
+        if not self.totp.verify(code):
+            return False
+        self.persistence.save({"totp_enabled": True})
+        return True
+
+
+    def disable_totp(self) -> None:
+        self.persistence.save({"totp_enabled": False})
+
+
+    # --- Generic settings passthrough ---
+    def get_setting(self, key: str, default=None):
+        return self.persistence.load().get(key, default)
+
+
+    def set_setting(self, key: str, value) -> None:
+        self.persistence.save({key: value})
+
+
+    # --- Per-symbol setting interface (exercised for real in Module 02) ---
+    def get_per_symbol_setting(self, symbol: str, key: str, default=None):
+        return self.persistence.get_per_symbol_setting(symbol, key, default)
+
+
+    def set_per_symbol_setting(self, symbol: str, key: str, value) -> None:
+        self.persistence.set_per_symbol_setting(symbol, key, value)
+
+
+    # --- Remember this device (60 days) ---
+    def is_device_trusted(self) -> bool:
+        trust_until = self.keystore.get_secret("device_trust_until")
+        if not trust_until:
+            return False
+        try:
+            return int(time.time()) < int(trust_until)
+        except (TypeError, ValueError):
+            return False
+
+
+    def trust_this_device(self) -> None:
+        trust_until = int(time.time()) + DEVICE_TRUST_SECONDS
+        self.keystore.set_secret("device_trust_until", str(trust_until))
+
+
+    def clear_device_trust(self) -> None:
+        self.keystore.delete_secret("device_trust_until")
+
+
+    def login(self, username: str, password: str, totp_code: str | None = None) -> bool:
+        if not self.auth.verify(username, password):
+            return False
+        if self.is_totp_enabled() and not self.is_device_trusted():
+            if not totp_code or not self.totp.verify(totp_code):
+                return False
+        self.app_lock.unlock()
+        return True
+
+
+    def lock_ui(self) -> None:
+        self.app_lock.lock()
+
+
+    def is_ui_locked(self) -> bool:
+        return self.app_lock.is_locked()
+
+
+    def touch_activity(self) -> None:
+        self.app_lock.touch()
+
+
+    # --- Telegram channel ---
+    def is_telegram_enabled(self) -> bool:
+        return bool(self.persistence.load().get("telegram_notify_enabled", False))
+
+
+    def has_telegram_configured(self) -> bool:
+        return bool(self.keystore.get_secret("telegram_bot_token")) and bool(self.keystore.get_secret("telegram_chat_id"))
+
+
+    def set_telegram_config(self, bot_token: str, chat_id: str, enabled: bool) -> None:
+        if bot_token.strip():
+            self.keystore.set_secret("telegram_bot_token", bot_token.strip())
+        if chat_id.strip():
+            self.keystore.set_secret("telegram_chat_id", chat_id.strip())
+        self.persistence.save({"telegram_notify_enabled": enabled})
+
+
+    def send_test_telegram(self) -> tuple[bool, str]:
+        return self.otp.send_test_via_telegram(
+            self.keystore.get_secret("telegram_bot_token") or "",
+            self.keystore.get_secret("telegram_chat_id") or "",
+        )
+
+
+    # --- Discord channel ---
+    def is_discord_enabled(self) -> bool:
+        return bool(self.persistence.load().get("discord_notify_enabled", False))
+
+
+    def has_discord_configured(self) -> bool:
+        return bool(self.keystore.get_secret("discord_webhook_url"))
+
+
+    def set_discord_config(self, webhook_url: str, enabled: bool) -> None:
+        if webhook_url.strip():
+            self.keystore.set_secret("discord_webhook_url", webhook_url.strip())
+        self.persistence.save({"discord_notify_enabled": enabled})
+
+
+    def send_test_discord(self) -> tuple[bool, str]:
+        return self.otp.send_test_via_discord(self.keystore.get_secret("discord_webhook_url") or "")
+
+
+    # --- Forgot Password recovery methods ---
+    def has_any_recovery_method(self) -> bool:
+        if self.is_totp_enabled():
+            return True
+        if self.is_telegram_enabled() and self.has_telegram_configured():
+            return True
+        if self.is_discord_enabled() and self.has_discord_configured():
+            return True
+        return False
+
+
+    def available_reset_methods(self) -> list[str]:
+        methods: list[str] = []
+        if self.is_totp_enabled():
+            methods.append("totp")
+        if self.is_telegram_enabled() and self.has_telegram_configured():
+            methods.append("telegram")
+        if self.is_discord_enabled() and self.has_discord_configured():
+            methods.append("discord")
+        return methods
+
+
+    def send_forgot_otp(self, method: str) -> bool:
+        if method == "telegram":
+            return self.otp.send_via_telegram(
+                self.keystore.get_secret("telegram_bot_token") or "",
+                self.keystore.get_secret("telegram_chat_id") or "",
+            )
+        if method == "discord":
+            return self.otp.send_via_discord(self.keystore.get_secret("discord_webhook_url") or "")
+        return False
+
+
+    def verify_identity_for_reset(self, method: str, code: str) -> bool:
+        if method == "totp":
+            return self.totp.verify(code)
+        if method in ("telegram", "discord"):
+            return self.otp.verify_otp(code)
+        return False
+
+
+    def reset_password(self, username: str, new_password: str) -> bool:
+        return self.auth.set_credentials(username, new_password)
+
+====================================================================================================
+END FILE: engines\monitors\security_monitor.py

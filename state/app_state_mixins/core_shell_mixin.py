@@ -1,6 +1,10 @@
 """Executable AppState mixin: core shell, splash, transitions, tabs, sounds.
 
 PATH: state/app_state_mixins/core_shell_mixin.py
+
+CHANGE (v0.3.7): added sidebar_collapsed load-on-startup and
+toggle_sidebar_collapsed(), persisted via SettingsPersistenceWorker so the
+collapsed/expanded state survives an app restart.
 """
 from __future__ import annotations
 
@@ -31,6 +35,7 @@ class CoreShellMixin(rx.State, mixin=True):
         self.tab_transition_effects_enabled = settings.get("tab_transition_effects_enabled", self.tab_transition_effects_enabled)
         self.tab_transition_mode = settings.get("tab_transition_mode", self.tab_transition_mode)
         self.trading_panel_chart_theme = settings.get("trading_panel_chart_theme", self.trading_panel_chart_theme)
+        self.sidebar_collapsed = bool(settings.get("sidebar_collapsed", False))
         _engine.ensure_market_data_started()
         self.refresh_symbol_rows()
         return type(self).start_poi_monitor_background
@@ -127,6 +132,10 @@ class CoreShellMixin(rx.State, mixin=True):
     def toggle_sound(self) -> None:
         is_on = _engine.ui.sound.toggle_master()
         self.sound_muted = not is_on
+
+    def toggle_sidebar_collapsed(self) -> None:
+        self.sidebar_collapsed = not self.sidebar_collapsed
+        _engine.security.persistence.save({"sidebar_collapsed": self.sidebar_collapsed})
 
     def play_sound(self, event_name: str):
         url = _engine.ui.play_sound(event_name)

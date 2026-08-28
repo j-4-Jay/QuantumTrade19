@@ -2,8 +2,8 @@
 
 PATH: config/settings.py  (REPLACE ENTIRE FILE)
 
-CHANGE: SPLASH_DURATION_SECONDS 6.0 -> 5.0, per request (still followed by SPLASH_HOLD_SECONDS
-= 2.0 at 100% before the dissolve into Login).
+CHANGE (v0.3.7): added Lime Green Day/Night as a 4th theme hue (8 total
+themes now). Existing Yellow/Saffron/Blue themes are untouched.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -17,7 +17,7 @@ SIDEBAR_TABS: list[str] = ["Dashboard", "Trading Panel", "Journal & Reports", "A
 SPLASH_DURATION_SECONDS: float = 5.0
 SPLASH_HOLD_SECONDS: float = 2.0
 
-ThemeHue = Literal["yellow", "saffron", "blue"]
+ThemeHue = Literal["yellow", "saffron", "blue", "lime"]
 ThemeMode = Literal["day", "night"]
 
 
@@ -42,13 +42,21 @@ THEMES: dict[str, ThemeDefinition] = {
     "saffron-night": ThemeDefinition("saffron", "night", "#FF7A18", "#FFB067", "#1A0D00", "#2B1500", "rgba(26,13,0,0.55)", "rgba(255,122,24,0.35)", "#FFE3C6", "#D69A64"),
     "blue-day": ThemeDefinition("blue", "day", "#1E8FFF", "#8FCBFF", "#E9F4FF", "#CFE7FF", "rgba(255,255,255,0.55)", "rgba(30,143,255,0.45)", "#00203B", "#2E5D85"),
     "blue-night": ThemeDefinition("blue", "night", "#1E8FFF", "#8FCBFF", "#00060F", "#001A33", "rgba(0,6,15,0.55)", "rgba(30,143,255,0.35)", "#D6ECFF", "#6FA6D9"),
+    "lime-day": ThemeDefinition("lime", "day", "#65D22C", "#B6F29A", "#F2FCE9", "#DEF5C4", "rgba(255,255,255,0.55)", "rgba(101,210,44,0.45)", "#173500", "#3F6B1A"),
+    "lime-night": ThemeDefinition("lime", "night", "#65D22C", "#B6F29A", "#0A1300", "#132400", "rgba(10,19,0,0.55)", "rgba(101,210,44,0.35)", "#E8FBD8", "#96C878"),
 }
 DEFAULT_THEME_KEY: str = "blue-night"
-THEME_ORDER: list[str] = ["yellow-day", "yellow-night", "saffron-day", "saffron-night", "blue-day", "blue-night"]
+THEME_ORDER: list[str] = [
+    "yellow-day", "yellow-night",
+    "saffron-day", "saffron-night",
+    "blue-day", "blue-night",
+    "lime-day", "lime-night",
+]
 THEME_LABELS: dict[str, str] = {
     "yellow-day": "Yellow \u00b7 Day", "yellow-night": "Yellow \u00b7 Night",
     "saffron-day": "Saffron \u00b7 Day", "saffron-night": "Saffron \u00b7 Night",
     "blue-day": "Blue \u00b7 Day", "blue-night": "Blue \u00b7 Night",
+    "lime-day": "Lime Green \u00b7 Day", "lime-night": "Lime Green \u00b7 Night",
 }
 
 LIVE_GLOW_COLOR: str = "#EF4444"

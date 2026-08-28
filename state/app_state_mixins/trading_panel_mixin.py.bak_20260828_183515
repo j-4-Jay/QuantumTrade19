@@ -2,23 +2,21 @@
 
 PATH: state/app_state_mixins/trading_panel_mixin.py  (REPLACE ENTIRE FILE)
 
-CHANGE (v0.3.9.1 - fix blank chart despite loaded candles): added
-_normalize_timestamp_ms(). react-klinecharts requires `timestamp` in
-MILLISECONDS since epoch. Diagnostic evidence (7214 candles loaded for 1m,
-481 for 15m, both reporting real local coverage, yet a completely blank
-chart) matches exactly what happens when Candle.open_time is actually in
-SECONDS: all candles would map to dates around January 1970, technically
-"loaded" but nowhere near the chart's default (near-real-time) view.
+CHANGE (v0.3.8.1 - fix compile crash): replaced trading_panel_menu_position
+with trading_panel_menu_style, which now does the GLASS_CARD_STYLE + left/
+top merge entirely on the backend (plain Python dict merge) and returns one
+finished style dict. The previous version tried to `**`-unpack a Reflex Var
+directly inside ui/pages/trading_panel.py's JSX-generating code, which
+Reflex cannot compile ("Cannot pass a Var to a built-in function") - dict
+unpacking/merging must happen here, in a computed var, not in the page
+function.
 
-This guard checks the digit magnitude (seconds-epoch "now" is ~10 digits /
-~1.7e9; milliseconds-epoch "now" is ~13 digits / ~1.7e12) and multiplies by
-1000 ONLY when the value looks like seconds - so this is safe regardless of
-which unit Candle.open_time actually turns out to use.
-
-Everything else (per-symbol Display Days, auto-backfill-on-demand,
-once-per-day coverage caching, no-jump/Follow-Live/Reset View/Go Live
-logic, Enter-to-commit Display Days, and the theme-aware solid right-click
-menu style) is unchanged from v0.3.9.
+Everything else is unchanged from v0.3.8: open_trading_panel_menu(x, y) /
+close_trading_panel_menu() back the custom right-click menu (real Reflex
+on_context_menu trigger from ui/components/kline_chart.py, not Radix).
+Per-symbol Display Days, auto-backfill-on-demand, once-per-day coverage
+caching with forced recheck while pending, and the no-jump/Follow-Live/
+Reset View/Go Live logic remain as in v0.3.6/v0.3.7.
 """
 from __future__ import annotations
 
@@ -33,20 +31,11 @@ from state.app_state_mixins.shared import (
     TRADING_PANEL_TF_OPTIONS,
     TRADING_PANEL_DAY_PRESETS,
 )
+from ui.theme.glass import GLASS_CARD_STYLE
 
 
 def _today_str() -> str:
     return datetime.date.today().isoformat()
-
-
-def _normalize_timestamp_ms(value) -> int:
-    """Converts a candle's open_time to milliseconds if it looks like a
-    seconds-based epoch timestamp (10 digits, ~1.7e9 right now). Leaves it
-    untouched if it already looks like milliseconds (13 digits, ~1.7e12)."""
-    numeric = int(value)
-    if numeric < 10_000_000_000:
-        return numeric * 1000
-    return numeric
 
 
 class TradingPanelMixin(rx.State, mixin=True):
@@ -107,14 +96,9 @@ class TradingPanelMixin(rx.State, mixin=True):
         overwriting what they're typing."""
         self.trading_panel_display_days_draft = value
 
-    def handle_display_days_keydown(self, key: str) -> None:
-        """Pressing Enter commits immediately - no Apply button needed."""
-        if key == "Enter":
-            self.commit_trading_panel_display_days()
-
     def commit_trading_panel_display_days(self) -> None:
-        """Call this on blur or Enter. Validates, persists, and triggers the
-        actual full candle reload."""
+        """Call this on blur or when the user clicks Apply. Validates,
+        persists, and triggers the actual full candle reload."""
         self.set_trading_panel_display_days(self.trading_panel_display_days_draft)
 
     def set_trading_panel_display_days(self, value: str) -> None:
@@ -237,13 +221,13 @@ class TradingPanelMixin(rx.State, mixin=True):
 
         candles = _engine.market_data.get_chart_candles(symbol, tf, effective_days)
 
-        # ASSUMPTION CONFIRMED (v0.3.9.1): Candle fields are open/high/low/close/open_time.
+        # ASSUMPTION FLAGGED: Candle fields assumed to be open/high/low/close/open_time.
+        # Confirm against candle_builder_worker.py's real Candle dataclass before running.
         # Volume is NOT confirmed available on Candle - defaulted to 0.0 here.
-        # open_time is normalized to milliseconds via _normalize_timestamp_ms() -
-        # this is the fix for the "candles loaded but chart blank" bug.
+        # Row keys match react-klinecharts' KLineData shape directly (timestamp/open/high/low/close/volume).
         rows = [
             {
-                "timestamp": _normalize_timestamp_ms(c.open_time),
+                "timestamp": c.open_time,
                 "open": float(c.open),
                 "high": float(c.high),
                 "low": float(c.low),
@@ -412,19 +396,12 @@ class TradingPanelMixin(rx.State, mixin=True):
 
     @rx.var
     def trading_panel_menu_style(self) -> dict:
-        """SOLID, theme-aware style for the custom right-click menu box -
-        matches the chart's own Day/Night setting (not the app's global
-        theme), with a clean border and readable text."""
-        day = self.trading_panel_chart_theme == "day"
-        background = "#f4f7fb" if day else "#141d29"
-        border_color = "rgba(20,30,50,0.18)" if day else "rgba(147,173,205,0.28)"
-        text_color = "#152238" if day else "#dce8f7"
+        """Full, already-merged style dict for the custom right-click menu
+        box: GLASS_CARD_STYLE plus the exact click position. Merged here on
+        the backend (plain Python dict merge) because Reflex cannot compile
+        `**`-unpacking a Var directly inside a page function."""
         return {
-            "background": background,
-            "border": f"1px solid {border_color}",
-            "border_radius": "0.9rem",
-            "box_shadow": "0 10px 30px rgba(0,0,0,0.28)",
-            "color": text_color,
+            **GLASS_CARD_STYLE,
             "left": f"{self.trading_panel_menu_x}px",
             "top": f"{self.trading_panel_menu_y}px",
         }

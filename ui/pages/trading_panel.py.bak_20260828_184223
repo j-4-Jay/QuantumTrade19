@@ -2,11 +2,14 @@
 
 PATH: ui/pages/trading_panel.py  (REPLACE ENTIRE FILE)
 
-CHANGE (v0.3.9): removed the Apply button. Pressing Enter inside the
-Display Last Days input now commits the value directly (Reflex's rx.input
-automatically passes the pressed key string to on_key_down handlers).
-Clicking away (on_blur) still also commits, as before - Enter is just the
-faster path now.
+CHANGE (v0.3.8.2 - fix menu offset): the right-click menu itself moved to
+ui/components/trading_panel_context_menu.py and is now mounted at the
+app's true root (quantumtrade19/quantumtrade19.py), not nested here. A
+transformed ancestor elsewhere in the page tree was shifting the menu's
+position:fixed coordinates away from the real cursor position - mounting
+it outside every transformed wrapper fixes that. This file now only owns
+the chart's double-click-to-reset behavior and the right-click trigger
+(on_context_menu, wired on the chart component itself).
 """
 from __future__ import annotations
 
@@ -73,11 +76,16 @@ def _display_window_controls() -> rx.Component:
             value=AppState.trading_panel_display_days_draft,
             on_change=AppState.set_trading_panel_display_days_draft,
             on_blur=AppState.commit_trading_panel_display_days,
-            on_key_down=AppState.handle_display_days_keydown,
             width="70px",
             size="1",
         ),
-        rx.text("Days (applies to 1m/5m/15m for this symbol \u2022 press Enter)", font_size="0.75rem", color="var(--qt19-text-muted)"),
+        rx.text("Days (applies to 1m/5m/15m for this symbol)", font_size="0.75rem", color="var(--qt19-text-muted)"),
+        rx.button(
+            "Apply",
+            size="1",
+            variant="outline",
+            on_click=AppState.commit_trading_panel_display_days,
+        ),
         rx.divider(orientation="vertical", height="1.2rem"),
         rx.text(
             f"Local: {AppState.trading_panel_local_days} days",
@@ -86,11 +94,6 @@ def _display_window_controls() -> rx.Component:
         ),
         rx.text(
             f"Broker: {AppState.trading_panel_broker_days}",
-            font_size="0.75rem",
-            color="var(--qt19-text-muted)",
-        ),
-        rx.text(
-            f"Candles loaded: {AppState.trading_panel_candles.length()}",
             font_size="0.75rem",
             color="var(--qt19-text-muted)",
         ),

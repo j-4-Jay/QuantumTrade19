@@ -1,16 +1,8 @@
 """QuantumTrade19 - Reflex application entrypoint.
 
-PATH: quantumtrade19/quantumtrade19.py  (REPLACE ENTIRE FILE)
-
-CHANGE (v0.3.8.2 - fix Trading Panel right-click menu offset): mounted
-trading_panel_context_menu() as a direct sibling of the main transformed
-screen box, at the true top level of index()'s returned fragment - NOT
-nested inside it. The screen box carries a CSS `transform` via its
-qt19-transition-* class (even the resting `translateX(0)` state counts,
-per the CSS spec), which makes any `position: fixed` descendant measure
-from THAT box instead of the real browser viewport. Mounting the menu
-outside that box entirely is what makes its position:fixed left/top values
-finally match the real click coordinates.
+PATCH: initialize persistent runtime logging before Reflex can create
+background tasks, Workers, or thread pools. configure_logging() is idempotent
+and writes logs/quantumtrade19.log plus logs/errors.log.
 """
 from __future__ import annotations
 
@@ -26,7 +18,6 @@ from state.app_state import AppState
 from ui.theme.global_css import qt19_global_css
 from ui.components.keyboard_shortcuts import qt19_keyboard_shortcuts
 from ui.components.autofill_sync import qt19_autofill_sync
-from ui.components.trading_panel_context_menu import trading_panel_context_menu
 from ui.pages.splash import splash_screen
 from ui.pages.register import register_screen
 from ui.pages.login import login_screen
@@ -108,7 +99,6 @@ def index() -> rx.Component:
             width="100%",
             height="100vh",
         ),
-        trading_panel_context_menu(),
     )
 
 

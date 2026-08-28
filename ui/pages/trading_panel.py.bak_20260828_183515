@@ -2,11 +2,10 @@
 
 PATH: ui/pages/trading_panel.py  (REPLACE ENTIRE FILE)
 
-CHANGE (v0.3.9): removed the Apply button. Pressing Enter inside the
-Display Last Days input now commits the value directly (Reflex's rx.input
-automatically passes the pressed key string to on_key_down handlers).
-Clicking away (on_blur) still also commits, as before - Enter is just the
-faster path now.
+CHANGE (v0.3.8.1 - fix compile crash): the custom right-click menu box now
+uses `style=AppState.trading_panel_menu_style` (a single backend-merged
+dict, see trading_panel_mixin.py) instead of trying to `**`-unpack a Var
+directly in this file. Everything else is unchanged from v0.3.8.
 """
 from __future__ import annotations
 
@@ -73,11 +72,16 @@ def _display_window_controls() -> rx.Component:
             value=AppState.trading_panel_display_days_draft,
             on_change=AppState.set_trading_panel_display_days_draft,
             on_blur=AppState.commit_trading_panel_display_days,
-            on_key_down=AppState.handle_display_days_keydown,
             width="70px",
             size="1",
         ),
-        rx.text("Days (applies to 1m/5m/15m for this symbol \u2022 press Enter)", font_size="0.75rem", color="var(--qt19-text-muted)"),
+        rx.text("Days (applies to 1m/5m/15m for this symbol)", font_size="0.75rem", color="var(--qt19-text-muted)"),
+        rx.button(
+            "Apply",
+            size="1",
+            variant="outline",
+            on_click=AppState.commit_trading_panel_display_days,
+        ),
         rx.divider(orientation="vertical", height="1.2rem"),
         rx.text(
             f"Local: {AppState.trading_panel_local_days} days",
@@ -86,11 +90,6 @@ def _display_window_controls() -> rx.Component:
         ),
         rx.text(
             f"Broker: {AppState.trading_panel_broker_days}",
-            font_size="0.75rem",
-            color="var(--qt19-text-muted)",
-        ),
-        rx.text(
-            f"Candles loaded: {AppState.trading_panel_candles.length()}",
             font_size="0.75rem",
             color="var(--qt19-text-muted)",
         ),
@@ -108,15 +107,80 @@ def _display_window_controls() -> rx.Component:
     )
 
 
-def trading_panel_page() -> rx.Component:
+def _menu_item(label, on_click) -> rx.Component:
     return rx.box(
-        _header(),
-        _display_window_controls(),
+        rx.text(label, font_size="0.82rem", font_weight="500"),
+        on_click=[on_click, AppState.close_trading_panel_menu],
+        padding="0.5rem 0.9rem",
+        border_radius="0.6rem",
+        cursor="pointer",
+        width="100%",
+        _hover={"background": "var(--qt19-accent)", "color": "white"},
+    )
+
+
+def _menu_divider() -> rx.Component:
+    return rx.divider(margin_y="0.2rem")
+
+
+def _custom_context_menu() -> rx.Component:
+    return rx.cond(
+        AppState.trading_panel_menu_open,
+        rx.fragment(
+            rx.box(
+                position="fixed",
+                top="0", left="0", right="0", bottom="0",
+                z_index="998",
+                on_click=AppState.close_trading_panel_menu,
+                on_context_menu=[rx.prevent_default, AppState.close_trading_panel_menu],
+            ),
+            rx.box(
+                _menu_item(
+                    rx.cond(AppState.trading_panel_grid_enabled, "Hide Grid", "Show Grid"),
+                    AppState.toggle_trading_panel_grid,
+                ),
+                _menu_divider(),
+                _menu_item("Reset View", AppState.reset_trading_panel_view),
+                _menu_divider(),
+                _menu_item(
+                    rx.cond(AppState.trading_panel_chart_theme == "night", "Day Mode", "Night Mode"),
+                    AppState.set_trading_panel_chart_theme(
+                        rx.cond(AppState.trading_panel_chart_theme == "night", "day", "night")
+                    ),
+                ),
+                _menu_divider(),
+                _menu_item(
+                    rx.cond(AppState.trading_panel_follow_live, "Follow Live: Turn OFF", "Follow Live: Turn ON"),
+                    AppState.toggle_trading_panel_follow_live,
+                ),
+                _menu_item("Go to Live", AppState.go_live_trading_panel),
+                position="fixed",
+                z_index="999",
+                min_width="200px",
+                padding="0.4rem",
+                style=AppState.trading_panel_menu_style,
+            ),
+        ),
+    )
+
+
+def _chart_with_context_menu() -> rx.Component:
+    return rx.box(
         rx.box(
             trading_panel_chart(),
             on_double_click=AppState.reset_trading_panel_view,
             width="100%",
         ),
+        _custom_context_menu(),
+        width="100%",
+    )
+
+
+def trading_panel_page() -> rx.Component:
+    return rx.box(
+        _header(),
+        _display_window_controls(),
+        _chart_with_context_menu(),
         spacing="3",
         style=GLASS_CARD_3XL_STYLE,
         class_name=HOVER_GLOW_CLASS,
