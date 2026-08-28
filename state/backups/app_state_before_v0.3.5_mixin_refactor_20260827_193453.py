@@ -3,13 +3,6 @@
 PATH: state/app_state.py  (REPLACE ENTIRE FILE)
 
 Composes executable mixins from state/app_state_mixins/.
-
-CHANGE (v0.3.6): added trading_panel_grid_enabled (default False - grid off
-by default so POI lines/zones stay visually clean per project decision),
-trading_panel_display_days_draft (typing buffer for the Display Last X Days
-input - fixes the input being stuck), and _trading_panel_last_candle_ts
-(tracks the last-seen candle open_time so Follow Live can detect a genuine
-candle close instead of jumping on every 3-second poll tick).
 """
 from __future__ import annotations
 
@@ -144,9 +137,7 @@ class AppState(
     trading_panel_symbol: str = "B-BTC_USDT"
     trading_panel_chart_tf: str = "5m"
     trading_panel_display_days_input: str = "5"
-    trading_panel_display_days_draft: str = "5"
     trading_panel_chart_theme: str = "night"
-    trading_panel_grid_enabled: bool = False
     trading_panel_candles: list[dict] = []
     trading_panel_current_open: str = "--"
     trading_panel_current_high: str = "--"
@@ -155,6 +146,10 @@ class AppState(
     trading_panel_local_days: str = "0"
     trading_panel_broker_days: str = "Not checked yet"
     trading_panel_notice: str = ""
-    trading_panel_follow_live: bool = False
     _trading_panel_poll_running: bool = False
-    _trading_panel_last_candle_ts: float = 0.0
+
+    # Follow Live toggle
+    trading_panel_follow_live: bool = False
+
+    def toggle_trading_panel_follow_live(self) -> None:
+        self.trading_panel_follow_live = not self.trading_panel_follow_live

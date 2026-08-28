@@ -1,0 +1,212 @@
+"""Executable AppState mixin: POI Engine & Chart Visibility settings.
+
+PATH: state/app_state_mixins/poi_settings_mixin.py
+"""
+from __future__ import annotations
+
+import asyncio
+import reflex as rx
+
+from state.app_state_mixins.shared import (
+    _engine,
+    POI_DEFAULT_STRATEGY_TYPES,
+    POI_LINE_TF_LABELS,
+    POI_LINE_TF_ORDER,
+    POI_LINE_TYPE_MAP,
+    POI_ZONE_TYPES,
+)
+
+
+class PoiSettingsMixin(rx.State, mixin=True):
+    def load_poi_settings(self) -> None:
+        settings = _engine.get_poi_settings()
+        self.poi_display_enabled = settings.get("display_enabled", {})
+        self.poi_strategy_enabled = settings.get("strategy_enabled", {})
+        self.poi_zone_source_tf_enabled = settings.get("zone_source_tf_enabled", {})
+        visual = _engine.security.persistence.load().get("poi_visual_settings", {})
+        self.poi_show_labels = visual.get("show_labels", True)
+        self.poi_show_tooltips = visual.get("show_tooltips", True)
+        self.poi_line_transparency = visual.get("line_transparency", 100)
+        self.poi_zone_opacity = visual.get("zone_opacity", 30)
+        self.poi_show_source_tf_badge = visual.get("show_source_tf_badge", True)
+        self.poi_show_logical_id = visual.get("show_logical_id", False)
+        self.poi_reduced_motion = visual.get("reduced_motion", False)
+        self.poi_settings_loaded = True
+
+    @rx.event(background=True)
+    async def toggle_poi_display(self, poi_type: str, checked: bool):
+        """Updates the checkbox immediately, then offloads the real,
+        network-bound recompute POIMonitor triggers internally to a
+        separate thread so it never freezes the UI."""
+        async with self:
+            self.poi_display_enabled = {**self.poi_display_enabled, poi_type: checked}
+            self.poi_backend_busy = True
+        try:
+            await asyncio.to_thread(_engine.set_poi_display_enabled, poi_type, checked)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+
+    @rx.event(background=True)
+    async def toggle_poi_strategy(self, poi_type: str, checked: bool):
+        async with self:
+            self.poi_strategy_enabled = {**self.poi_strategy_enabled, poi_type: checked}
+            self.poi_backend_busy = True
+        try:
+            await asyncio.to_thread(_engine.set_poi_strategy_enabled, poi_type, checked)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+
+    @rx.event(background=True)
+    async def toggle_poi_zone_source_tf(self, timeframe: str, checked: bool):
+        async with self:
+            self.poi_zone_source_tf_enabled = {**self.poi_zone_source_tf_enabled, timeframe: checked}
+            self.poi_backend_busy = True
+        try:
+            await asyncio.to_thread(_engine.set_poi_zone_source_tf_enabled, timeframe, checked)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+
+    def _save_poi_visual_settings(self) -> None:
+        _engine.security.persistence.save({
+            "poi_visual_settings": {
+                "show_labels": self.poi_show_labels,
+                "show_tooltips": self.poi_show_tooltips,
+                "line_transparency": self.poi_line_transparency,
+                "zone_opacity": self.poi_zone_opacity,
+                "show_source_tf_badge": self.poi_show_source_tf_badge,
+                "show_logical_id": self.poi_show_logical_id,
+                "reduced_motion": self.poi_reduced_motion,
+            }
+        })
+
+    def toggle_poi_show_labels(self, checked: bool) -> None:
+        self.poi_show_labels = checked
+        self._save_poi_visual_settings()
+
+    def toggle_poi_show_tooltips(self, checked: bool) -> None:
+        self.poi_show_tooltips = checked
+        self._save_poi_visual_settings()
+
+    def toggle_poi_show_source_tf_badge(self, checked: bool) -> None:
+        self.poi_show_source_tf_badge = checked
+        self._save_poi_visual_settings()
+
+    def toggle_poi_show_logical_id(self, checked: bool) -> None:
+        self.poi_show_logical_id = checked
+        self._save_poi_visual_settings()
+
+    def toggle_poi_reduced_motion(self, checked: bool) -> None:
+        self.poi_reduced_motion = checked
+        self._save_poi_visual_settings()
+
+    def set_poi_line_transparency(self, value: list[float]) -> None:
+        self.poi_line_transparency = int(value[0])
+        self._save_poi_visual_settings()
+
+    def set_poi_zone_opacity(self, value: list[float]) -> None:
+        self.poi_zone_opacity = int(value[0])
+        self._save_poi_visual_settings()
+
+    @rx.event(background=True)
+    async def poi_show_all(self):
+        async with self:
+            poi_types = list(self.poi_display_enabled.keys())
+            self.poi_display_enabled = {t: True for t in poi_types}
+            self.poi_backend_busy = True
+
+        def _apply():
+            for t in poi_types:
+                _engine.set_poi_display_enabled(t, True)
+        try:
+            await asyncio.to_thread(_apply)
+        finally:
+            async with self:
+                self.load_poi_settings()
+                self.poi_backend_busy = False
+
+    @rx.event(background=True)
+    async def poi_hide_all(self):
+        async with self:
+            poi_types = list(self.poi_display_enabled.keys())
+            self.poi_display_enabled = {t: False for t in poi_types}
+            self.poi_backend_busy = True
+
+        def _apply():
+            for t in poi_types:
+                _engine.set_poi_display_enabled(t, False)
+        try:
+            await asyncio.to_thread(_apply)
+        finally:
+            async with self:
+                self.load_poi_settings()
+                self.poi_backend_busy = False
+
+    @rx.event(background=True)
+    async def poi_enable_default_strategy(self):
+        async with self:
+            poi_types = list(self.poi_strategy_enabled.keys())
+            self.poi_strategy_enabled = {t: (t in POI_DEFAULT_STRATEGY_TYPES) for t in poi_types}
+            self.poi_backend_busy = True
+
+        def _apply():
+            for t in poi_types:
+                _engine.set_poi_strategy_enabled(t, t in POI_DEFAULT_STRATEGY_TYPES)
+        try:
+            await asyncio.to_thread(_apply)
+        finally:
+            async with self:
+                self.load_poi_settings()
+                self.poi_backend_busy = False
+
+    @rx.event(background=True)
+    async def poi_disable_all_strategy(self):
+        async with self:
+            poi_types = list(self.poi_strategy_enabled.keys())
+            self.poi_strategy_enabled = {t: False for t in poi_types}
+            self.poi_backend_busy = True
+
+        def _apply():
+            for t in poi_types:
+                _engine.set_poi_strategy_enabled(t, False)
+        try:
+            await asyncio.to_thread(_apply)
+        finally:
+            async with self:
+                self.load_poi_settings()
+                self.poi_backend_busy = False
+
+    def poi_reset_chart_filters(self) -> None:
+        """Temporary chart filters are session-only per spec and never
+        persisted - this is a placeholder no-op until Scope C's chart exists
+        to actually hold them."""
+        pass
+
+    @rx.var
+    def poi_line_rows(self) -> list[dict]:
+        rows = []
+        for tf in POI_LINE_TF_ORDER:
+            high_type, low_type = POI_LINE_TYPE_MAP[tf]
+            rows.append({
+                "tf": tf, "label": POI_LINE_TF_LABELS[tf],
+                "high_type": high_type, "low_type": low_type,
+                "high_display": self.poi_display_enabled.get(high_type, False),
+                "high_strategy": self.poi_strategy_enabled.get(high_type, False),
+                "low_display": self.poi_display_enabled.get(low_type, False),
+                "low_strategy": self.poi_strategy_enabled.get(low_type, False),
+            })
+        return rows
+
+    @rx.var
+    def poi_zone_type_rows(self) -> list[dict]:
+        return [{
+            "type": t, "label": label,
+            "display": self.poi_display_enabled.get(t, False),
+            "strategy": self.poi_strategy_enabled.get(t, False),
+        } for t, label in POI_ZONE_TYPES]
+
+    @rx.var
+    def poi_zone_source_tf_rows(self) -> list[dict]:
+        return [{"tf": tf, "enabled": self.poi_zone_source_tf_enabled.get(tf, False)} for tf in POI_LINE_TF_ORDER]

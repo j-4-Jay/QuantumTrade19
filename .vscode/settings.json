@@ -57,5 +57,20 @@
             "folderPath": "QuantumTrade19\\ui\\pages\\",
             "color": "foldercolorizer.color_005fd7"
         }
-    ]
+    ],
+    "yaml.disableSchemaDetection": [
+        "file:///c%3A/Users/JAY/.continue/config.yaml"
+    ],
+    "yaml.schemas": {
+        "file:///c%3A/Users/JAY/.vscode/extensions/continue.continue-1.2.22-win32-x64/config-yaml-schema.json": [
+            ".continue/**/*.yaml"
+        ],
+        "file:///c%3A/Users/JAY/.vscode/extensions/continue.continue-1.2.24-win32-x64/config-yaml-schema.json": [
+            ".continue/**/*.yaml"
+        ],
+        "file:///c%3A/Users/JAY/.vscode/extensions/continue.continue-2.0.0-win32-x64/config-yaml-schema.json": [
+            ".continue/**/*.yaml"
+        ],
+        "file:///c:/Users/JAY/.vscode/extensions/continue.continue-2.0.0-win32-x64/config-yaml-schema.json": "file:///c%3A/Users/JAY/.continue/config.yaml"
+    }
 }

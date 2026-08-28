@@ -2,10 +2,15 @@
 
 PATH: ui/pages/trading_panel.py
 
-The chart's right-click menu is intentionally browser-local. It controls
-KLineCharts presentation and navigation without changing AppState or market
-engine data. Right-click anywhere inside the chart to open it; double-click
-inside the chart to reset the view.
+CHANGE (v0.3.6):
+- Removed the unreliable right-click context menu entirely.
+- Added always-visible, reliable buttons: Grid On/Off, Reset View,
+  Day/Night, Follow Live, Go Live. All are driven either by real reactive
+  AppState vars (Grid, Day/Night) or real Chart-instance calls through the
+  window.QT19_CHARTS registry (Reset View, Go Live).
+- Fixed the Display Last X Days input: now bound to a draft var that
+  updates on every keystroke, with an explicit Apply button (and on_blur)
+  to commit + trigger the actual reload. It no longer gets stuck.
 """
 from __future__ import annotations
 
@@ -69,6 +74,50 @@ def _theme_toggle() -> rx.Component:
     )
 
 
+def _grid_toggle() -> rx.Component:
+    return rx.button(
+        rx.cond(AppState.trading_panel_grid_enabled, "Grid: ON", "Grid: OFF"),
+        size="1",
+        variant=rx.cond(AppState.trading_panel_grid_enabled, "solid", "outline"),
+        on_click=AppState.toggle_trading_panel_grid,
+    )
+
+
+def _follow_live_toggle() -> rx.Component:
+    return rx.button(
+        rx.cond(
+            AppState.trading_panel_follow_live,
+            "Follow Live: ON",
+            "Follow Live: OFF",
+        ),
+        size="1",
+        variant=rx.cond(
+            AppState.trading_panel_follow_live,
+            "solid",
+            "outline",
+        ),
+        on_click=AppState.toggle_trading_panel_follow_live,
+    )
+
+
+def _reset_view_button() -> rx.Component:
+    return rx.button(
+        "Reset View",
+        size="1",
+        variant="outline",
+        on_click=AppState.reset_trading_panel_view,
+    )
+
+
+def _go_live_button() -> rx.Component:
+    return rx.button(
+        "Go to Live",
+        size="1",
+        variant="outline",
+        on_click=AppState.go_live_trading_panel,
+    )
+
+
 def _header() -> rx.Component:
     return rx.hstack(
         rx.select(
@@ -84,10 +133,22 @@ def _header() -> rx.Component:
         _ohlc_pill("L", AppState.trading_panel_current_low),
         _ohlc_pill("C", AppState.trading_panel_current_close),
         rx.badge(AppState.ws_status, variant="soft"),
-        _theme_toggle(),
         width="100%",
         align_items="center",
         spacing="4",
+        wrap="wrap",
+    )
+
+
+def _chart_controls_bar() -> rx.Component:
+    return rx.hstack(
+        _grid_toggle(),
+        _reset_view_button(),
+        _theme_toggle(),
+        _follow_live_toggle(),
+        _go_live_button(),
+        spacing="2",
+        align_items="center",
         wrap="wrap",
     )
 
@@ -96,12 +157,19 @@ def _display_window_controls() -> rx.Component:
     return rx.hstack(
         rx.text("Display Last:", font_size="0.8rem"),
         rx.input(
-            value=AppState.trading_panel_display_days_input,
-            on_blur=AppState.set_trading_panel_display_days,
+            value=AppState.trading_panel_display_days_draft,
+            on_change=AppState.set_trading_panel_display_days_draft,
+            on_blur=AppState.commit_trading_panel_display_days,
             width="70px",
             size="1",
         ),
         rx.text("Days", font_size="0.8rem"),
+        rx.button(
+            "Apply",
+            size="1",
+            variant="outline",
+            on_click=AppState.commit_trading_panel_display_days,
+        ),
         rx.divider(orientation="vertical", height="1.2rem"),
         rx.text(
             f"Local: {AppState.trading_panel_local_days} days",
@@ -127,31 +195,13 @@ def _display_window_controls() -> rx.Component:
     )
 
 
-def _chart_help() -> rx.Component:
-    return rx.hstack(
-        rx.text(
-            "Chart controls:",
-            font_size="0.73rem",
-            font_weight="600",
-            color="var(--qt19-text-muted)",
-        ),
-        rx.text(
-            "Right-click for chart menu • Double-click to reset view",
-            font_size="0.73rem",
-            color="var(--qt19-text-muted)",
-        ),
-        spacing="2",
-        wrap="wrap",
-    )
-
-
 def trading_panel_page() -> rx.Component:
     return rx.vstack(
         rx.heading("Trading Panel", size="6"),
         rx.box(
             _header(),
+            _chart_controls_bar(),
             _display_window_controls(),
-            _chart_help(),
             trading_panel_chart(),
             spacing="3",
             style=GLASS_CARD_3XL_STYLE,
