@@ -11,3 +11,5 @@ data/
 debug_temp/
 logs/
 .web/
+*.bak_*
+.pytest_cache/
