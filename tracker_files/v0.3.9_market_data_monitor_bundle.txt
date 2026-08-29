@@ -1,24 +1,25 @@
+﻿QUANTUMTRADE19 v0.3.9 MARKET DATA MONITOR BUNDLE
+
+====================================================================================================
+BEGIN FILE: engines\monitors\market_data_monitor.py
+====================================================================================================
 """Market Data Monitor (Tier 2 Assembly).
 
-PATH: engines/monitors/market_data_monitor.py  (REPLACE ENTIRE FILE)
+PATH: engines/monitors/market_data_monitor.py (REPLACE ENTIRE FILE)
 
-CHANGE (v0.3.9 - fix "deep history never reaches the chart"): added
-CandleStoreWorker, a persistent SQLite store. _handle_deep_history_chunk()
-now actually saves downloaded candles there (previously it only logged
-them and threw them away). get_chart_candles() now merges the persistent
-store with CandleBuilderWorker's live in-memory series - RAM wins on any
-timestamp collision (it always has the current forming candle). This is
-what actually lets the Trading Panel chart show more than the 5-day
-baseline once a deep-history backfill has run.
+PATCH v5 â€” local-only Trading Panel reader:
+- Adds get_chart_candles(symbol, timeframe, days).
+- This chart-specific API reads ONLY CandleBuilderWorker's in-memory series.
+- It never calls HistoricalDataLoaderWorker, REST, WebSocket, or CoinDCX.
+- The returned series includes the current forming candle exactly once because
+  CandleBuilderWorker.get_series() already returns closed candles plus current.
+- get_chart_coverage_days() reports actual retained in-memory candle span;
+  it does not use the deep-history manifest because that manifest currently
+  records coverage metadata, not locally readable candle storage.
 
-get_deep_history_progress() now also reports the download's real state
-(queued/downloading/paused/complete/error) and error message, sourced from
-DeepHistoryDownloaderWorker.get_status() - previously a failed download
-looked identical to an idle one from the outside.
-
-Everything else, including get_historical_candles() (explicit broker-history
-reads outside the Trading Panel) and the WS/REST/health-report logic, is
-unchanged.
+The existing get_historical_candles() remains intentionally unchanged for
+explicit broker-history operations outside the Trading Panel. The UI chart
+must use get_chart_candles(), never get_historical_candles().
 """
 from __future__ import annotations
 
@@ -41,7 +42,6 @@ from engines.workers.market_data.candle_builder_worker import (
 from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
 from engines.workers.market_data.deep_history_downloader_worker import DeepHistoryDownloaderWorker
 from engines.workers.market_data.history_depth_prober_worker import HistoryDepthProberWorker
-from engines.workers.market_data.candle_store_worker import CandleStoreWorker
 
 
 logger = logging.getLogger("market_data.monitor")
@@ -63,7 +63,6 @@ class MarketDataMonitor:
         )
 
         self.history_manifest = HistoryManifestWorker()
-        self.candle_store = CandleStoreWorker()
         self.deep_history_downloader = DeepHistoryDownloaderWorker(
             manifest=self.history_manifest,
             on_chunk=self._handle_deep_history_chunk,
@@ -145,43 +144,39 @@ class MarketDataMonitor:
     def get_chart_candles(self, symbol: str, timeframe: str, days: int) -> List[Candle]:
         """Return local-only chart candles, oldest to newest.
 
-        CHANGE (v0.3.9): now merges two sources:
-          1. CandleStoreWorker (persistent SQLite) - deep-downloaded older
-             candles, saved by _handle_deep_history_chunk().
-          2. CandleBuilderWorker's in-memory RAM series - baseline 5-day
-             window + live ticks since app start, including the current
-             forming candle.
-        RAM wins on any timestamp collision between the two (it always has
-        the live/current forming candle, which the persisted store never
-        will). This makes deep-history backfills actually visible on the
-        Trading Panel chart, not just recorded in a manifest.
+        Reads CandleBuilderWorker's retained RAM series only. It makes no
+        network request and never reaches HistoricalDataLoaderWorker. The
+        worker's get_series() result already has the current forming candle
+        as its final item, so no caller should append get_live_candle().
         """
         if days <= 0:
             return []
 
-        cutoff_ms = self._now_ms() - days * 24 * 60 * 60 * 1000
-        now_ms = self._now_ms()
-
-        merged: Dict[int, Candle] = {}
-
-        persisted = self.candle_store.get_candles(symbol, timeframe, cutoff_ms, now_ms)
-        for candle in persisted:
-            merged[candle.open_time] = candle
-
         series = self.candle_builder.get_series(symbol, timeframe)
-        for candle in series:
-            if candle.open_time >= cutoff_ms:
-                merged[candle.open_time] = candle
+        if not series:
+            logger.debug(
+                "market_data_chart_local_read symbol=%s timeframe=%s requested_days=%d candles=0",
+                symbol,
+                timeframe,
+                days,
+            )
+            return []
 
-        result = [merged[open_time] for open_time in sorted(merged)]
+        cutoff_ms = self._now_ms() - days * 24 * 60 * 60 * 1000
+        filtered = [candle for candle in series if candle.open_time >= cutoff_ms]
+
+        # Defensive deduplication: CandleBuilderWorker already guarantees this,
+        # but the chart boundary must never emit duplicate timestamps.
+        unique: Dict[int, Candle] = {}
+        for candle in filtered:
+            unique[candle.open_time] = candle
+        result = [unique[open_time] for open_time in sorted(unique)]
 
         logger.debug(
-            "market_data_chart_local_read symbol=%s timeframe=%s requested_days=%d persisted=%d ram=%d merged=%d",
+            "market_data_chart_local_read symbol=%s timeframe=%s requested_days=%d candles=%d",
             symbol,
             timeframe,
             days,
-            len(persisted),
-            len(series),
             len(result),
         )
         return result
@@ -230,18 +225,14 @@ class MarketDataMonitor:
             is_fully_downloaded,
         )
 
-        status = self.deep_history_downloader.get_status(symbol, timeframe)
         return {
             "covered_days": covered_days(self.history_manifest, symbol, timeframe),
             "is_complete": is_fully_downloaded(self.history_manifest, symbol, timeframe),
-            "state": status["state"],
-            "error": status["error"],
         }
 
     def delete_deep_history(self, symbol: str, timeframe: str) -> None:
         logger.warning("deep_history_delete_requested symbol=%s timeframe=%s", symbol, timeframe)
         self.history_manifest.delete_symbol_manifest(symbol)
-        self.candle_store.delete_symbol_timeframe(symbol, timeframe)
 
     def start_ceiling_probe(self, symbol: str, timeframe: str) -> None:
         logger.info("history_ceiling_probe_started symbol=%s timeframe=%s", symbol, timeframe)
@@ -303,9 +294,8 @@ class MarketDataMonitor:
             logger.info("ws_restored_rest_fallback_disengaged symbol=%s", symbol)
 
     def _handle_deep_history_chunk(self, symbol: str, timeframe: str, candles: list) -> None:
-        self.candle_store.save_candles(symbol, timeframe, candles)
         logger.debug(
-            "deep_history_chunk_persisted symbol=%s timeframe=%s candles=%d",
+            "deep_history_chunk_received symbol=%s timeframe=%s candles=%d",
             symbol,
             timeframe,
             len(candles),
@@ -337,3 +327,6 @@ class MarketDataMonitor:
     @staticmethod
     def _now_ms() -> int:
         return int(time.time() * 1000)
+
+====================================================================================================
+END FILE: engines\monitors\market_data_monitor.py

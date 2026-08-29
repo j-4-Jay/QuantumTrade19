@@ -1,19 +1,6 @@
 """Executable AppState mixin: market data, dashboard, deep history.
 
-PATH: state/app_state_mixins/market_dashboard_mixin.py  (REPLACE ENTIRE FILE)
-
-CHANGE (v0.3.9): added deep_history_status_rows (a computed var powering
-the redesigned, visual-only Deep Historical Data Settings card) plus
-cancel_deep_history_for(symbol, tf) / delete_deep_history_for(symbol, tf) -
-row-scoped actions that don't require first typing the symbol/timeframe
-into the old manual input fields. Starting a download is now ONLY possible
-from the Trading Panel's Display Days box (see trading_panel_mixin.py) -
-the old start_deep_history_download() manual-trigger method has been
-removed since nothing calls it anymore.
-
-The old deep_history_symbol/deep_history_timeframe/deep_history_target_days
-input fields and their setters remain (harmless, unused by any current UI)
-in case a future manual "check real ceiling" flow still needs them.
+PATH: state/app_state_mixins/market_dashboard_mixin.py
 """
 from __future__ import annotations
 
@@ -24,8 +11,6 @@ from state.app_state_mixins.shared import (
     _engine,
     PINNED_SYMBOL_MAP,
 )
-
-_DEEP_HISTORY_TFS = ["1m", "5m", "15m"]
 
 
 class MarketDashboardMixin(rx.State, mixin=True):
@@ -105,7 +90,7 @@ class MarketDashboardMixin(rx.State, mixin=True):
     def check_deep_history_ceiling(self):
         self.deep_history_status_message = "Checking real ceiling... this can take a few minutes for 1m/5m."
         _engine.market_data.start_ceiling_probe(self.deep_history_symbol, self.deep_history_timeframe)
-        return AppState.poll_deep_history_status
+        return type(self).poll_deep_history_status
 
     def refresh_deep_history_status(self) -> None:
         progress = _engine.market_data.get_deep_history_progress(
@@ -115,19 +100,26 @@ class MarketDashboardMixin(rx.State, mixin=True):
         ceiling = _engine.market_data.get_ceiling_days(self.deep_history_symbol, self.deep_history_timeframe)
         self.deep_history_ceiling_days = f"{ceiling} days" if ceiling is not None else "Not checked yet"
 
-    def cancel_deep_history_for(self, symbol: str, tf: str) -> None:
-        """Row-scoped Cancel - stops an in-progress download for this exact
-        symbol+timeframe. Downloads can only be STARTED from the Trading
-        Panel's Display Days box; this card is a status monitor + safety
-        stop/clear control only."""
-        _engine.market_data.cancel_deep_history(symbol, tf)
+    def start_deep_history_download(self):
+        try:
+            target = int(self.deep_history_target_days) if self.deep_history_target_days.strip() else None
+        except ValueError:
+            self.deep_history_status_message = "Enter a valid whole number of days, or leave blank for 'download all'."
+            return
+        self.deep_history_is_downloading = True
+        self.deep_history_status_message = "Download started..."
+        _engine.market_data.start_deep_history(self.deep_history_symbol, self.deep_history_timeframe, target)
+        return type(self).poll_deep_history_status
 
-    def delete_deep_history_for(self, symbol: str, tf: str) -> None:
-        """Row-scoped Delete - clears the manifest AND the persisted candle
-        archive for this exact symbol+timeframe. The always-on 5-day
-        baseline is untouched (it lives in CandleBuilderWorker's RAM, not
-        this archive)."""
-        _engine.market_data.delete_deep_history(symbol, tf)
+    def cancel_deep_history_download(self) -> None:
+        _engine.market_data.cancel_deep_history(self.deep_history_symbol, self.deep_history_timeframe)
+        self.deep_history_is_downloading = False
+        self.deep_history_status_message = "Cancelled."
+
+    def delete_deep_history_data(self) -> None:
+        _engine.market_data.delete_deep_history(self.deep_history_symbol, self.deep_history_timeframe)
+        self.deep_history_status_message = "Deep archive deleted for this symbol (all its timeframes). 5-day baseline is untouched."
+        self.refresh_deep_history_status()
 
     @rx.event(background=True)
     async def poll_deep_history_status(self):
@@ -163,37 +155,3 @@ class MarketDashboardMixin(rx.State, mixin=True):
 
     def close_detail_popup(self) -> None:
         self.detail_popup_open = False
-
-    @rx.var
-    def deep_history_status_rows(self) -> list[dict]:
-        """Powers the visual-only Deep Historical Data Settings card: one
-        row per (active symbol, timeframe), with real state/progress from
-        the engine - not a text-only readout."""
-        registry = _engine.market_data.symbol_registry
-        symbols = registry.get_symbols_sorted(active_only=True)
-        rows: list[dict] = []
-        for symbol in symbols:
-            for tf in _DEEP_HISTORY_TFS:
-                progress = _engine.market_data.get_deep_history_progress(symbol, tf)
-                ceiling = _engine.market_data.get_ceiling_days(symbol, tf)
-                covered = float(progress.get("covered_days", 0) or 0)
-                state = progress.get("state", "idle")
-                error = progress.get("error") or ""
-
-                if ceiling and ceiling > 0:
-                    percent = max(0, min(100, round((covered / ceiling) * 100)))
-                    ceiling_label = f"{ceiling} days"
-                else:
-                    percent = 0
-                    ceiling_label = "Not checked yet"
-
-                rows.append({
-                    "symbol": symbol,
-                    "tf": tf,
-                    "state": state,
-                    "covered_label": f"{covered} days",
-                    "ceiling_label": ceiling_label,
-                    "percent": percent,
-                    "error": error,
-                })
-        return rows

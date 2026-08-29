@@ -1,17 +1,19 @@
 """
-FULL PATH: engines/workers/market_data/deep_history_downloader_worker.py  (REPLACE ENTIRE FILE)
+FULL PATH: engines/workers/market_data/deep_history_downloader_worker.py (REPLACE ENTIRE FILE)
 
-CHANGE (v0.3.9): added real state tracking - "queued" -> "downloading" ->
-"complete" / "paused" (cancelled) / "error". Previously, any exception
-during the download loop (network failure, bad response, etc.) killed the
-background thread completely silently - is_downloading() would just go back
-to False with zero indication anything went wrong, making a failed download
-look identical to "nothing happening." Now every failure is caught, stored
-with its real error message, and exposed via get_status().
+REWRITTEN to use your EXISTING HistoryManifestWorker API (get_covered_ranges,
+mark_covered, find_gaps, coverage_percent, delete_symbol_manifest) instead of
+methods that don't exist on your real manifest file.
+
+"True earliest reached" is now inferred, not separately tracked: when the API
+returns an empty page, we mark_covered(symbol, tf, EARLY_START_MS, cursor_end)
+-- i.e. "nothing exists before this point" becomes part of the covered range
+itself. That merges with real data ranges automatically (your manifest's own
+merge logic), so a fully-covered range starting at/near EARLY_START_MS IS the
+signal that the true earliest has been reached -- no extra flag needed.
 """
 from __future__ import annotations
 
-import logging
 import threading
 import time
 from typing import Callable, Optional
@@ -20,8 +22,6 @@ import requests
 
 from engines.workers.market_data.candle_builder_worker import Candle
 from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
-
-logger = logging.getLogger("market_data.deep_history_downloader")
 
 CANDLES_URL = "https://public.coindcx.com/market_data/candles/"
 MAX_LIMIT_PER_CALL = 1000
@@ -57,22 +57,7 @@ class DeepHistoryDownloaderWorker:
         self._on_chunk = on_chunk
         self._on_progress = on_progress
         self._active: dict[tuple, threading.Event] = {}
-        self._status: dict[tuple, dict] = {}
         self._lock = threading.RLock()
-
-    def _set_status(self, symbol: str, timeframe: str, **kwargs) -> None:
-        with self._lock:
-            current = dict(self._status.get((symbol, timeframe), {}))
-            current.update(kwargs)
-            self._status[(symbol, timeframe)] = current
-
-    def get_status(self, symbol: str, timeframe: str) -> dict:
-        with self._lock:
-            status = dict(self._status.get((symbol, timeframe), {}))
-        return {
-            "state": status.get("state", "idle"),
-            "error": status.get("error"),
-        }
 
     def start_download(self, symbol: str, timeframe: str, target_days: Optional[int] = None) -> None:
         key = (symbol, timeframe)
@@ -81,7 +66,6 @@ class DeepHistoryDownloaderWorker:
                 return
             stop_event = threading.Event()
             self._active[key] = stop_event
-        self._set_status(symbol, timeframe, state="queued", error=None)
         t = threading.Thread(target=self._download_loop, args=(symbol, timeframe, target_days, stop_event), daemon=True)
         t.start()
 
@@ -90,24 +74,20 @@ class DeepHistoryDownloaderWorker:
             stop_event = self._active.pop((symbol, timeframe), None)
             if stop_event:
                 stop_event.set()
-        self._set_status(symbol, timeframe, state="paused", error=None)
 
     def is_downloading(self, symbol: str, timeframe: str) -> bool:
         with self._lock:
             return (symbol, timeframe) in self._active
 
     def _download_loop(self, symbol: str, timeframe: str, target_days: Optional[int], stop_event: threading.Event) -> None:
-        self._set_status(symbol, timeframe, state="downloading", error=None)
         try:
             earliest = earliest_covered_ms(self._manifest, symbol, timeframe)
             cursor_end = (earliest - 1) if earliest else int(time.time() * 1000)
 
             while not stop_event.is_set():
                 if is_fully_downloaded(self._manifest, symbol, timeframe):
-                    self._set_status(symbol, timeframe, state="complete", error=None)
                     break
                 if target_days is not None and covered_days(self._manifest, symbol, timeframe) >= target_days:
-                    self._set_status(symbol, timeframe, state="complete", error=None)
                     break
 
                 resp = self._http_get(CANDLES_URL, params={
@@ -120,7 +100,6 @@ class DeepHistoryDownloaderWorker:
 
                 if not rows:
                     self._manifest.mark_covered(symbol, timeframe, EARLY_START_MS, cursor_end)
-                    self._set_status(symbol, timeframe, state="complete", error=None)
                     break
 
                 candles = [Candle(
@@ -142,19 +121,10 @@ class DeepHistoryDownloaderWorker:
                         "is_complete": is_fully_downloaded(self._manifest, symbol, timeframe),
                     })
 
-                self._set_status(symbol, timeframe, state="downloading", error=None)
-
                 if batch_oldest >= cursor_end:
-                    self._set_status(symbol, timeframe, state="complete", error=None)
                     break
                 cursor_end = batch_oldest - 1
                 time.sleep(CHUNK_PACING_S)
-
-            if stop_event.is_set():
-                self._set_status(symbol, timeframe, state="paused", error=None)
-        except Exception as exc:
-            logger.exception("deep_history_download_failed symbol=%s timeframe=%s", symbol, timeframe)
-            self._set_status(symbol, timeframe, state="error", error=str(exc))
         finally:
             with self._lock:
                 self._active.pop((symbol, timeframe), None)

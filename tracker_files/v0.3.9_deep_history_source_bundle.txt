@@ -1,0 +1,327 @@
+﻿QUANTUMTRADE19 v0.3.9 DEEP HISTORY SOURCE BUNDLE
+
+====================================================================================================
+BEGIN FILE: ui\components\deep_historical_data_card.py
+====================================================================================================
+"""
+FULL PATH: ui/components/deep_historical_data_card.py   <-- SAVE HERE, EXACT PATH
+
+Settings card: numeric day-count input, with clear labels for the real
+discovered ceiling and what is already downloaded, so the user can make
+an informed choice.
+"""
+from __future__ import annotations
+import reflex as rx
+from state.app_state import AppState
+from ui.theme.glass import GLASS_CARD_STYLE
+
+_TIMEFRAME_OPTIONS = ["1m", "5m", "15m"]
+
+
+def deep_historical_data_card() -> rx.Component:
+    return rx.vstack(
+        rx.text("Deep Historical Data", font_weight="700", font_size="1.1rem", color="var(--qt19-text-primary)"),
+        rx.text(
+            "Downloads extra candle history beyond the always-on 5-day baseline, "
+            "purely to build a local archive for future ML/RL training. Never competes "
+            "with live trading for API priority.",
+            font_size="0.8rem", color="var(--qt19-text-muted)",
+        ),
+
+        rx.hstack(
+            rx.text("Symbol:", font_size="0.85rem", color="var(--qt19-text-primary)"),
+            rx.input(
+                value=AppState.deep_history_symbol,
+                on_change=AppState.set_deep_history_symbol,
+                width="160px", border_radius="0.75rem",
+            ),
+            rx.text("Timeframe:", font_size="0.85rem", color="var(--qt19-text-primary)"),
+            rx.select(
+                _TIMEFRAME_OPTIONS,
+                value=AppState.deep_history_timeframe,
+                on_change=AppState.set_deep_history_timeframe,
+                width="100px",
+            ),
+            spacing="3", align_items="center",
+        ),
+
+        rx.hstack(
+            rx.vstack(
+                rx.text("Real ceiling (actual max CoinDCX offers)", font_size="0.75rem", color="var(--qt19-text-muted)"),
+                rx.text(AppState.deep_history_ceiling_days, font_weight="700", font_size="1rem", color="var(--qt19-accent)"),
+                spacing="1", align_items="start",
+            ),
+            rx.vstack(
+                rx.text("Already downloaded & saved", font_size="0.75rem", color="var(--qt19-text-muted)"),
+                rx.text(f"{AppState.deep_history_covered_days} days", font_weight="700", font_size="1rem", color="var(--qt19-text-primary)"),
+                spacing="1", align_items="start",
+            ),
+            rx.button(
+                "Check Real Ceiling", on_click=AppState.check_deep_history_ceiling,
+                size="2", variant="outline", border_radius="9999px",
+            ),
+            spacing="6", align_items="start", margin_top="0.5rem",
+        ),
+
+        rx.hstack(
+            rx.text("Download this many extra days:", font_size="0.85rem", color="var(--qt19-text-primary)"),
+            rx.input(
+                placeholder="e.g. 365 (blank = download all, up to the real ceiling)",
+                value=AppState.deep_history_target_days,
+                on_change=AppState.set_deep_history_target_days,
+                width="320px", border_radius="0.75rem", type="number",
+            ),
+            spacing="3", align_items="center", margin_top="0.5rem",
+        ),
+
+        rx.hstack(
+            rx.button(
+                rx.cond(AppState.deep_history_is_downloading, "Downloading...", "Start Download"),
+                on_click=AppState.start_deep_history_download,
+                disabled=AppState.deep_history_is_downloading,
+                border_radius="9999px", style={"background": "var(--qt19-accent)", "color": "white"},
+            ),
+            rx.button(
+                "Cancel", on_click=AppState.cancel_deep_history_download,
+                disabled=~AppState.deep_history_is_downloading,
+                variant="outline", border_radius="9999px",
+            ),
+            rx.button(
+                "Delete Downloaded Data", on_click=AppState.delete_deep_history_data,
+                variant="outline", color_scheme="red", border_radius="9999px",
+            ),
+            spacing="3", margin_top="0.75rem",
+        ),
+
+        rx.text(AppState.deep_history_status_message, font_size="0.78rem", color="var(--qt19-text-muted)", margin_top="0.3rem"),
+
+        style=GLASS_CARD_STYLE, width="100%", spacing="3", padding="1.25rem",
+    )
+
+====================================================================================================
+END FILE: ui\components\deep_historical_data_card.py
+
+====================================================================================================
+BEGIN FILE: engines\workers\market_data\deep_history_downloader_worker.py
+====================================================================================================
+"""
+FULL PATH: engines/workers/market_data/deep_history_downloader_worker.py (REPLACE ENTIRE FILE)
+
+REWRITTEN to use your EXISTING HistoryManifestWorker API (get_covered_ranges,
+mark_covered, find_gaps, coverage_percent, delete_symbol_manifest) instead of
+methods that don't exist on your real manifest file.
+
+"True earliest reached" is now inferred, not separately tracked: when the API
+returns an empty page, we mark_covered(symbol, tf, EARLY_START_MS, cursor_end)
+-- i.e. "nothing exists before this point" becomes part of the covered range
+itself. That merges with real data ranges automatically (your manifest's own
+merge logic), so a fully-covered range starting at/near EARLY_START_MS IS the
+signal that the true earliest has been reached -- no extra flag needed.
+"""
+from __future__ import annotations
+
+import threading
+import time
+from typing import Callable, Optional
+
+import requests
+
+from engines.workers.market_data.candle_builder_worker import Candle
+from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
+
+CANDLES_URL = "https://public.coindcx.com/market_data/candles/"
+MAX_LIMIT_PER_CALL = 1000
+CHUNK_PACING_S = 0.35
+_TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000}
+EARLY_START_MS = 1420070400000  # 2015-01-01 UTC, our "search floor"
+
+
+def covered_days(manifest: HistoryManifestWorker, symbol: str, timeframe: str) -> float:
+    ranges = manifest.get_covered_ranges(symbol, timeframe)
+    total_ms = sum(end - start for start, end in ranges)
+    return round(total_ms / (1000 * 60 * 60 * 24), 1)
+
+
+def is_fully_downloaded(manifest: HistoryManifestWorker, symbol: str, timeframe: str) -> bool:
+    ranges = manifest.get_covered_ranges(symbol, timeframe)
+    return any(start <= EARLY_START_MS + 1 for start, _ in ranges)
+
+
+def earliest_covered_ms(manifest: HistoryManifestWorker, symbol: str, timeframe: str) -> Optional[int]:
+    ranges = manifest.get_covered_ranges(symbol, timeframe)
+    if not ranges:
+        return None
+    return min(start for start, _ in ranges)
+
+
+class DeepHistoryDownloaderWorker:
+    def __init__(self, manifest: HistoryManifestWorker, http_get=None,
+                 on_chunk: Optional[Callable[[str, str, list], None]] = None,
+                 on_progress: Optional[Callable[[str, str, dict], None]] = None) -> None:
+        self._manifest = manifest
+        self._http_get = http_get or requests.get
+        self._on_chunk = on_chunk
+        self._on_progress = on_progress
+        self._active: dict[tuple, threading.Event] = {}
+        self._lock = threading.RLock()
+
+    def start_download(self, symbol: str, timeframe: str, target_days: Optional[int] = None) -> None:
+        key = (symbol, timeframe)
+        with self._lock:
+            if key in self._active:
+                return
+            stop_event = threading.Event()
+            self._active[key] = stop_event
+        t = threading.Thread(target=self._download_loop, args=(symbol, timeframe, target_days, stop_event), daemon=True)
+        t.start()
+
+    def cancel_download(self, symbol: str, timeframe: str) -> None:
+        with self._lock:
+            stop_event = self._active.pop((symbol, timeframe), None)
+            if stop_event:
+                stop_event.set()
+
+    def is_downloading(self, symbol: str, timeframe: str) -> bool:
+        with self._lock:
+            return (symbol, timeframe) in self._active
+
+    def _download_loop(self, symbol: str, timeframe: str, target_days: Optional[int], stop_event: threading.Event) -> None:
+        try:
+            earliest = earliest_covered_ms(self._manifest, symbol, timeframe)
+            cursor_end = (earliest - 1) if earliest else int(time.time() * 1000)
+
+            while not stop_event.is_set():
+                if is_fully_downloaded(self._manifest, symbol, timeframe):
+                    break
+                if target_days is not None and covered_days(self._manifest, symbol, timeframe) >= target_days:
+                    break
+
+                resp = self._http_get(CANDLES_URL, params={
+                    "pair": symbol, "interval": timeframe,
+                    "startTime": EARLY_START_MS, "endTime": cursor_end,
+                    "limit": MAX_LIMIT_PER_CALL,
+                }, timeout=10)
+                resp.raise_for_status()
+                rows = resp.json() or []
+
+                if not rows:
+                    self._manifest.mark_covered(symbol, timeframe, EARLY_START_MS, cursor_end)
+                    break
+
+                candles = [Candle(
+                    symbol=symbol, timeframe=timeframe,
+                    open_time=int(r["time"]), close_time=int(r["time"]) + _TF_MS[timeframe] - 1,
+                    open=float(r["open"]), high=float(r["high"]), low=float(r["low"]),
+                    close=float(r["close"]), volume=float(r.get("volume", 0.0) or 0.0), is_closed=True,
+                ) for r in rows]
+
+                batch_oldest = min(c.open_time for c in candles)
+                batch_newest = max(c.open_time for c in candles)
+                self._manifest.mark_covered(symbol, timeframe, batch_oldest, batch_newest)
+
+                if self._on_chunk:
+                    self._on_chunk(symbol, timeframe, candles)
+                if self._on_progress:
+                    self._on_progress(symbol, timeframe, {
+                        "covered_days": covered_days(self._manifest, symbol, timeframe),
+                        "is_complete": is_fully_downloaded(self._manifest, symbol, timeframe),
+                    })
+
+                if batch_oldest >= cursor_end:
+                    break
+                cursor_end = batch_oldest - 1
+                time.sleep(CHUNK_PACING_S)
+        finally:
+            with self._lock:
+                self._active.pop((symbol, timeframe), None)
+
+====================================================================================================
+END FILE: engines\workers\market_data\deep_history_downloader_worker.py
+
+====================================================================================================
+BEGIN FILE: engines\workers\market_data\history_manifest_worker.py
+====================================================================================================
+"""History_Manifest_Worker: tracks exactly which date ranges are already downloaded, per symbol per timeframe.
+Drives Deep_History_Downloader_Worker's skip-logic and the Settings-card progress bars.
+"""
+from __future__ import annotations
+import json
+import threading
+from pathlib import Path
+from typing import List, Tuple
+
+_MANIFEST_DIR = Path("data") / "historical" / "manifests"
+
+
+class HistoryManifestWorker:
+    def __init__(self, manifest_dir: Path = _MANIFEST_DIR) -> None:
+        self._dir = manifest_dir
+        self._lock = threading.Lock()
+        self._dir.mkdir(parents=True, exist_ok=True)
+
+    def _path_for(self, symbol: str) -> Path:
+        return self._dir / f"{symbol}.json"
+
+    def _load(self, symbol: str) -> dict:
+        path = self._path_for(symbol)
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text())
+        except json.JSONDecodeError:
+            return {}
+
+    def _save(self, symbol: str, data: dict) -> None:
+        self._path_for(symbol).write_text(json.dumps(data, indent=2))
+
+    def get_covered_ranges(self, symbol: str, timeframe: str) -> List[Tuple[int, int]]:
+        with self._lock:
+            data = self._load(symbol)
+            return [tuple(r) for r in data.get(timeframe, [])]
+
+    def mark_covered(self, symbol: str, timeframe: str, start_ms: int, end_ms: int) -> None:
+        with self._lock:
+            data = self._load(symbol)
+            ranges = data.setdefault(timeframe, [])
+            ranges.append([start_ms, end_ms])
+            ranges.sort(key=lambda r: r[0])
+            merged: List[list] = []
+            for r in ranges:
+                if merged and r[0] <= merged[-1][1]:
+                    merged[-1][1] = max(merged[-1][1], r[1])
+                else:
+                    merged.append(list(r))
+            data[timeframe] = merged
+            self._save(symbol, data)
+
+    def find_gaps(self, symbol: str, timeframe: str, full_start_ms: int, full_end_ms: int) -> List[Tuple[int, int]]:
+        covered = self.get_covered_ranges(symbol, timeframe)
+        gaps: List[Tuple[int, int]] = []
+        cursor = full_start_ms
+        for start, end in covered:
+            if end <= cursor:
+                continue
+            if start > cursor:
+                gaps.append((cursor, min(start, full_end_ms)))
+            cursor = max(cursor, end)
+            if cursor >= full_end_ms:
+                break
+        if cursor < full_end_ms:
+            gaps.append((cursor, full_end_ms))
+        return [g for g in gaps if g[0] < g[1]]
+
+    def coverage_percent(self, symbol: str, timeframe: str, full_start_ms: int, full_end_ms: int) -> float:
+        total_span = full_end_ms - full_start_ms
+        if total_span <= 0:
+            return 100.0
+        gap_span = sum(end - start for start, end in self.find_gaps(symbol, timeframe, full_start_ms, full_end_ms))
+        return round(max(0.0, min(100.0, (1 - gap_span / total_span) * 100)), 2)
+
+    def delete_symbol_manifest(self, symbol: str) -> None:
+        path = self._path_for(symbol)
+        with self._lock:
+            if path.exists():
+                path.unlink()
+
+====================================================================================================
+END FILE: engines\workers\market_data\history_manifest_worker.py
