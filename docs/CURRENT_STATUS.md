@@ -2,7 +2,7 @@
 
 **This file is overwritten in place after every meaningful change. It is the single source of truth for "what's done, what's not, what's next." Do not scroll old threads looking for status — read this file.**
 
-**Last updated:** August 21, 2026
+**Last updated:** August 30, 2026
 
 ---
 
@@ -17,9 +17,14 @@
 
 ## What Just Finished
 
-A single import-casing typo in a File 03.1 test file blocked `pytest` from even collecting. Fixing it unblocked collection and surfaced 14 further pre-existing failures across File 01 and File 02, hidden behind that one error the whole time. All 10 resulting issues (see `docs/KNOWN_ISSUES.md`, all now CLOSED) were investigated and fixed one at a time — 8 were stale tests written against abandoned/superseded designs (fixed test-side only, zero production risk), and 2 were genuine small production gaps (SymbolRegistryWorker's manual-add deep-history path, and a `force_memory` test-isolation gap in `SettingsPersistenceWorker`), both closed as pure, backward-compatible additions. Full account in `docs/build_log/v0.2.1_MarketDataMonitor_ImportFix_Summary.md`.
+The v0.4.8 Trading Panel Data Integrity patch is complete and validated.
 
-One deliberate non-action: a recovery-code-at-registration feature implied by two stale tests was NOT built — see `docs/DECISIONS.md` DEC-005 for why.
+- SQLite is the only source of truth for local historical coverage.
+- Broker depth probes remain separate and never mutate local manifests or SQLite.
+- The Trading Panel render guard preserves the user’s requested display-days setting while falling back to a safe render window when needed.
+- The existing market-data regression suite passed under the project venv with the expected interpreter path.
+
+This phase also locked the market-data integrity fix without modifying the protected File 03 POI/FVG/Order Block logic.
 
 ## Runtime/Environment Status
 
@@ -29,21 +34,20 @@ One deliberate non-action: a recovery-code-at-registration feature implied by tw
 
 ## Immediate Next Step
 
-Begin **File 03.1 Batch 3** — finish Scope A:
-1. Extend the zone source-timeframe matrix to Resistance Flip and Support Flip, matching the FVG/Order Block/Inverse FVG pattern already built.
-2. Wire `POIMonitor` to actually read, apply, and persist `display_enabled`/`strategy_enabled` and the zone source-TF matrix — retire the legacy direct-worker fallback path once verified equivalent for all previously-passing behavior.
-3. Re-run the full regression (now genuinely trustworthy) and confirm everything stays green.
-4. Lock Scope A as complete once all checks pass.
+Start the dedicated next patch: **buffered/infinite local chart history**.
+
+1. Add a safe recent-window chart page for the Trading Panel.
+2. Preload a limited recent candle range and keep a visible buffer around the current viewport.
+3. Load older SQLite pages only when the user pans toward the left edge.
+4. Preserve live `chart.updateData(bar)` behavior, zoom state, and render safety caps.
+5. Keep all older-page reads strictly local to SQLite; do not trigger broker calls while panning.
 
 ## Agreed Step Order After That
 
-5. Scope E — POI Engine & Chart Visibility Settings card.
-6. Scope F — Deep Historical Data Settings card upgrade.
-7. Scope B — Trading Panel chart foundation.
-8. Scope C — POI chart overlays.
-9. Scope D — Persistent drawing workspace, undo/redo.
-10. Scope G — Motion/animation polish.
-11. Final File 03.1 lock → build-log summaries → proceed to File 04.
+1. Finish the buffered/infinite local chart-history patch.
+2. Re-run the project regression suite.
+3. Lock the new patch once its validation passes.
+4. Continue to the next File 03.1 or File 04 work item only after the chart-history patch is green.
 
 ## Working Style Reminders (Unchanged)
 

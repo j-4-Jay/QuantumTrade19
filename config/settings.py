@@ -1,21 +1,29 @@
-"""Module 01 - UI/UX & App Shell. Global static config.
+"""Global runtime configuration for QuantumTrade19.
 
-PATH: config/settings.py  (REPLACE ENTIRE FILE)
-
-CHANGE (v0.3.7): added Lime Green Day/Night as a 4th theme hue (8 total
-themes now). Existing Yellow/Saffron/Blue themes are untouched.
+This file keeps the app-scoped defaults and the v0.4.8 Trading Panel render safety
+constants in one place. These values are intentionally named rather than buried as
+magic numbers so the persisted requested-day value and the browser render guard can
+remain stable across reloads.
 """
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Literal
 
 APP_NAME: str = "QuantumTrade19"
 APP_SUBHEADING: str = "by Jayprakash Pattnaik"
 APP_TAGLINE: str = "Precision. Quantum. Profits."
-APP_VERSION: str = "v0.1.0-alpha"
+APP_VERSION: str = "v0.4.8"
 SIDEBAR_TABS: list[str] = ["Dashboard", "Trading Panel", "Journal & Reports", "Alerts", "Settings"]
 SPLASH_DURATION_SECONDS: float = 5.0
 SPLASH_HOLD_SECONDS: float = 2.0
+
+# v0.4.8 data-integrity safety guard values.
+TRADING_PANEL_RENDER_SAFE_DAYS: int = 5
+TRADING_PANEL_OLDER_BUFFER_DAYS: int = 2
+TRADING_PANEL_MAX_RENDER_CANDLES: int = 8000
+TRADING_PANEL_MIN_DISPLAY_DAYS: int = 1
+TRADING_PANEL_DEFAULT_DISPLAY_DAYS: int = 5
 
 ThemeHue = Literal["yellow", "saffron", "blue", "lime"]
 ThemeMode = Literal["day", "night"]

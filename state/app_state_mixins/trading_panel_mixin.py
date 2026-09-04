@@ -1,38 +1,45 @@
 """Executable AppState mixin: Trading Panel chart state and methods (react-klinecharts).
 
-PATH: state/app_state_mixins/trading_panel_mixin.py  (REPLACE ENTIRE FILE)
+TARGET PATH: D:\QuantumTrade19\state\app_state_mixins\trading_panel_mixin.py
+REPLACE THE ENTIRE FILE.
 
-CHANGE (v0.3.9.1 - fix blank chart despite loaded candles): added
-_normalize_timestamp_ms(). react-klinecharts requires `timestamp` in
-MILLISECONDS since epoch. Diagnostic evidence (7214 candles loaded for 1m,
-481 for 15m, both reporting real local coverage, yet a completely blank
-chart) matches exactly what happens when Candle.open_time is actually in
-SECONDS: all candles would map to dates around January 1970, technically
-"loaded" but nowhere near the chart's default (near-real-time) view.
+FIX v0.4.62 - every poll tick now calls window.QT19_ensureLiveCallback
+(installed by kline_chart.py) BEFORE attempting to use the live push
+callback - self-heals the registration if React StrictMode's remount
+cycle ever leaves it empty (confirmed via console: the final mounted
+chart instance's own cleanup fired with no later re-subscribe,
+permanently emptying the registry). See kline_chart.py's v0.4.62
+docstring for the full explanation.
 
-This guard checks the digit magnitude (seconds-epoch "now" is ~10 digits /
-~1.7e9; milliseconds-epoch "now" is ~13 digits / ~1.7e12) and multiplies by
-1000 ONLY when the value looks like seconds - so this is safe regardless of
-which unit Candle.open_time actually turns out to use.
+FIX v0.4.60 (carried forward) - throttled success/failure console logging
+on the push side (first 5 calls only).
 
-Everything else (per-symbol Display Days, auto-backfill-on-demand,
-once-per-day coverage caching, no-jump/Follow-Live/Reset View/Go Live
-logic, Enter-to-commit Display Days, and the theme-aware solid right-click
-menu style) is unchanged from v0.3.9.
+FIX v0.4.59 (carried forward) - trading_panel_data_version, incremented
+only inside refresh_trading_panel_chart() (a genuine full reload), never
+inside build_live_ohlc_update() (the 0.5s poll).
+
+FIX v0.4.54 (carried forward) - klinecharts v10.0.2 removed updateData()/
+applyNewData(); live ticks go through the callback stored in
+window.QT19_LIVE_CALLBACKS via subscribeBar().
 """
 from __future__ import annotations
 
 import asyncio
 import datetime
+import json
+import time
+
 import reflex as rx
 
 from state.app_state_mixins.shared import (
-    _engine,
+    engine,
     TRADING_PANEL_CHART_ID,
     TRADING_PANEL_PERIOD_MAP,
     TRADING_PANEL_TF_OPTIONS,
     TRADING_PANEL_DAY_PRESETS,
 )
+
+_TF_DURATION_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000}
 
 
 def _today_str() -> str:
@@ -40,89 +47,101 @@ def _today_str() -> str:
 
 
 def _normalize_timestamp_ms(value) -> int:
-    """Converts a candle's open_time to milliseconds if it looks like a
-    seconds-based epoch timestamp (10 digits, ~1.7e9 right now). Leaves it
-    untouched if it already looks like milliseconds (13 digits, ~1.7e12)."""
     numeric = int(value)
     if numeric < 10_000_000_000:
         return numeric * 1000
     return numeric
 
 
+def _format_eta(seconds) -> str:
+    if seconds is None:
+        return ""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"~{seconds}s remaining"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"~{minutes}m remaining"
+    hours = minutes // 60
+    return f"~{hours}h {minutes % 60}m remaining"
+
+
 class TradingPanelMixin(rx.State, mixin=True):
+
     def _symbol_display_days_key(self, symbol: str) -> str:
-        return f"chart_display_days::{symbol}"
+        return f"chart_display_days_{symbol}"
 
     def _coverage_cache_key(self, symbol: str, tf: str) -> str:
-        return f"chart_coverage_cache::{symbol}::{tf}"
+        return f"chart_coverage_cache_{symbol}_{tf}"
 
-    def _load_trading_panel_display_days(self) -> None:
-        saved = _engine.security.persistence.load().get(
-            self._symbol_display_days_key(self.trading_panel_symbol)
-        )
+    def load_trading_panel_display_days(self) -> None:
+        saved = engine.security.persistence.load().get(self._symbol_display_days_key(self.trading_panel_symbol))
         value = str(saved) if saved else "5"
         self.trading_panel_display_days_input = value
         self.trading_panel_display_days_draft = value
 
-    def _get_coverage(self, symbol: str, tf: str, force: bool = False) -> tuple[int, str]:
-        """Returns (local_days, broker_days_label). Uses a once-per-calendar-
-        day cache unless force=True (used right after triggering a backfill,
-        and on every poll tick while a backfill for this symbol+tf is
-        pending)."""
-        settings = _engine.security.persistence.load()
+    def _update_tf_progress(self, symbol: str, tf: str) -> dict:
+        progress = engine.market_data.get_deep_history_progress(symbol, tf)
+        entry = {
+            "percent": int(progress.get("percent", 0)),
+            "state": progress.get("state", "idle"),
+            "eta_seconds": progress.get("eta_seconds"),
+            "present_candles": int(progress.get("present_candles", 0)),
+            "required_candles": int(progress.get("required_candles", 0)),
+            "missing_candles": int(progress.get("missing_candles", 0)),
+            "broker_ceiling_reached": bool(progress.get("broker_ceiling_reached", False)),
+            "error": progress.get("error"),
+        }
+        current = dict(self.trading_panel_tf_progress)
+        current[tf] = entry
+        self.trading_panel_tf_progress = current
+        return progress
+
+    def get_coverage(self, symbol: str, tf: str, force: bool = False) -> tuple[int, str]:
+        progress = self._update_tf_progress(symbol, tf)
+
+        settings = engine.security.persistence.load()
         cache_key = self._coverage_cache_key(symbol, tf)
         cached = settings.get(cache_key)
-
         if not force and cached and cached.get("date") == _today_str():
             return int(cached.get("local_days", 0)), str(cached.get("broker_days", "Not checked yet"))
 
-        progress = _engine.market_data.get_deep_history_progress(symbol, tf)
-        local_days = int(progress["covered_days"])
-        ceiling = _engine.market_data.get_ceiling_days(symbol, tf)
+        local_days = int(progress.get("covered_days", 0))
+        ceiling = engine.market_data.get_ceiling_days(symbol, tf)
         broker_label = f"{ceiling} days" if ceiling is not None else "Not checked yet"
-
-        _engine.security.persistence.save({
-            cache_key: {"date": _today_str(), "local_days": local_days, "broker_days": broker_label}
-        })
+        engine.security.persistence.save(
+            {cache_key: {"date": _today_str(), "local_days": local_days, "broker_days": broker_label}}
+        )
         return local_days, broker_label
 
     def _set_coverage_pending(self, symbol: str, tf: str, pending: bool) -> None:
-        _engine.security.persistence.save({f"chart_coverage_pending::{symbol}::{tf}": pending})
+        engine.security.persistence.save({f"chart_coverage_pending_{symbol}_{tf}": pending})
 
     def _is_coverage_pending(self, symbol: str, tf: str) -> bool:
-        return bool(_engine.security.persistence.load().get(f"chart_coverage_pending::{symbol}::{tf}", False))
+        return bool(engine.security.persistence.load().get(f"chart_coverage_pending_{symbol}_{tf}", False))
 
     def set_trading_panel_symbol(self, value: str) -> None:
         self.trading_panel_symbol = value
-        self._load_trading_panel_display_days()
+        engine.security.persistence.save({"trading_panel_symbol": value})
+        self.load_trading_panel_display_days()
         self.refresh_trading_panel_chart()
 
     def set_trading_panel_chart_tf(self, value: str) -> None:
         self.trading_panel_chart_tf = value
+        engine.security.persistence.save({"trading_panel_chart_tf": value})
         self.refresh_trading_panel_chart()
 
     def set_trading_panel_display_days_draft(self, value: str) -> None:
-        """Updates on every keystroke. Never persisted, never reloads the
-        chart - purely lets the user type freely without the server
-        overwriting what they're typing."""
         self.trading_panel_display_days_draft = value
 
     def handle_display_days_keydown(self, key: str) -> None:
-        """Pressing Enter commits immediately - no Apply button needed."""
         if key == "Enter":
             self.commit_trading_panel_display_days()
 
     def commit_trading_panel_display_days(self) -> None:
-        """Call this on blur or Enter. Validates, persists, and triggers the
-        actual full candle reload."""
         self.set_trading_panel_display_days(self.trading_panel_display_days_draft)
 
     def set_trading_panel_display_days(self, value: str) -> None:
-        """Applies to ALL THREE timeframes of the current symbol. For each
-        timeframe, if local coverage is already >= the requested days, only
-        the rendering changes (no broker call). If local coverage is short,
-        this triggers an automatic backfill for that specific timeframe -
-        a direct, visible response to this explicit user action."""
         self.trading_panel_display_days_input = value
         self.trading_panel_display_days_draft = value
         try:
@@ -135,14 +154,12 @@ class TradingPanelMixin(rx.State, mixin=True):
             return
 
         symbol = self.trading_panel_symbol
-        _engine.security.persistence.save({
-            self._symbol_display_days_key(symbol): requested_days
-        })
+        engine.security.persistence.save({self._symbol_display_days_key(symbol): requested_days})
 
         for tf in TRADING_PANEL_TF_OPTIONS:
-            local_days, _ = self._get_coverage(symbol, tf, force=True)
+            local_days, _ = self.get_coverage(symbol, tf, force=True)
             if local_days < requested_days:
-                _engine.market_data.start_deep_history(symbol, tf, requested_days)
+                engine.market_data.start_deep_history(symbol, tf, requested_days)
                 self._set_coverage_pending(symbol, tf, True)
             else:
                 self._set_coverage_pending(symbol, tf, False)
@@ -150,56 +167,34 @@ class TradingPanelMixin(rx.State, mixin=True):
         self.refresh_trading_panel_chart()
 
     def set_trading_panel_chart_theme(self, value: str) -> None:
-        """Chart-local only - never touches the app-wide theme_key."""
         self.trading_panel_chart_theme = value
-        _engine.security.persistence.save({"trading_panel_chart_theme": value})
+        engine.security.persistence.save({"trading_panel_chart_theme": value})
 
     def toggle_trading_panel_grid(self) -> None:
-        """Grid default is OFF (best for viewing POI lines/zones cleanly).
-        This is a real reactive style change via trading_panel_styles -
-        no JS call needed."""
         self.trading_panel_grid_enabled = not self.trading_panel_grid_enabled
-        _engine.security.persistence.save({"trading_panel_grid_enabled": self.trading_panel_grid_enabled})
+        engine.security.persistence.save({"trading_panel_grid_enabled": self.trading_panel_grid_enabled})
 
     def toggle_trading_panel_follow_live(self) -> None:
         self.trading_panel_follow_live = not self.trading_panel_follow_live
-        _engine.security.persistence.save({"trading_panel_follow_live": self.trading_panel_follow_live})
+        engine.security.persistence.save({"trading_panel_follow_live": self.trading_panel_follow_live})
 
     def reset_trading_panel_view(self):
-        """Resets only zoom/bar-spacing (X-axis scale). klinecharts
-        auto-scales the Y axis to the visible data already, so this alone
-        gives a clean 'reset zoom' without moving the chart to the live
-        candle. Also triggered by double-clicking anywhere inside the
-        chart (see ui/pages/trading_panel.py)."""
         return rx.call_script(
-            f"""
-            (function() {{
-                var chart = window.QT19_CHARTS && window.QT19_CHARTS["{TRADING_PANEL_CHART_ID}"];
-                if (chart && typeof chart.setBarSpace === "function") {{
-                    chart.setBarSpace(6);
-                }}
-            }})();
-            """
+            f"""(function() {{
+                var chart = window.QT19_CHARTS && window.QT19_CHARTS['{TRADING_PANEL_CHART_ID}'];
+                if (chart && typeof chart.setBarSpace === 'function') chart.setBarSpace(6);
+            }})()"""
         )
 
     def go_live_trading_panel(self):
-        """Immediate jump to the newest candle - the ONLY control that
-        deliberately moves the viewport on demand."""
         return rx.call_script(
-            f"""
-            (function() {{
-                var chart = window.QT19_CHARTS && window.QT19_CHARTS["{TRADING_PANEL_CHART_ID}"];
-                if (chart && typeof chart.scrollToRealTime === "function") {{
-                    chart.scrollToRealTime();
-                }}
-            }})();
-            """
+            f"""(function() {{
+                var chart = window.QT19_CHARTS && window.QT19_CHARTS['{TRADING_PANEL_CHART_ID}'];
+                if (chart && typeof chart.scrollToRealTime === 'function') chart.scrollToRealTime();
+            }})()"""
         )
 
     def open_trading_panel_menu(self, x: int, y: int) -> None:
-        """Opens the custom right-click chart menu at the exact click
-        position. Called by the real on_context_menu event trigger declared
-        on ui/components/kline_chart.py's KLineChart component."""
         self.trading_panel_menu_x = int(x)
         self.trading_panel_menu_y = int(y)
         self.trading_panel_menu_open = True
@@ -208,19 +203,15 @@ class TradingPanelMixin(rx.State, mixin=True):
         self.trading_panel_menu_open = False
 
     def refresh_trading_panel_chart(self) -> None:
-        """Full reload: rebuilds the entire candle array. Call this ONLY on
-        Trading Panel open, symbol change, timeframe change, or Display Last
-        X Days change. Never call this from the 3-second polling loop."""
         symbol = self.trading_panel_symbol
         tf = self.trading_panel_chart_tf
-
         try:
             requested_days = int(self.trading_panel_display_days_input)
         except ValueError:
             requested_days = 5
 
         force = self._is_coverage_pending(symbol, tf)
-        local_days, broker_label = self._get_coverage(symbol, tf, force=force)
+        local_days, broker_label = self.get_coverage(symbol, tf, force=force)
         self.trading_panel_local_days = str(local_days)
         self.trading_panel_broker_days = broker_label
 
@@ -229,60 +220,42 @@ class TradingPanelMixin(rx.State, mixin=True):
 
         effective_days = min(requested_days, local_days) if local_days else requested_days
         if local_days and requested_days > local_days:
-            self.trading_panel_notice = f"{requested_days} days requested \u2022 {local_days} days available locally \u2022 downloading the rest\u2026"
+            self.trading_panel_notice = (
+                f"{requested_days} days requested \u2014 {local_days} days available locally \u2014 downloading the rest\u2026"
+            )
         elif not local_days:
-            self.trading_panel_notice = "No local historical coverage yet for this symbol/timeframe \u2022 downloading\u2026"
+            self.trading_panel_notice = "No local historical coverage yet for this symbol/timeframe \u2014 downloading\u2026"
         else:
             self.trading_panel_notice = ""
 
-        candles = _engine.market_data.get_chart_candles(symbol, tf, effective_days)
-
-        # ASSUMPTION CONFIRMED (v0.3.9.1): Candle fields are open/high/low/close/open_time.
-        # Volume is NOT confirmed available on Candle - defaulted to 0.0 here.
-        # open_time is normalized to milliseconds via _normalize_timestamp_ms() -
-        # this is the fix for the "candles loaded but chart blank" bug.
+        candles = engine.market_data.get_chart_candles(symbol, tf, effective_days)
         rows = [
             {
                 "timestamp": _normalize_timestamp_ms(c.open_time),
-                "open": float(c.open),
-                "high": float(c.high),
-                "low": float(c.low),
-                "close": float(c.close),
+                "open": float(c.open), "high": float(c.high),
+                "low": float(c.low), "close": float(c.close),
                 "volume": float(c.volume),
             }
             for c in candles
         ]
-
         self.trading_panel_candles = rows
+        self.trading_panel_data_version += 1
 
         current = candles[-1] if candles else None
         if current:
-            self.trading_panel_current_open = f"{current.open:,.2f}"
-            self.trading_panel_current_high = f"{current.high:,.2f}"
-            self.trading_panel_current_low = f"{current.low:,.2f}"
-            self.trading_panel_current_close = f"{current.close:,.2f}"
-            self._trading_panel_last_candle_ts = float(current.open_time)
+            self.trading_panel_current_open = f"{current.open:.2f}"
+            self.trading_panel_current_high = f"{current.high:.2f}"
+            self.trading_panel_current_low = f"{current.low:.2f}"
+            self.trading_panel_current_close = f"{current.close:.2f}"
+            self.trading_panel_last_candle_ts = float(_normalize_timestamp_ms(current.open_time))
         else:
-            self.trading_panel_current_open = self.trading_panel_current_high = \
-                self.trading_panel_current_low = self.trading_panel_current_close = "--"
-            self._trading_panel_last_candle_ts = 0.0
+            self.trading_panel_current_open = "--"
+            self.trading_panel_current_high = "--"
+            self.trading_panel_current_low = "--"
+            self.trading_panel_current_close = "--"
+            self.trading_panel_last_candle_ts = 0.0
 
-    def refresh_trading_panel_ohlc_only(self) -> bool:
-        """OHLC-only refresh: updates ONLY the displayed Open/High/Low/Close
-        text values from the current live candle. NEVER rebuilds or replaces
-        trading_panel_candles - this is what keeps the chart's scroll/
-        viewport position stable while the user studies historical price
-        action.
-
-        Also re-checks pending coverage (only if a backfill is marked
-        pending for the current symbol+timeframe) so Local/Broker day
-        counts refresh promptly once the backfill catches up, without
-        waiting for the next calendar day.
-
-        Returns True if the current candle's timestamp changed since the
-        last check (i.e. the previous candle just closed and a new one
-        started), so the caller can decide whether to snap to live under
-        Follow Live."""
+    def build_live_ohlc_update(self):
         symbol = self.trading_panel_symbol
         tf = self.trading_panel_chart_tf
 
@@ -291,77 +264,155 @@ class TradingPanelMixin(rx.State, mixin=True):
                 requested_days = int(self.trading_panel_display_days_input)
             except ValueError:
                 requested_days = 5
-            local_days, broker_label = self._get_coverage(symbol, tf, force=True)
+            local_days, broker_label = self.get_coverage(symbol, tf, force=True)
             self.trading_panel_local_days = str(local_days)
             self.trading_panel_broker_days = broker_label
             if local_days >= requested_days:
                 self._set_coverage_pending(symbol, tf, False)
                 self.trading_panel_notice = ""
+                self.refresh_trading_panel_chart()
+        else:
+            self._update_tf_progress(symbol, tf)
 
-        live = _engine.market_data.get_live_candle(symbol, tf)
+        live = engine.market_data.get_live_candle(symbol, tf)
         if not live:
-            return False
+            return None, False
 
-        self.trading_panel_current_open = f"{live.open:,.2f}"
-        self.trading_panel_current_high = f"{live.high:,.2f}"
-        self.trading_panel_current_low = f"{live.low:,.2f}"
-        self.trading_panel_current_close = f"{live.close:,.2f}"
+        self.trading_panel_current_open = f"{live.open:.2f}"
+        self.trading_panel_current_high = f"{live.high:.2f}"
+        self.trading_panel_current_low = f"{live.low:.2f}"
+        self.trading_panel_current_close = f"{live.close:.2f}"
 
+        live_ts = _normalize_timestamp_ms(live.open_time)
+        live_row = {
+            "timestamp": live_ts, "open": float(live.open), "high": float(live.high),
+            "low": float(live.low), "close": float(live.close),
+            "volume": float(getattr(live, "volume", 0.0) or 0.0),
+        }
         candle_closed = (
-            self._trading_panel_last_candle_ts != 0.0
-            and float(live.open_time) != self._trading_panel_last_candle_ts
+            self.trading_panel_last_candle_ts != 0.0
+            and float(live_ts) != self.trading_panel_last_candle_ts
         )
-        self._trading_panel_last_candle_ts = float(live.open_time)
-        return candle_closed
+        self.trading_panel_last_candle_ts = float(live_ts)
+        return live_row, candle_closed
 
     @rx.event(background=True)
     async def poll_trading_panel_chart(self):
-        """Same guarded-loop pattern as poll_ws_status/poll_pinned_prices.
-        Calls refresh_trading_panel_ohlc_only() - updates OHLC display
-        values (and, if pending, coverage numbers) only, never replaces the
-        full candle array. If Follow Live is ON and a candle just closed,
-        yields a script that snaps the real chart to the live candle. If
-        Follow Live is OFF, the viewport is never touched, no matter how
-        many candles close.
-        KNOWN SIMPLIFICATION: does not stop when the user leaves the Trading
-        Panel tab - deliberately deferred, not an oversight."""
         async with self:
-            if self._trading_panel_poll_running:
+            if self.trading_panel_poll_running:
                 return
-            self._trading_panel_poll_running = True
+            self.trading_panel_poll_running = True
         try:
             while True:
+                live_row = None
                 should_snap = False
                 async with self:
-                    candle_closed = self.refresh_trading_panel_ohlc_only()
+                    live_row, candle_closed = self.build_live_ohlc_update()
                     if candle_closed and self.trading_panel_follow_live:
                         should_snap = True
-                if should_snap:
-                    yield rx.call_script(
-                        f"""
-                        (function() {{
-                            var chart = window.QT19_CHARTS && window.QT19_CHARTS["{TRADING_PANEL_CHART_ID}"];
-                            if (chart && typeof chart.scrollToRealTime === "function") {{
-                                chart.scrollToRealTime();
-                            }}
-                        }})();
-                        """
+
+                if live_row is not None:
+                    bar_json = json.dumps(live_row)
+                    snap_call = (
+                        f"if (chart.scrollToRealTime) chart.scrollToRealTime();"
+                        if should_snap else ""
                     )
-                await asyncio.sleep(3)
+                    # v0.4.62: self-heal FIRST, every tick, before attempting
+                    # to use the live callback - defends against StrictMode
+                    # (or any future remount) leaving the registry empty
+                    # with no later re-subscribe.
+                    yield rx.call_script(
+                        f"""(function() {{
+                            var chart = window.QT19_CHARTS && window.QT19_CHARTS['{TRADING_PANEL_CHART_ID}'];
+                            if (window.QT19_ensureLiveCallback && window.QT19_ensureLiveCallback['{TRADING_PANEL_CHART_ID}']) {{
+                                window.QT19_ensureLiveCallback['{TRADING_PANEL_CHART_ID}']();
+                            }}
+                            var pushLive = window.QT19_LIVE_CALLBACKS && window.QT19_LIVE_CALLBACKS['{TRADING_PANEL_CHART_ID}'];
+                            window.QT19_PUSH_COUNT = (window.QT19_PUSH_COUNT || 0) + 1;
+                            if (pushLive) {{
+                                pushLive({bar_json});
+                                if (window.QT19_PUSH_COUNT <= 5) {{
+                                    console.log('QT19: pushLive() SUCCEEDED, call #' + window.QT19_PUSH_COUNT + ', bar:', {bar_json});
+                                }}
+                            }} else {{
+                                if (window.QT19_PUSH_COUNT <= 5) {{
+                                    console.warn('QT19: no live callback registered for {TRADING_PANEL_CHART_ID} on call #' + window.QT19_PUSH_COUNT + '. Bar that could not be pushed:', {bar_json});
+                                }}
+                            }}
+                            if (chart) {{
+                                {snap_call}
+                            }}
+                        }})()"""
+                    )
+                await asyncio.sleep(0.5)
         finally:
             async with self:
-                self._trading_panel_poll_running = False
+                self.trading_panel_poll_running = False
+
+    @rx.var
+    def trading_panel_backfill_active(self) -> bool:
+        return self._is_coverage_pending(self.trading_panel_symbol, self.trading_panel_chart_tf)
+
+    @rx.var
+    def trading_panel_backfill_percent(self) -> int:
+        entry = self.trading_panel_tf_progress.get(self.trading_panel_chart_tf)
+        if not entry:
+            return 0
+        return max(0, min(100, int(entry.get("percent", 0))))
+
+    @rx.var
+    def trading_panel_eta_text(self) -> str:
+        entry = self.trading_panel_tf_progress.get(self.trading_panel_chart_tf)
+        if not entry:
+            return ""
+        if entry.get("error"):
+            return f"Error: {entry['error']}"
+        if entry.get("broker_ceiling_reached"):
+            return "Broker has no more history for this range (real exchange data limit)."
+        if entry.get("state") == "complete":
+            return "Complete"
+        eta_text = _format_eta(entry.get("eta_seconds"))
+        if eta_text:
+            return eta_text
+        if entry.get("state") in ("downloading", "queued"):
+            return "Estimating\u2026"
+        return ""
+
+    @rx.var
+    def trading_panel_combined_percent(self) -> int:
+        values = [
+            int(self.trading_panel_tf_progress.get(tf, {}).get("percent", 0))
+            for tf in TRADING_PANEL_TF_OPTIONS
+        ]
+        if not values:
+            return 0
+        return int(round(sum(values) / len(values)))
+
+    @rx.var
+    def trading_panel_combined_active(self) -> bool:
+        return any(
+            self.trading_panel_tf_progress.get(tf, {}).get("state") in ("downloading", "queued")
+            for tf in TRADING_PANEL_TF_OPTIONS
+        )
+
+    @rx.var
+    def trading_panel_countdown_text(self) -> str:
+        duration_ms = _TF_DURATION_MS.get(self.trading_panel_chart_tf, 60_000)
+        if self.trading_panel_last_candle_ts <= 0:
+            return "--:--"
+        close_at_ms = self.trading_panel_last_candle_ts + duration_ms
+        now_ms = time.time() * 1000
+        remaining_s = max(0, int((close_at_ms - now_ms) / 1000))
+        minutes, seconds = divmod(remaining_s, 60)
+        return f"{minutes:02d}:{seconds:02d}"
 
     @rx.var
     def trading_panel_symbol_options(self) -> list[str]:
-        return _engine.market_data.symbol_registry.get_symbols_sorted(active_only=True)
+        return engine.market_data.symbol_registry.get_symbols_sorted(active_only=True)
 
     @rx.var
     def trading_panel_symbol_info(self) -> dict:
-        """Shape expected by <KLineChart symbol={...}>: {ticker, precision}.
-        precision (decimal places) is derived from the real tick_size on
-        SymbolRegistryWorker - falls back to 2 if the symbol isn't found."""
-        registry = _engine.market_data.symbol_registry
+        registry = engine.market_data.symbol_registry
         info = registry.get_symbol_info(self.trading_panel_symbol)
         if info is None or not info.tick_size:
             return {"ticker": self.trading_panel_symbol, "precision": 2}
@@ -377,10 +428,6 @@ class TradingPanelMixin(rx.State, mixin=True):
 
     @rx.var
     def trading_panel_styles(self) -> dict:
-        """Real klinecharts Styles object. Grid on/off and Day/Night are
-        both driven declaratively from here - toggling either AppState
-        field re-renders the chart with the correct styles automatically,
-        with no JS-side DOM manipulation required."""
         day = self.trading_panel_chart_theme == "day"
         grid_show = self.trading_panel_grid_enabled
         foreground = "#152238" if day else "#dce8f7"
@@ -391,30 +438,13 @@ class TradingPanelMixin(rx.State, mixin=True):
                 "horizontal": {"show": grid_show, "color": grid_color},
                 "vertical": {"show": grid_show, "color": grid_color},
             },
-            "candle": {
-                "bar": {
-                    "upColor": "#16c784",
-                    "downColor": "#ea3943",
-                    "noChangeColor": "#8b98aa",
-                },
-            },
-            "xAxis": {
-                "axisLine": {"color": grid_color},
-                "tickLine": {"color": grid_color},
-                "tickText": {"color": foreground},
-            },
-            "yAxis": {
-                "axisLine": {"color": grid_color},
-                "tickLine": {"color": grid_color},
-                "tickText": {"color": foreground},
-            },
+            "candle": {"bar": {"upColor": "#16c784", "downColor": "#ea3943", "noChangeColor": "#8b98aa"}},
+            "xAxis": {"axisLine": {"color": grid_color}, "tickLine": {"color": grid_color}, "tickText": {"color": foreground}},
+            "yAxis": {"axisLine": {"color": grid_color}, "tickLine": {"color": grid_color}, "tickText": {"color": foreground}},
         }
 
     @rx.var
     def trading_panel_menu_style(self) -> dict:
-        """SOLID, theme-aware style for the custom right-click menu box -
-        matches the chart's own Day/Night setting (not the app's global
-        theme), with a clean border and readable text."""
         day = self.trading_panel_chart_theme == "day"
         background = "#f4f7fb" if day else "#141d29"
         border_color = "rgba(20,30,50,0.18)" if day else "rgba(147,173,205,0.28)"
@@ -422,8 +452,8 @@ class TradingPanelMixin(rx.State, mixin=True):
         return {
             "background": background,
             "border": f"1px solid {border_color}",
-            "border_radius": "0.9rem",
-            "box_shadow": "0 10px 30px rgba(0,0,0,0.28)",
+            "borderRadius": "0.9rem",
+            "boxShadow": "0 10px 30px rgba(0,0,0,0.28)",
             "color": text_color,
             "left": f"{self.trading_panel_menu_x}px",
             "top": f"{self.trading_panel_menu_y}px",

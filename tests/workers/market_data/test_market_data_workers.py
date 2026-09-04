@@ -15,8 +15,9 @@ import pytest
 
 from engines.workers.market_data.symbol_registry_worker import SymbolRegistryWorker
 from engines.workers.market_data.tick_normalizer_worker import TickNormalizerWorker, NormalizedTick
-from engines.workers.market_data.candle_builder_worker import CandleBuilderWorker
+from engines.workers.market_data.candle_builder_worker import Candle, CandleBuilderWorker
 from engines.workers.market_data.candle_store import CandleStore
+from engines.workers.market_data.candle_store_worker import CandleStoreWorker
 from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
 from engines.workers.market_data.deep_history_downloader_worker import DeepHistoryDownloaderWorker
 from engines.workers.market_data.rest_poll_fallback_worker import RestPollFallbackWorker
@@ -148,7 +149,9 @@ def test_deep_history_downloader_stops_when_exchange_has_no_more_data(tmp_manife
         time.sleep(0.05)
 
     assert call_count["n"] >= 1
-    assert tmp_manifest.get_covered_ranges("BTCUSD", "1m") != []
+    assert tmp_manifest.get_covered_ranges("BTCUSD", "1m") == []
+    assert worker.get_status("BTCUSD", "1m")["state"] == "broker_ceiling"
+    assert worker.get_status("BTCUSD", "1m")["broker_ceiling_reached"] is True
 
 
 def test_manifest_persists_across_restart(tmp_manifest: HistoryManifestWorker) -> None:
@@ -211,3 +214,33 @@ def test_candle_store_serves_live_and_historical_candles() -> None:
     assert live is not None and live["close"] == 2
     history = store.get_historical_candles("BTCUSD", "1m", days=5)
     assert len(history) == 2
+
+
+def test_candle_store_returns_recent_page_with_older_buffer(tmp_path: Path) -> None:
+    store = CandleStoreWorker(db_path=tmp_path / "candles.db")
+    step = 60_000
+    base = 1_700_000_000_000
+    candles = [
+        Candle(
+            symbol="BTCUSD",
+            timeframe="1m",
+            open_time=base + idx * step,
+            close_time=base + idx * step + step - 1,
+            open=float(idx),
+            high=float(idx + 1),
+            low=float(idx - 1),
+            close=float(idx + 0.5),
+            volume=1.0,
+            is_closed=True,
+        )
+        for idx in range(10_000)
+    ]
+    store.save_candles("BTCUSD", "1m", candles)
+
+    end_ms = base + (10_000 - 1) * step
+    page = store.get_recent_window("BTCUSD", "1m", end_ms=end_ms, visible_days=1, older_buffer_days=2)
+
+    assert page["has_older"] is True
+    assert page["visible_start_ms"] <= page["start_ms"] <= page["visible_end_ms"]
+    assert len(page["candles"]) >= 2_880
+    assert page["candles"][0].open_time <= end_ms - 3 * 86_400_000

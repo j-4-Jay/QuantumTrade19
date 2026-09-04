@@ -2,6 +2,18 @@
 
 PATH: ui/pages/settings.py (REPLACE ENTIRE FILE)
 
+FIX v0.4.42 - Settings sub-tab (Appearance/Data & Connection/Security/
+Trading Defaults) now persists: rx.tabs.root switched from an uncontrolled
+default_value to a controlled value=AppState.settings_active_subtab +
+on_change=AppState.set_settings_active_subtab (see core_shell_mixin.py).
+
+FIX v0.4.37 - light theme: tab labels and headings totally invisible.
+rx.heading(...) and rx.tabs.trigger(...) had no explicit color set, so they
+fell back to Radix Themes' own built-in text color (governed by Radix's
+internal light/dark "appearance", which is a SEPARATE system from QT19's
+own custom --qt19-* theme variables). Fixed by explicitly setting
+color="var(--qt19-text-primary)" on every heading and every tabs.trigger.
+
 CHANGE (File 03.1 Scope E): the "POI Timeframes" coming-soon placeholder in
 the Trading Defaults tab is now the real POI Engine & Chart Visibility card.
 
@@ -18,17 +30,15 @@ from ui.components.deep_historical_data_card import deep_historical_data_card
 from ui.components.poi_engine_settings_card import poi_engine_settings_card
 
 
-
 def _effect_checkbox(opt: dict[str, str]) -> rx.Component:
     return rx.hstack(
         rx.checkbox(
             checked=AppState.transition_effects_enabled.contains(opt["key"]),
             on_change=lambda checked: AppState.toggle_transition_effect(opt["key"], checked),
         ),
-        rx.text(opt["label"], font_size="0.82rem"),
+        rx.text(opt["label"], font_size="0.82rem", color="var(--qt19-text-primary)"),
         spacing="2", align_items="center", width="100%",
     )
-
 
 
 def _tab_effect_checkbox(opt: dict[str, str]) -> rx.Component:
@@ -37,19 +47,18 @@ def _tab_effect_checkbox(opt: dict[str, str]) -> rx.Component:
             checked=AppState.tab_transition_effects_enabled.contains(opt["key"]),
             on_change=lambda checked: AppState.toggle_tab_transition_effect(opt["key"], checked),
         ),
-        rx.text(opt["label"], font_size="0.82rem"),
+        rx.text(opt["label"], font_size="0.82rem", color="var(--qt19-text-primary)"),
         spacing="2", align_items="center", width="100%",
     )
 
 
-
 def _transition_effects_card() -> rx.Component:
     return rx.vstack(
-        rx.heading("Login \u2192 Dashboard Transition", size="4"),
+        rx.heading("Login \u2192 Dashboard Transition", size="4", color="var(--qt19-text-primary)"),
         rx.text("Pick which entrance animations are allowed, and how they're chosen each time you log in.",
                 font_size="0.8rem", color="var(--qt19-text-muted)"),
         rx.hstack(
-            rx.text("Mode:", font_size="0.82rem", font_weight="600"),
+            rx.text("Mode:", font_size="0.82rem", font_weight="600", color="var(--qt19-text-primary)"),
             rx.select(
                 ["single", "sequential", "shuffle"],
                 value=AppState.transition_mode,
@@ -66,15 +75,14 @@ def _transition_effects_card() -> rx.Component:
     )
 
 
-
 def _tab_transition_card() -> rx.Component:
     return rx.vstack(
-        rx.heading("Tab Switch Animation", size="4"),
+        rx.heading("Tab Switch Animation", size="4", color="var(--qt19-text-primary)"),
         rx.text("Controls the effect used when switching between Dashboard, Trading Panel, "
                 "Journal & Reports, Alerts, and Settings.",
                 font_size="0.8rem", color="var(--qt19-text-muted)"),
         rx.hstack(
-            rx.text("Mode:", font_size="0.82rem", font_weight="600"),
+            rx.text("Mode:", font_size="0.82rem", font_weight="600", color="var(--qt19-text-primary)"),
             rx.select(
                 ["single", "sequential", "shuffle"],
                 value=AppState.tab_transition_mode,
@@ -91,15 +99,13 @@ def _tab_transition_card() -> rx.Component:
     )
 
 
-
 def _coming_soon_card(title: str, note: str) -> rx.Component:
     return rx.vstack(
-        rx.heading(title, size="4"),
+        rx.heading(title, size="4", color="var(--qt19-text-primary)"),
         rx.text(note, font_size="0.8rem", color="var(--qt19-text-muted)"),
         rx.badge("Coming in a later module", variant="soft", margin_top="0.5rem"),
         spacing="2", width="100%", style=GLASS_CARD_3XL_STYLE,
     )
-
 
 
 def _appearance_tab() -> rx.Component:
@@ -112,7 +118,6 @@ def _appearance_tab() -> rx.Component:
     )
 
 
-
 def _data_connection_tab() -> rx.Component:
     return rx.grid(
         deep_historical_data_card(),
@@ -121,7 +126,6 @@ def _data_connection_tab() -> rx.Component:
         columns=rx.breakpoints(initial="1", sm="1", md="2", lg="2"),
         spacing="4", width="100%", margin_top="1rem",
     )
-
 
 
 def _security_tab() -> rx.Component:
@@ -134,7 +138,6 @@ def _security_tab() -> rx.Component:
     )
 
 
-
 def _trading_tab() -> rx.Component:
     return rx.grid(
         poi_engine_settings_card(),
@@ -145,22 +148,22 @@ def _trading_tab() -> rx.Component:
     )
 
 
-
 def settings_page() -> rx.Component:
     return rx.vstack(
-        rx.heading("Settings", size="6"),
+        rx.heading("Settings", size="6", color="var(--qt19-text-primary)"),
         rx.tabs.root(
             rx.tabs.list(
-                rx.tabs.trigger("Appearance", value="appearance"),
-                rx.tabs.trigger("Data & Connection", value="data"),
-                rx.tabs.trigger("Security & Notifications", value="security"),
-                rx.tabs.trigger("Trading Defaults", value="trading"),
+                rx.tabs.trigger("Appearance", value="appearance", color="var(--qt19-text-primary)"),
+                rx.tabs.trigger("Data & Connection", value="data", color="var(--qt19-text-primary)"),
+                rx.tabs.trigger("Security & Notifications", value="security", color="var(--qt19-text-primary)"),
+                rx.tabs.trigger("Trading Defaults", value="trading", color="var(--qt19-text-primary)"),
             ),
             rx.tabs.content(_appearance_tab(), value="appearance"),
             rx.tabs.content(_data_connection_tab(), value="data"),
             rx.tabs.content(_security_tab(), value="security"),
             rx.tabs.content(_trading_tab(), value="trading"),
-            default_value="appearance",
+            value=AppState.settings_active_subtab,
+            on_change=AppState.set_settings_active_subtab,
             width="100%",
         ),
         width="100%", spacing="3",

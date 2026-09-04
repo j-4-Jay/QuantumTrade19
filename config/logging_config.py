@@ -1,4 +1,16 @@
-"""QuantumTrade19 runtime logging: quiet console, complete rotating file logs."""
+"""QuantumTrade19 runtime logging: quiet console, complete rotating file logs.
+
+PATH: config/logging_config.py  (REPLACE ENTIRE FILE)
+
+FIX v0.4.13: completes the pending v0.4.8 requirement #15 (never applied in
+this thread) - returns the default runtime level from the temporary
+DEBUG diagnostic mode back to INFO. Combined with v0.4.12's continuous
+0.5s-forever background polling loops, DEBUG-level internal logging was
+firing on every single tick, flooding the terminal with repeated lines.
+Console output was already ERROR-only and is unaffected either way; this
+change only reduces the volume written to logs/quantumtrade19.log and any
+DEBUG-level library chatter that was reaching the process' root logger.
+"""
 from __future__ import annotations
 
 import logging
@@ -36,7 +48,7 @@ def configure_logging(level: int = logging.INFO) -> None:
         _LOG_DIR.mkdir(parents=True, exist_ok=True)
         formatter = _formatter()
         root = logging.getLogger()
-        root.setLevel(logging.DEBUG)
+        root.setLevel(level)
 
         for handler in list(root.handlers):
             root.removeHandler(handler)

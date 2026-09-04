@@ -1,0 +1,1511 @@
+﻿----------------------------------------------------------------------------------------------------
+QUANTUMTRADE19 - THREAD UPLOAD BUNDLE (v1)
+Created: 20260903_034123
+Project root: D:\QuantumTrade19
+Total files requested: 8
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: candle_store_worker.py
+FULL PATH: D:\QuantumTrade19\engines\workers\market_data\candle_store_worker.py
+----------------------------------------------------------------------------------------------------
+"""SQLite-backed candle storage and physical local-coverage truth.
+
+TARGET PATH: D:\QuantumTrade19\engines\workers\market_data\candle_store_worker.py
+REPLACE THE ENTIRE FILE.
+
+v0.4.8: All local Trading Panel coverage decisions are calculated from real
+SQLite candle rows. Manifest files are metadata only and are never trusted as
+proof that candles exist locally.
+"""
+from __future__ import annotations
+
+import sqlite3
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, List
+
+from engines.workers.market_data.candle_builder_worker import Candle
+
+_DB_PATH = Path("data") / "historical" / "candles.db"
+_TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000}
+_DAY_MS = 86_400_000
+
+
+@dataclass(frozen=True)
+class LocalCoverage:
+    symbol: str
+    timeframe: str
+    row_count: int
+    earliest_open_time: int | None
+    latest_open_time: int | None
+    contiguous_start_time: int | None
+    contiguous_end_time: int | None
+    contiguous_days: float
+    requested_start_time: int | None = None
+    requested_end_time: int | None = None
+    requested_candles: int = 0
+    present_candles: int = 0
+    missing_candles: int = 0
+    requested_range_complete: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+            "row_count": self.row_count,
+            "earliest_open_time": self.earliest_open_time,
+            "latest_open_time": self.latest_open_time,
+            "contiguous_start_time": self.contiguous_start_time,
+            "contiguous_end_time": self.contiguous_end_time,
+            "contiguous_days": self.contiguous_days,
+            "requested_start_time": self.requested_start_time,
+            "requested_end_time": self.requested_end_time,
+            "requested_candles": self.requested_candles,
+            "present_candles": self.present_candles,
+            "missing_candles": self.missing_candles,
+            "requested_range_complete": self.requested_range_complete,
+        }
+
+
+class CandleStoreWorker:
+    def __init__(self, db_path: Path = _DB_PATH) -> None:
+        self._db_path = Path(db_path)
+        self._lock = threading.RLock()
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self._db_path), timeout=30)
+        conn.execute("PRAGMA busy_timeout = 30000")
+        return conn
+
+    def _init_schema(self) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS candles (
+                    symbol TEXT NOT NULL,
+                    timeframe TEXT NOT NULL,
+                    open_time INTEGER NOT NULL,
+                    close_time INTEGER NOT NULL,
+                    open REAL NOT NULL,
+                    high REAL NOT NULL,
+                    low REAL NOT NULL,
+                    close REAL NOT NULL,
+                    volume REAL NOT NULL,
+                    PRIMARY KEY (symbol, timeframe, open_time)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_candles_lookup "
+                "ON candles (symbol, timeframe, open_time)"
+            )
+            conn.commit()
+
+    def save_candles(self, symbol: str, timeframe: str, candles: Iterable[Candle]) -> int:
+        rows = [
+            (
+                symbol,
+                timeframe,
+                int(c.open_time),
+                int(c.close_time),
+                float(c.open),
+                float(c.high),
+                float(c.low),
+                float(c.close),
+                float(c.volume),
+            )
+            for c in candles
+        ]
+        if not rows:
+            return 0
+        with self._lock, self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO candles (symbol, timeframe, open_time, close_time, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (symbol, timeframe, open_time) DO UPDATE SET
+                    close_time=excluded.close_time,
+                    open=excluded.open,
+                    high=excluded.high,
+                    low=excluded.low,
+                    close=excluded.close,
+                    volume=excluded.volume
+                """,
+                rows,
+            )
+            conn.commit()
+        return len(rows)
+
+    def get_candles(self, symbol: str, timeframe: str, start_ms: int, end_ms: int) -> List[Candle]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT open_time, close_time, open, high, low, close, volume
+                FROM candles
+                WHERE symbol = ? AND timeframe = ? AND open_time >= ? AND open_time <= ?
+                ORDER BY open_time ASC
+                """,
+                (symbol, timeframe, int(start_ms), int(end_ms)),
+            ).fetchall()
+        return [
+            Candle(
+                symbol=symbol,
+                timeframe=timeframe,
+                open_time=int(row[0]),
+                close_time=int(row[1]),
+                open=float(row[2]),
+                high=float(row[3]),
+                low=float(row[4]),
+                close=float(row[5]),
+                volume=float(row[6]),
+                is_closed=True,
+            )
+            for row in rows
+        ]
+
+    def get_all_timestamps(self, symbol: str, timeframe: str) -> list[int]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT open_time
+                FROM candles
+                WHERE symbol = ? AND timeframe = ?
+                ORDER BY open_time ASC
+                """,
+                (symbol, timeframe),
+            ).fetchall()
+        return [int(row[0]) for row in rows]
+
+    def get_local_coverage(
+        self,
+        symbol: str,
+        timeframe: str,
+        requested_days: int | None = None,
+        end_ms: int | None = None,
+    ) -> LocalCoverage:
+        step = _TF_MS[timeframe]
+        end = int(end_ms if end_ms is not None else time.time() * 1000)
+        timestamps = self.get_all_timestamps(symbol, timeframe)
+        if not timestamps:
+            return LocalCoverage(symbol, timeframe, 0, None, None, None, None, 0.0)
+
+        latest = timestamps[-1]
+        contiguous_start = latest
+        previous = latest
+        for current in reversed(timestamps[:-1]):
+            if previous - current != step:
+                break
+            contiguous_start = current
+            previous = current
+        contiguous_end = latest + step
+        contiguous_days = round(max(0, contiguous_end - contiguous_start) / _DAY_MS, 3)
+
+        if requested_days is None or requested_days <= 0:
+            return LocalCoverage(
+                symbol, timeframe, len(timestamps), timestamps[0], latest,
+                contiguous_start, contiguous_end, contiguous_days,
+            )
+
+        requested_start = end - int(requested_days) * _DAY_MS
+        aligned_start = (requested_start // step) * step
+        aligned_end = (end // step) * step
+        required = set(range(aligned_start, aligned_end + 1, step))
+        present = sum(1 for stamp in timestamps if aligned_start <= stamp <= aligned_end)
+        missing = max(0, len(required) - present)
+        complete = missing == 0
+        return LocalCoverage(
+            symbol, timeframe, len(timestamps), timestamps[0], latest,
+            contiguous_start, contiguous_end, contiguous_days,
+            aligned_start, aligned_end, len(required), present, missing, complete,
+        )
+
+    def get_missing_ranges(self, symbol: str, timeframe: str, start_ms: int, end_ms: int) -> list[tuple[int, int]]:
+        step = _TF_MS[timeframe]
+        start = (int(start_ms) // step) * step
+        end = (int(end_ms) // step) * step
+        if end < start:
+            return []
+        existing = set(self.get_all_timestamps(symbol, timeframe))
+        missing = [stamp for stamp in range(start, end + 1, step) if stamp not in existing]
+        if not missing:
+            return []
+        ranges: list[tuple[int, int]] = []
+        range_start = previous = missing[0]
+        for stamp in missing[1:]:
+            if stamp != previous + step:
+                ranges.append((range_start, previous + step))
+                range_start = stamp
+            previous = stamp
+        ranges.append((range_start, previous + step))
+        return ranges
+
+    def get_physical_ranges(self, symbol: str, timeframe: str) -> list[tuple[int, int]]:
+        step = _TF_MS[timeframe]
+        timestamps = self.get_all_timestamps(symbol, timeframe)
+        if not timestamps:
+            return []
+        ranges: list[tuple[int, int]] = []
+        start = previous = timestamps[0]
+        for stamp in timestamps[1:]:
+            if stamp != previous + step:
+                ranges.append((start, previous + step))
+                start = stamp
+            previous = stamp
+        ranges.append((start, previous + step))
+        return ranges
+
+    def get_recent_window(
+        self,
+        symbol: str,
+        timeframe: str,
+        end_ms: int,
+        visible_days: int = 1,
+        older_buffer_days: int = 2,
+    ) -> dict:
+        """Returns a compact local page for the visible window plus a small older
+        buffer, using SQLite rows as the only source of truth. This keeps the
+        chart safe to render while allowing older local candles to load only when
+        the user pans toward the left edge."""
+        step = _TF_MS[timeframe]
+        end = int(end_ms)
+        visible_days = max(1, int(visible_days))
+        older_buffer_days = max(0, int(older_buffer_days))
+        visible_start = end - visible_days * _DAY_MS
+        buffer_start = visible_start - older_buffer_days * _DAY_MS
+        rows = self.get_candles(symbol, timeframe, buffer_start, end)
+        if not rows:
+            return {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "candles": [],
+                "start_ms": visible_start,
+                "end_ms": end,
+                "visible_start_ms": visible_start,
+                "visible_end_ms": end,
+                "older_start_ms": buffer_start,
+                "has_older": False,
+            }
+
+        has_older = any(c.open_time < visible_start for c in rows)
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "candles": rows,
+            "start_ms": visible_start,
+            "end_ms": end,
+            "visible_start_ms": visible_start,
+            "visible_end_ms": end,
+            "older_start_ms": buffer_start,
+            "has_older": has_older,
+        }
+
+    def delete_symbol_timeframe(self, symbol: str, timeframe: str) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "DELETE FROM candles WHERE symbol = ? AND timeframe = ?",
+                (symbol, timeframe),
+            )
+            conn.commit()
+
+----------------------------------------------------------------------------------------------------
+END FILE: candle_store_worker.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: history_manifest_worker.py
+FULL PATH: D:\QuantumTrade19\engines\workers\market_data\history_manifest_worker.py
+----------------------------------------------------------------------------------------------------
+"""Local download manifest metadata.
+
+TARGET PATH: D:\QuantumTrade19\engines\workers\market_data\history_manifest_worker.py
+REPLACE THE ENTIRE FILE.
+
+v0.4.8: A manifest can describe only successfully persisted local download
+ranges. Broker depth probes never call this worker. SQLite remains the truth
+for all Trading Panel coverage decisions.
+"""
+from __future__ import annotations
+
+import json
+import os
+import threading
+from pathlib import Path
+from typing import List, Tuple
+
+_MANIFEST_DIR = Path("data") / "historical" / "manifests"
+
+
+class HistoryManifestWorker:
+    def __init__(self, manifest_dir: Path = _MANIFEST_DIR) -> None:
+        self._dir = Path(manifest_dir)
+        self._lock = threading.RLock()
+        self._dir.mkdir(parents=True, exist_ok=True)
+
+    def _path_for(self, symbol: str) -> Path:
+        return self._dir / f"{symbol}.json"
+
+    def _load(self, symbol: str) -> dict:
+        path = self._path_for(symbol)
+        if not path.exists():
+            return {}
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            return loaded if isinstance(loaded, dict) else {}
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+    def _save(self, symbol: str, data: dict) -> None:
+        path = self._path_for(symbol)
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temporary, path)
+
+    def get_covered_ranges(self, symbol: str, timeframe: str) -> List[Tuple[int, int]]:
+        with self._lock:
+            data = self._load(symbol)
+            ranges = data.get(timeframe, [])
+        result: list[tuple[int, int]] = []
+        for item in ranges:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                continue
+            start, end = int(item[0]), int(item[1])
+            if end > start:
+                result.append((start, end))
+        return result
+
+    def mark_covered(self, symbol: str, timeframe: str, start_ms: int, end_ms: int) -> None:
+        start, end = int(start_ms), int(end_ms)
+        if end <= start:
+            return
+        with self._lock:
+            data = self._load(symbol)
+            ranges = list(data.get(timeframe, []))
+            ranges.append([start, end])
+            normalized = sorted(
+                ([int(item[0]), int(item[1])] for item in ranges if len(item) == 2 and int(item[1]) > int(item[0])),
+                key=lambda item: item[0],
+            )
+            merged: list[list[int]] = []
+            for range_start, range_end in normalized:
+                if merged and range_start <= merged[-1][1]:
+                    merged[-1][1] = max(merged[-1][1], range_end)
+                else:
+                    merged.append([range_start, range_end])
+            data[timeframe] = merged
+            self._save(symbol, data)
+
+    def replace_covered_ranges(self, symbol: str, timeframe: str, ranges: List[Tuple[int, int]]) -> None:
+        with self._lock:
+            data = self._load(symbol)
+            data[timeframe] = [[int(start), int(end)] for start, end in ranges if int(end) > int(start)]
+            self._save(symbol, data)
+
+    def find_gaps(self, symbol: str, timeframe: str, full_start_ms: int, full_end_ms: int) -> List[Tuple[int, int]]:
+        start, end = int(full_start_ms), int(full_end_ms)
+        if end <= start:
+            return []
+        covered = sorted(self.get_covered_ranges(symbol, timeframe), key=lambda item: item[0])
+        gaps: list[tuple[int, int]] = []
+        cursor = start
+        for covered_start, covered_end in covered:
+            if covered_end <= cursor:
+                continue
+            if covered_start >= end:
+                break
+            if covered_start > cursor:
+                gaps.append((cursor, min(covered_start, end)))
+            cursor = max(cursor, min(covered_end, end))
+            if cursor >= end:
+                break
+        if cursor < end:
+            gaps.append((cursor, end))
+        return [(gap_start, gap_end) for gap_start, gap_end in gaps if gap_end > gap_start]
+
+    def coverage_percent(self, symbol: str, timeframe: str, full_start_ms: int, full_end_ms: int) -> float:
+        total = int(full_end_ms) - int(full_start_ms)
+        if total <= 0:
+            return 100.0
+        gap_total = sum(end - start for start, end in self.find_gaps(symbol, timeframe, full_start_ms, full_end_ms))
+        return round(max(0.0, min(100.0, 100.0 * (1.0 - gap_total / total))), 2)
+
+    def delete_symbol_manifest(self, symbol: str) -> None:
+        path = self._path_for(symbol)
+        with self._lock:
+            if path.exists():
+                path.unlink()
+
+----------------------------------------------------------------------------------------------------
+END FILE: history_manifest_worker.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: history_depth_prober_worker.py
+FULL PATH: D:\QuantumTrade19\engines\workers\market_data\history_depth_prober_worker.py
+----------------------------------------------------------------------------------------------------
+"""Broker-only historical depth probe.
+
+TARGET PATH: D:\QuantumTrade19\engines\workers\market_data\history_depth_prober_worker.py
+REPLACE THE ENTIRE FILE.
+
+v0.4.8: Probe responses are never persisted and never change local manifests.
+The result is an exchange/broker availability ceiling only.
+"""
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from typing import Callable, Optional
+
+import requests
+
+logger = logging.getLogger("market_data.history_depth_prober")
+
+CANDLES_URL = "https://public.coindcx.com/market_data/candles/"
+MAX_LIMIT_PER_CALL = 1000
+PROBE_PACING_S = 0.30
+EARLY_START_MS = 1420070400000
+
+
+class HistoryDepthProberWorker:
+    def __init__(
+        self,
+        manifest=None,
+        http_get=None,
+        on_progress: Optional[Callable[[str, str, dict], None]] = None,
+    ) -> None:
+        # manifest remains an accepted optional argument for constructor compatibility.
+        # It is intentionally unused: a broker probe must never mutate local metadata.
+        self._http_get = http_get or requests.get
+        self._on_progress = on_progress
+        self._active: dict[tuple[str, str], threading.Event] = {}
+        self._results: dict[tuple[str, str], dict] = {}
+        self._lock = threading.RLock()
+
+    def start_probe(self, symbol: str, timeframe: str) -> None:
+        key = (symbol, timeframe)
+        with self._lock:
+            if key in self._active:
+                return
+            stop_event = threading.Event()
+            self._active[key] = stop_event
+        threading.Thread(
+            target=self._probe_loop,
+            args=(symbol, timeframe, stop_event),
+            daemon=True,
+            name=f"QT19DepthProbe-{symbol}-{timeframe}",
+        ).start()
+
+    def is_probing(self, symbol: str, timeframe: str) -> bool:
+        with self._lock:
+            return (symbol, timeframe) in self._active
+
+    def get_ceiling_days(self, symbol: str, timeframe: str) -> Optional[float]:
+        with self._lock:
+            result = self._results.get((symbol, timeframe))
+        return None if result is None else result.get("span_days")
+
+    def get_result(self, symbol: str, timeframe: str) -> dict:
+        with self._lock:
+            return dict(self._results.get((symbol, timeframe), {}))
+
+    def _emit(self, symbol: str, timeframe: str, payload: dict) -> None:
+        if self._on_progress:
+            try:
+                self._on_progress(symbol, timeframe, payload)
+            except Exception:
+                logger.exception("history_depth_probe_progress_callback_failed")
+
+    def _probe_loop(self, symbol: str, timeframe: str, stop_event: threading.Event) -> None:
+        started_end = int(time.time() * 1000)
+        cursor_end = started_end
+        oldest_ms: int | None = None
+        newest_ms: int | None = None
+        error: str | None = None
+
+        try:
+            while not stop_event.is_set() and cursor_end > EARLY_START_MS:
+                response = self._http_get(
+                    CANDLES_URL,
+                    params={
+                        "pair": symbol,
+                        "interval": timeframe,
+                        "startTime": EARLY_START_MS,
+                        "endTime": cursor_end,
+                        "limit": MAX_LIMIT_PER_CALL,
+                    },
+                    timeout=10,
+                )
+                response.raise_for_status()
+                rows = response.json() or []
+                if not rows:
+                    break
+
+                batch_times = [int(row["time"]) for row in rows if "time" in row]
+                if not batch_times:
+                    break
+                batch_oldest = min(batch_times)
+                batch_newest = max(batch_times)
+                oldest_ms = batch_oldest if oldest_ms is None else min(oldest_ms, batch_oldest)
+                newest_ms = batch_newest if newest_ms is None else max(newest_ms, batch_newest)
+                span_days = round((newest_ms - oldest_ms) / 86_400_000, 1)
+                self._emit(symbol, timeframe, {"probing": True, "span_days_so_far": span_days})
+
+                if batch_oldest >= cursor_end:
+                    break
+                cursor_end = batch_oldest - 1
+                time.sleep(PROBE_PACING_S)
+        except Exception as exc:
+            error = str(exc)
+            logger.exception("history_depth_probe_failed symbol=%s timeframe=%s", symbol, timeframe)
+        finally:
+            span_days = round((newest_ms - oldest_ms) / 86_400_000, 1) if oldest_ms is not None and newest_ms is not None else 0.0
+            result = {
+                "span_days": span_days,
+                "oldest_open_time": oldest_ms,
+                "newest_open_time": newest_ms,
+                "error": error,
+                "cancelled": stop_event.is_set(),
+                "probed_at_ms": int(time.time() * 1000),
+            }
+            with self._lock:
+                self._results[(symbol, timeframe)] = result
+                self._active.pop((symbol, timeframe), None)
+            self._emit(symbol, timeframe, {"probing": False, "ceiling_days": span_days, "error": error})
+
+----------------------------------------------------------------------------------------------------
+END FILE: history_depth_prober_worker.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: deep_history_downloader_worker.py
+FULL PATH: D:\QuantumTrade19\engines\workers\market_data\deep_history_downloader_worker.py
+----------------------------------------------------------------------------------------------------
+"""Verified SQLite-backed deep-history downloader.
+
+TARGET PATH: D:\QuantumTrade19\engines\workers\market_data\deep_history_downloader_worker.py
+REPLACE THE ENTIRE FILE.
+
+v0.4.8: Missing ranges are calculated from physical SQLite rows. Every remote
+batch is persisted first, then local coverage is rechecked. Manifest entries
+are written only after the storage callback succeeds.
+"""
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from typing import Callable, Optional
+
+import requests
+
+from engines.workers.market_data.candle_builder_worker import Candle
+from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
+
+logger = logging.getLogger("market_data.deep_history_downloader")
+
+CANDLES_URL = "https://public.coindcx.com/market_data/candles/"
+MAX_LIMIT_PER_CALL = 1000
+CHUNK_PACING_S = 0.35
+_TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000}
+EARLY_START_MS = 1420070400000
+_DAY_MS = 86_400_000
+
+
+def covered_days(manifest: HistoryManifestWorker, symbol: str, timeframe: str) -> float:
+    ranges = manifest.get_covered_ranges(symbol, timeframe)
+    return round(sum(end - start for start, end in ranges) / _DAY_MS, 1)
+
+
+def is_fully_downloaded(manifest: HistoryManifestWorker, symbol: str, timeframe: str) -> bool:
+    return any(start <= EARLY_START_MS + 1 for start, _ in manifest.get_covered_ranges(symbol, timeframe))
+
+
+def earliest_covered_ms(manifest: HistoryManifestWorker, symbol: str, timeframe: str) -> Optional[int]:
+    ranges = manifest.get_covered_ranges(symbol, timeframe)
+    return min((start for start, _ in ranges), default=None)
+
+
+class DeepHistoryDownloaderWorker:
+    def __init__(
+        self,
+        manifest: HistoryManifestWorker,
+        http_get=None,
+        on_chunk: Optional[Callable[[str, str, list[Candle]], None]] = None,
+        on_progress: Optional[Callable[[str, str, dict], None]] = None,
+        get_missing_ranges: Optional[Callable[[str, str, int, int], list[tuple[int, int]]]] = None,
+        get_coverage: Optional[Callable[[str, str, int, int], dict]] = None,
+    ) -> None:
+        self._manifest = manifest
+        self._http_get = http_get or requests.get
+        self._on_chunk = on_chunk
+        self._on_progress = on_progress
+        self._get_missing_ranges = get_missing_ranges
+        self._get_coverage = get_coverage
+        self._active: dict[tuple[str, str], threading.Event] = {}
+        self._status: dict[tuple[str, str], dict] = {}
+        self._lock = threading.RLock()
+
+    def _set_status(self, symbol: str, timeframe: str, **values) -> None:
+        with self._lock:
+            current = dict(self._status.get((symbol, timeframe), {}))
+            current.update(values)
+            self._status[(symbol, timeframe)] = current
+
+    def get_status(self, symbol: str, timeframe: str) -> dict:
+        with self._lock:
+            status = dict(self._status.get((symbol, timeframe), {}))
+        return {
+            "state": status.get("state", "idle"),
+            "error": status.get("error"),
+            "requested_days": status.get("requested_days", 0),
+            "requested_start_ms": status.get("requested_start_ms"),
+            "requested_end_ms": status.get("requested_end_ms"),
+            "present_candles": status.get("present_candles", 0),
+            "required_candles": status.get("required_candles", 0),
+            "missing_candles": status.get("missing_candles", 0),
+            "percent": status.get("percent", 0),
+            "broker_ceiling_reached": status.get("broker_ceiling_reached", False),
+        }
+
+    def start_download(self, symbol: str, timeframe: str, target_days: Optional[int] = None) -> None:
+        key = (symbol, timeframe)
+        with self._lock:
+            if key in self._active:
+                return
+            stop_event = threading.Event()
+            self._active[key] = stop_event
+        self._set_status(symbol, timeframe, state="queued", error=None, broker_ceiling_reached=False)
+        threading.Thread(
+            target=self._download_loop,
+            args=(symbol, timeframe, target_days, stop_event),
+            daemon=True,
+            name=f"QT19History-{symbol}-{timeframe}",
+        ).start()
+
+    def cancel_download(self, symbol: str, timeframe: str) -> None:
+        with self._lock:
+            stop_event = self._active.get((symbol, timeframe))
+        if stop_event:
+            stop_event.set()
+        self._set_status(symbol, timeframe, state="paused", error=None)
+
+    def is_downloading(self, symbol: str, timeframe: str) -> bool:
+        with self._lock:
+            return (symbol, timeframe) in self._active
+
+    def _emit_progress(self, symbol: str, timeframe: str, start_ms: int, end_ms: int, requested_days: int) -> dict:
+        if self._get_coverage:
+            coverage = dict(self._get_coverage(symbol, timeframe, start_ms, end_ms))
+            required = int(coverage.get("requested_candles", 0))
+            present = int(coverage.get("present_candles", 0))
+            missing = int(coverage.get("missing_candles", max(0, required - present)))
+            complete = bool(coverage.get("requested_range_complete", False))
+        else:
+            percent_manifest = self._manifest.coverage_percent(symbol, timeframe, start_ms, end_ms)
+            required = present = missing = 0
+            complete = percent_manifest >= 100.0
+            coverage = {"percent": percent_manifest}
+        percent = 100 if complete else (int(round((present / required) * 100)) if required else 0)
+        payload = {
+            "state": "complete" if complete else "downloading",
+            "requested_days": requested_days,
+            "requested_start_ms": start_ms,
+            "requested_end_ms": end_ms,
+            "present_candles": present,
+            "required_candles": required,
+            "missing_candles": missing,
+            "percent": max(0, min(100, percent)),
+            "is_complete": complete,
+        }
+        self._set_status(symbol, timeframe, error=None, **payload)
+        if self._on_progress:
+            self._on_progress(symbol, timeframe, dict(payload))
+        return payload
+
+    def _persist_batch(self, symbol: str, timeframe: str, candles: list[Candle]) -> None:
+        if not candles:
+            return
+        if self._on_chunk is None:
+            raise RuntimeError("Deep history downloader has no SQLite persistence callback.")
+        self._on_chunk(symbol, timeframe, candles)
+        batch_start = min(candle.open_time for candle in candles)
+        batch_end = max(candle.open_time for candle in candles) + _TF_MS[timeframe]
+        self._manifest.mark_covered(symbol, timeframe, batch_start, batch_end)
+
+    def _download_loop(self, symbol: str, timeframe: str, target_days: Optional[int], stop_event: threading.Event) -> None:
+        if timeframe not in _TF_MS:
+            self._set_status(symbol, timeframe, state="error", error=f"Unsupported timeframe: {timeframe}")
+            with self._lock:
+                self._active.pop((symbol, timeframe), None)
+            return
+        now_ms = int(time.time() * 1000)
+        requested_days = max(1, int(target_days or 1))
+        start_ms = max(EARLY_START_MS, now_ms - requested_days * _DAY_MS)
+        end_ms = now_ms
+        self._set_status(
+            symbol, timeframe, state="downloading", error=None,
+            requested_days=requested_days, requested_start_ms=start_ms, requested_end_ms=end_ms,
+        )
+        try:
+            while not stop_event.is_set():
+                progress = self._emit_progress(symbol, timeframe, start_ms, end_ms, requested_days)
+                if progress["is_complete"]:
+                    break
+                if self._get_missing_ranges is None:
+                    gaps = self._manifest.find_gaps(symbol, timeframe, start_ms, end_ms)
+                else:
+                    gaps = self._get_missing_ranges(symbol, timeframe, start_ms, end_ms)
+                if not gaps:
+                    self._set_status(symbol, timeframe, state="complete", error=None, percent=100)
+                    break
+
+                gap_start, gap_end = gaps[-1]
+                cursor_end = gap_end
+                received_any = False
+                while not stop_event.is_set() and cursor_end > gap_start:
+                    response = self._http_get(
+                        CANDLES_URL,
+                        params={
+                            "pair": symbol,
+                            "interval": timeframe,
+                            "startTime": gap_start,
+                            "endTime": cursor_end,
+                            "limit": MAX_LIMIT_PER_CALL,
+                        },
+                        timeout=15,
+                    )
+                    response.raise_for_status()
+                    rows = response.json() or []
+                    if not rows:
+                        self._set_status(symbol, timeframe, broker_ceiling_reached=True)
+                        break
+                    candles = [
+                        Candle(
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            open_time=int(row["time"]),
+                            close_time=int(row["time"]) + _TF_MS[timeframe] - 1,
+                            open=float(row["open"]),
+                            high=float(row["high"]),
+                            low=float(row["low"]),
+                            close=float(row["close"]),
+                            volume=float(row.get("volume", 0.0) or 0.0),
+                            is_closed=True,
+                        )
+                        for row in rows
+                        if "time" in row
+                    ]
+                    if not candles:
+                        self._set_status(symbol, timeframe, broker_ceiling_reached=True)
+                        break
+                    self._persist_batch(symbol, timeframe, candles)
+                    received_any = True
+                    progress = self._emit_progress(symbol, timeframe, start_ms, end_ms, requested_days)
+                    if progress["is_complete"]:
+                        break
+                    batch_oldest = min(candle.open_time for candle in candles)
+                    if batch_oldest <= gap_start or batch_oldest >= cursor_end:
+                        break
+                    cursor_end = batch_oldest - 1
+                    time.sleep(CHUNK_PACING_S)
+                if not received_any:
+                    break
+                if self._emit_progress(symbol, timeframe, start_ms, end_ms, requested_days)["is_complete"]:
+                    break
+
+            if stop_event.is_set():
+                self._set_status(symbol, timeframe, state="paused", error=None)
+            else:
+                final = self._emit_progress(symbol, timeframe, start_ms, end_ms, requested_days)
+                if final["is_complete"]:
+                    self._set_status(symbol, timeframe, state="complete", error=None, percent=100)
+                elif self.get_status(symbol, timeframe)["broker_ceiling_reached"]:
+                    self._set_status(symbol, timeframe, state="broker_ceiling", error=None)
+                else:
+                    self._set_status(symbol, timeframe, state="incomplete", error="SQLite range remains incomplete")
+        except Exception as exc:
+            logger.exception("deep_history_download_failed symbol=%s timeframe=%s", symbol, timeframe)
+            self._set_status(symbol, timeframe, state="error", error=str(exc))
+        finally:
+            with self._lock:
+                self._active.pop((symbol, timeframe), None)
+
+----------------------------------------------------------------------------------------------------
+END FILE: deep_history_downloader_worker.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: market_data_monitor.py
+FULL PATH: D:\QuantumTrade19\engines\monitors\market_data_monitor.py
+----------------------------------------------------------------------------------------------------
+"""Market Data Monitor (Tier 2 Assembly).
+
+TARGET PATH: D:\QuantumTrade19\engines\monitors\market_data_monitor.py
+REPLACE THE ENTIRE FILE.
+
+v0.4.8: Trading Panel local coverage is calculated from physical SQLite rows.
+Broker depth is kept separate. Three-timeframe deep-history downloads use the
+SQLite gap callbacks supplied to DeepHistoryDownloaderWorker.
+"""
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from typing import Dict, List, Optional
+
+from engines.workers.market_data.candle_builder_worker import Candle, CandleBuilderWorker, POI_TFS, TRADING_TFS
+from engines.workers.market_data.candle_store_worker import CandleStoreWorker
+from engines.workers.market_data.deep_history_downloader_worker import DeepHistoryDownloaderWorker
+from engines.workers.market_data.historical_data_loader_worker import HistoricalDataLoaderWorker
+from engines.workers.market_data.history_depth_prober_worker import HistoryDepthProberWorker
+from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
+from engines.workers.market_data.rest_poll_fallback_worker import RestPollFallbackWorker
+from engines.workers.market_data.symbol_registry_worker import SymbolRegistryWorker
+from engines.workers.market_data.tick_normalizer_worker import TickNormalizerWorker
+from engines.workers.market_data.ws_feed_worker import SocketTransport, WSFeedWorker
+
+logger = logging.getLogger("market_data.monitor")
+_DAY_MS = 86_400_000
+
+
+class MarketDataMonitor:
+    def __init__(self, transport: SocketTransport) -> None:
+        self._lock = threading.RLock()
+        self.symbol_registry = SymbolRegistryWorker()
+        self.candle_builder = CandleBuilderWorker(on_candle_closed=self._publish_candle_closed)
+        self.historical_loader = HistoricalDataLoaderWorker()
+        self.rest_fallback = RestPollFallbackWorker(on_tick=self._handle_rest_tick)
+        self.ws_feed = WSFeedWorker(transport=transport, on_tick=self._handle_ws_tick, on_drop=self._handle_ws_drop, on_restore=self._handle_ws_restore)
+        self.history_manifest = HistoryManifestWorker()
+        self.candle_store = CandleStoreWorker()
+        self.deep_history_downloader = DeepHistoryDownloaderWorker(
+            manifest=self.history_manifest,
+            on_chunk=self._handle_deep_history_chunk,
+            get_missing_ranges=self.candle_store.get_missing_ranges,
+            get_coverage=self._sqlite_coverage_payload,
+        )
+        self.depth_prober = HistoryDepthProberWorker()
+        self._subscribed: set[str] = set()
+        self._degraded: set[str] = set()
+        self._last_health: Dict[str, str] = {}
+        logger.info("market_data_monitor_created")
+
+    def start(self) -> None:
+        active_symbols = self.symbol_registry.get_active_symbols()
+        logger.info("market_data_monitor_start active_symbols=%s", active_symbols)
+        self.ws_feed.start()
+        for symbol in active_symbols:
+            self.subscribe(symbol)
+
+    def stop(self) -> None:
+        with self._lock:
+            symbols = list(self._subscribed)
+        for symbol in symbols:
+            self.unsubscribe(symbol)
+        self.ws_feed.stop()
+
+    def subscribe(self, symbol: str) -> None:
+        with self._lock:
+            if symbol in self._subscribed:
+                return
+            self._subscribed.add(symbol)
+        try:
+            self._seed_baseline_history(symbol)
+            self.ws_feed.subscribe(symbol)
+        except Exception:
+            with self._lock:
+                self._subscribed.discard(symbol)
+            logger.exception("market_data_subscribe_failed symbol=%s", symbol)
+            raise
+
+    def unsubscribe(self, symbol: str) -> None:
+        with self._lock:
+            was_subscribed = symbol in self._subscribed
+            self._subscribed.discard(symbol)
+            self._degraded.discard(symbol)
+            self._last_health.pop(symbol, None)
+        self.ws_feed.unsubscribe(symbol)
+        self.rest_fallback.disengage(symbol)
+        if was_subscribed:
+            logger.info("market_data_unsubscribed symbol=%s", symbol)
+
+    def get_live_candle(self, symbol: str, timeframe: str) -> Optional[Candle]:
+        return self.candle_builder.get_live_candle(symbol, timeframe)
+
+    def get_historical_candles(self, symbol: str, timeframe: str, days: int) -> List[Candle]:
+        end_ms = self._now_ms()
+        return self.historical_loader.fetch_range(symbol, timeframe, end_ms - int(days) * _DAY_MS, end_ms)
+
+    def get_chart_candles(self, symbol: str, timeframe: str, days: int) -> List[Candle]:
+        if days <= 0:
+            return []
+        now_ms = self._now_ms()
+        cutoff_ms = now_ms - int(days) * _DAY_MS
+        merged: Dict[int, Candle] = {candle.open_time: candle for candle in self.candle_store.get_candles(symbol, timeframe, cutoff_ms, now_ms)}
+        for candle in self.candle_builder.get_series(symbol, timeframe):
+            if candle.open_time >= cutoff_ms:
+                merged[candle.open_time] = candle
+        return [merged[stamp] for stamp in sorted(merged)]
+
+    def get_recent_window(
+        self,
+        symbol: str,
+        timeframe: str,
+        end_ms: Optional[int] = None,
+        visible_days: int = 1,
+        older_buffer_days: int = 2,
+    ) -> dict:
+        if end_ms is None:
+            end_ms = self._now_ms()
+        return self.candle_store.get_recent_window(
+            symbol,
+            timeframe,
+            int(end_ms),
+            visible_days=visible_days,
+            older_buffer_days=older_buffer_days,
+        )
+
+    def get_local_coverage(self, symbol: str, timeframe: str, requested_days: Optional[int] = None) -> dict:
+        coverage = self.candle_store.get_local_coverage(symbol, timeframe, requested_days, self._now_ms())
+        return coverage.to_dict()
+
+    def _sqlite_coverage_payload(self, symbol: str, timeframe: str, start_ms: int, end_ms: int) -> dict:
+        requested_days = max(1, int((end_ms - start_ms) / _DAY_MS))
+        return self.candle_store.get_local_coverage(symbol, timeframe, requested_days, end_ms).to_dict()
+
+    def get_chart_coverage_days(self, symbol: str, timeframe: str) -> float:
+        return float(self.get_local_coverage(symbol, timeframe).get("contiguous_days", 0.0))
+
+    def get_health(self) -> Dict[str, str]:
+        report: Dict[str, str] = {}
+        with self._lock:
+            symbols = list(self._subscribed)
+        for symbol in symbols:
+            health = "OK" if self.ws_feed.is_healthy(symbol) else "DEGRADED" if self.rest_fallback.is_engaged(symbol) else "DOWN"
+            report[symbol] = health
+            self._log_health_transition(symbol, health)
+        return report
+
+    def start_deep_history(self, symbol: str, timeframe: str, target_days: Optional[int] = None) -> None:
+        self.deep_history_downloader.start_download(symbol, timeframe, target_days)
+
+    def cancel_deep_history(self, symbol: str, timeframe: str) -> None:
+        self.deep_history_downloader.cancel_download(symbol, timeframe)
+
+    def get_deep_history_progress(self, symbol: str, timeframe: str, requested_days: Optional[int] = None) -> dict:
+        coverage = self.get_local_coverage(symbol, timeframe, requested_days)
+        status = self.deep_history_downloader.get_status(symbol, timeframe)
+        return {
+            **status,
+            "covered_days": coverage["contiguous_days"],
+            "local_coverage": coverage,
+            "is_complete": coverage["requested_range_complete"] if requested_days else False,
+        }
+
+    def delete_deep_history(self, symbol: str, timeframe: str) -> None:
+        self.history_manifest.delete_symbol_manifest(symbol)
+        self.candle_store.delete_symbol_timeframe(symbol, timeframe)
+
+    def start_ceiling_probe(self, symbol: str, timeframe: str) -> None:
+        self.depth_prober.start_probe(symbol, timeframe)
+
+    def get_ceiling_days(self, symbol: str, timeframe: str) -> Optional[float]:
+        return self.depth_prober.get_ceiling_days(symbol, timeframe)
+
+    def _seed_baseline_history(self, symbol: str) -> None:
+        baseline = self.historical_loader.backfill_baseline(symbol)
+        for timeframe, candles in baseline.items():
+            self.candle_builder.seed_historical(symbol, timeframe, candles)
+
+    def _handle_ws_tick(self, symbol: str, payload: dict) -> None:
+        tick = TickNormalizerWorker.from_ws_payload(symbol, payload)
+        if TickNormalizerWorker.is_valid(tick):
+            self.candle_builder.ingest(tick, timeframes=TRADING_TFS + POI_TFS)
+
+    def _handle_rest_tick(self, symbol: str, payload: dict) -> None:
+        tick = TickNormalizerWorker.from_rest_ticker(symbol, payload)
+        if TickNormalizerWorker.is_valid(tick):
+            self.candle_builder.ingest(tick, timeframes=TRADING_TFS + POI_TFS)
+
+    def _handle_ws_drop(self, symbol: str) -> None:
+        with self._lock:
+            self._degraded.add(symbol)
+        self.rest_fallback.engage(symbol)
+
+    def _handle_ws_restore(self, symbol: str) -> None:
+        with self._lock:
+            self._degraded.discard(symbol)
+        self.rest_fallback.disengage(symbol)
+
+    def _handle_deep_history_chunk(self, symbol: str, timeframe: str, candles: list[Candle]) -> None:
+        saved = self.candle_store.save_candles(symbol, timeframe, candles)
+        logger.info("deep_history_chunk_persisted symbol=%s timeframe=%s rows=%d", symbol, timeframe, saved)
+
+    def _publish_candle_closed(self, candle: Candle) -> None:
+        try:
+            self.candle_store.save_candles(candle.symbol, candle.timeframe, [candle])
+        except Exception:
+            logger.exception("candle_close_persist_failed symbol=%s timeframe=%s open_time=%d", candle.symbol, candle.timeframe, candle.open_time)
+        logger.debug("candle_closed symbol=%s timeframe=%s open_time=%d", candle.symbol, candle.timeframe, candle.open_time)
+
+    def _log_health_transition(self, symbol: str, health: str) -> None:
+        with self._lock:
+            previous = self._last_health.get(symbol)
+            self._last_health[symbol] = health
+        if previous != health:
+            logger.log(logging.INFO if health == "OK" else logging.WARNING, "market_data_health_transition symbol=%s previous=%s current=%s", symbol, previous or "UNSET", health)
+
+    @staticmethod
+    def _now_ms() -> int:
+        return int(time.time() * 1000)
+
+----------------------------------------------------------------------------------------------------
+END FILE: market_data_monitor.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: app_state.py
+FULL PATH: D:\QuantumTrade19\state\app_state.py
+----------------------------------------------------------------------------------------------------
+"""Reflex State composition.
+
+TARGET PATH: D:\QuantumTrade19\state\app_state.py
+REPLACE THE ENTIRE FILE.
+"""
+from __future__ import annotations
+
+import reflex as rx
+
+from config.settings import DEFAULT_THEME_KEY
+from state.app_state_mixins.auth_security_mixin import AuthSecurityMixin
+from state.app_state_mixins.core_shell_mixin import CoreShellMixin
+from state.app_state_mixins.market_dashboard_mixin import MarketDashboardMixin
+from state.app_state_mixins.poi_settings_mixin import PoiSettingsMixin
+from state.app_state_mixins.shared import SHELL_STATE_CLASS
+from state.app_state_mixins.trading_panel_mixin import TradingPanelMixin
+
+TRADING_PANEL_TF_OPTIONS = ["1m", "5m", "15m"]
+TRADING_PANEL_DAY_PRESETS = ["1", "3", "5", "7", "14", "30", "90"]
+
+
+class AppState(CoreShellMixin, AuthSecurityMixin, MarketDashboardMixin, PoiSettingsMixin, TradingPanelMixin, rx.State):
+    screen: str = SHELL_STATE_CLASS.SPLASH.value
+    active_tab: str = "Dashboard"
+    theme_key: str = DEFAULT_THEME_KEY
+    paper_mode: bool = True
+    is_locked: bool = False
+    sound_muted: bool = False
+    sidebar_collapsed: bool = False
+    totp_required: bool = False
+
+    reg_username: str = ""
+    reg_password: str = ""
+    reg_confirm_password: str = ""
+    reg_enable_totp: bool = False
+    reg_error: str = ""
+    reg_stage: str = "form"
+    reg_qr_data_uri: str = ""
+    reg_totp_code: str = ""
+    show_reg_password: bool = False
+    show_reg_confirm_password: bool = False
+
+    login_username: str = ""
+    login_password: str = ""
+    login_totp: str = ""
+    login_error: str = ""
+    show_login_password: bool = False
+    show_lock_password: bool = False
+    login_credentials_match: bool = False
+    login_error_seq: int = 0
+    login_remember_device: bool = False
+
+    manage_username: str = ""
+    manage_password: str = ""
+    manage_error: str = ""
+    manage_stage: str = "verify"
+    manage_totp_qr: str = ""
+    manage_totp_code: str = ""
+    show_manage_password: bool = False
+
+    tg_bot_token: str = ""
+    tg_chat_id: str = ""
+    tg_enabled: bool = False
+    tg_configured: bool = False
+    tg_message: str = ""
+
+    dc_webhook_url: str = ""
+    dc_enabled: bool = False
+    dc_configured: bool = False
+    dc_message: str = ""
+
+    forgot_stage: str = "choose"
+    forgot_selected_method: str = ""
+    forgot_code: str = ""
+    forgot_otp_sent: bool = False
+    forgot_verified: bool = False
+    forgot_new_password: str = ""
+    forgot_confirm_password: str = ""
+    forgot_error: str = ""
+    show_forgot_new_password: bool = False
+    show_forgot_confirm_password: bool = False
+    forgot_available_methods: list[str] = []
+    forgot_has_any_method: bool = False
+
+    show_logout_dialog: bool = False
+    logout_stage: str = "confirm"
+    detail_popup_open: bool = False
+    detail_popup_symbol: str = ""
+
+    ws_status: str = "connected"
+    pinned_prices: dict[str, str] = {}
+    symbol_rows: list[dict] = []
+
+    deep_history_symbol: str = "B-BTC_USDT"
+    deep_history_timeframe: str = "1m"
+    deep_history_target_days: str = ""
+    deep_history_ceiling_days: str = "Not checked yet"
+    deep_history_covered_days: str = "0"
+    deep_history_is_downloading: bool = False
+    deep_history_status_message: str = ""
+
+    poi_settings_loaded: bool = False
+    poi_display_enabled: dict[str, bool] = {}
+    poi_strategy_enabled: dict[str, bool] = {}
+    poi_zone_source_tf_enabled: dict[str, bool] = {}
+    poi_show_labels: bool = True
+    poi_show_tooltips: bool = True
+    poi_line_transparency: int = 100
+    poi_zone_opacity: int = 30
+    poi_show_source_tf_badge: bool = True
+    poi_show_logical_id: bool = False
+    poi_reduced_motion: bool = False
+    poi_backend_busy: bool = False
+
+    transition_effects_enabled: list[str] = ["dissolve", "zoom-in", "slide-up", "flip-x", "blur-in"]
+    transition_mode: str = "shuffle"
+    transition_active_effect: str = "dissolve"
+    _transition_sequence_index: int = 0
+    tab_transition_effects_enabled: list[str] = ["slide-left"]
+    tab_transition_mode: str = "single"
+    tab_transition_active_effect: str = "slide-left"
+    _tab_transition_sequence_index: int = 0
+    _splash_task_running: bool = False
+    _ws_poll_running: bool = False
+    _price_poll_running: bool = False
+    _deep_history_poll_running: bool = False
+    _poi_monitor_starting: bool = False
+
+    trading_panel_symbol: str = "B-BTC_USDT"
+    trading_panel_chart_tf: str = "5m"
+    trading_panel_display_days_input: str = "5"
+    trading_panel_display_days_draft: str = "5"
+    trading_panel_chart_theme: str = "night"
+    trading_panel_grid_enabled: bool = False
+    trading_panel_candles: list[dict] = []
+    trading_panel_current_open: str = "--"
+    trading_panel_current_high: str = "--"
+    trading_panel_current_low: str = "--"
+    trading_panel_current_close: str = "--"
+    trading_panel_local_days: str = "0"
+    trading_panel_broker_days: str = "Not checked yet"
+    trading_panel_notice: str = ""
+    trading_panel_follow_live: bool = False
+    trading_panel_tf_progress: dict[str, dict] = {}
+    trading_panel_combined_percent: int = 0
+    trading_panel_combined_active: bool = False
+    trading_panel_safe_mode_active: bool = False
+    trading_panel_safe_mode_message: str = ""
+    _trading_panel_poll_running: bool = False
+    _trading_panel_last_candle_ts: float = 0.0
+    trading_panel_menu_open: bool = False
+    trading_panel_menu_x: int = 0
+    trading_panel_menu_y: int = 0
+
+----------------------------------------------------------------------------------------------------
+END FILE: app_state.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: errors.log
+FULL PATH: D:\QuantumTrade19\logs\errors.log
+----------------------------------------------------------------------------------------------------
+2026-08-30T06:11:27.735Z | WARNING  | CoinDCXSocketReader | market_data.coindcx_transport | transport_reader_recv_failed error=WebSocketClosed
+Traceback (most recent call last):
+  File "D:\QuantumTrade19\engines\workers\market_data\coindcx_socket_transport.py", line 121, in _read_loop
+    data, _ = self._ws.recv()
+              ^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\curl_cffi\requests\websockets.py", line 450, in recv
+    chunk, frame = self.recv_fragment()
+                   ^^^^^^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\curl_cffi\requests\websockets.py", line 415, in recv_fragment
+    raise WebSocketClosed("WebSocket is already closed")
+curl_cffi.requests.websockets.WebSocketClosed: WebSocket is already closed
+2026-08-30T07:53:57.585Z | WARNING  | CoinDCXSocketReader | market_data.coindcx_transport | transport_reader_recv_failed error=CurlError
+Traceback (most recent call last):
+  File "D:\QuantumTrade19\engines\workers\market_data\coindcx_socket_transport.py", line 121, in _read_loop
+    data, _ = self._ws.recv()
+              ^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\curl_cffi\requests\websockets.py", line 450, in recv
+    chunk, frame = self.recv_fragment()
+                   ^^^^^^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\curl_cffi\requests\websockets.py", line 417, in recv_fragment
+    chunk, frame = self.curl.ws_recv()
+                   ^^^^^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\curl_cffi\curl.py", line 732, in ws_recv
+    self._check_error(ret, "WS_RECV")
+  File "D:\QuantumTrade19\venv\Lib\site-packages\curl_cffi\curl.py", line 320, in _check_error
+    raise error
+curl_cffi.curl.CurlError: Failed to WS_RECV, curl: (52) . See https://curl.se/libcurl/c/libcurl-errors.html first for more details.
+2026-08-30T07:53:57.681Z | WARNING  | WSFeedReconnect | market_data.ws_feed | ws_reconnect_scheduled attempt=1 backoff_s=1.0
+2026-08-30T07:53:57.780Z | WARNING  | WSFeedWatchdog | market_data.ws_feed | ws_symbol_stale symbol=B-BTC_USDT timeout_s=5.0
+2026-08-30T07:53:57.781Z | WARNING  | WSFeedWatchdog | market_data.monitor | ws_drop_rest_fallback_engaging symbol=B-BTC_USDT
+2026-08-30T07:53:57.782Z | WARNING  | WSFeedWatchdog | market_data.rest_fallback | rest_fallback_engaged symbol=B-BTC_USDT poll_interval_s=1.50
+2026-08-30T07:53:57.783Z | WARNING  | WSFeedWatchdog | market_data.ws_feed | ws_symbol_stale symbol=B-ETH_USDT timeout_s=5.0
+2026-08-30T07:53:57.783Z | WARNING  | WSFeedWatchdog | market_data.monitor | ws_drop_rest_fallback_engaging symbol=B-ETH_USDT
+2026-08-30T07:53:57.784Z | WARNING  | WSFeedWatchdog | market_data.rest_fallback | rest_fallback_engaged symbol=B-ETH_USDT poll_interval_s=1.50
+2026-08-30T07:53:57.785Z | WARNING  | WSFeedWatchdog | market_data.ws_feed | ws_symbol_stale symbol=B-XAU_USDT timeout_s=5.0
+2026-08-30T07:53:57.785Z | WARNING  | WSFeedWatchdog | market_data.monitor | ws_drop_rest_fallback_engaging symbol=B-XAU_USDT
+2026-08-30T07:53:57.785Z | WARNING  | WSFeedWatchdog | market_data.rest_fallback | rest_fallback_engaged symbol=B-XAU_USDT poll_interval_s=1.50
+2026-08-30T07:53:59.683Z | WARNING  | WSFeedReconnect | market_data.ws_feed | ws_reconnect_scheduled attempt=1 backoff_s=1.0
+2026-08-30T07:54:00.684Z | WARNING  | CoinDCXSocketReader | market_data.coindcx_transport | transport_reader_recv_failed error=WebSocketClosed
+Traceback (most recent call last):
+  File "D:\QuantumTrade19\engines\workers\market_data\coindcx_socket_transport.py", line 121, in _read_loop
+    data, _ = self._ws.recv()
+              ^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\curl_cffi\requests\websockets.py", line 450, in recv
+    chunk, frame = self.recv_fragment()
+                   ^^^^^^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\curl_cffi\requests\websockets.py", line 415, in recv_fragment
+    raise WebSocketClosed("WebSocket is already closed")
+curl_cffi.requests.websockets.WebSocketClosed: WebSocket is already closed
+2026-08-30T07:54:00.800Z | WARNING  | WSFeedWatchdog | market_data.ws_feed | ws_symbol_stale symbol=B-BTC_USDT timeout_s=5.0
+2026-08-30T07:54:00.878Z | WARNING  | WSFeedWatchdog | market_data.monitor | ws_drop_rest_fallback_engaging symbol=B-BTC_USDT
+2026-08-30T07:54:00.879Z | WARNING  | WSFeedWatchdog | market_data.rest_fallback | rest_fallback_engaged symbol=B-BTC_USDT poll_interval_s=1.50
+2026-08-30T07:54:00.880Z | WARNING  | WSFeedWatchdog | market_data.ws_feed | ws_symbol_stale symbol=B-ETH_USDT timeout_s=5.0
+2026-08-30T07:54:00.880Z | WARNING  | WSFeedWatchdog | market_data.monitor | ws_drop_rest_fallback_engaging symbol=B-ETH_USDT
+2026-08-30T07:54:00.881Z | WARNING  | WSFeedWatchdog | market_data.rest_fallback | rest_fallback_engaged symbol=B-ETH_USDT poll_interval_s=1.50
+2026-08-30T07:54:00.881Z | WARNING  | WSFeedWatchdog | market_data.ws_feed | ws_symbol_stale symbol=B-XAU_USDT timeout_s=5.0
+2026-08-30T07:54:00.882Z | WARNING  | WSFeedWatchdog | market_data.monitor | ws_drop_rest_fallback_engaging symbol=B-XAU_USDT
+2026-08-30T07:54:00.882Z | WARNING  | WSFeedWatchdog | market_data.rest_fallback | rest_fallback_engaged symbol=B-XAU_USDT poll_interval_s=1.50
+2026-08-30T07:54:01.500Z | WARNING  | WSFeedReconnect | market_data.ws_feed | ws_reconnect_scheduled attempt=1 backoff_s=1.0
+2026-08-30T07:54:02.501Z | WARNING  | CoinDCXSocketReader | market_data.coindcx_transport | transport_reader_recv_failed error=WebSocketClosed
+Traceback (most recent call last):
+  File "D:\QuantumTrade19\engines\workers\market_data\coindcx_socket_transport.py", line 121, in _read_loop
+    data, _ = self._ws.recv()
+              ^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\curl_cffi\requests\websockets.py", line 450, in recv
+    chunk, frame = self.recv_fragment()
+                   ^^^^^^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\curl_cffi\requests\websockets.py", line 415, in recv_fragment
+    raise WebSocketClosed("WebSocket is already closed")
+curl_cffi.requests.websockets.WebSocketClosed: WebSocket is already closed
+2026-08-30T13:07:36.076Z | WARNING  | MainThread | py.warnings | D:\QuantumTrade19\state\app_state.py:3: SyntaxWarning: invalid escape sequence '\Q'
+  TARGET PATH: D:\QuantumTrade19\state\app_state.py
+
+2026-08-30T13:07:36.175Z | WARNING  | MainThread | py.warnings | D:\QuantumTrade19\engines\monitors\market_data_monitor.py:3: SyntaxWarning: invalid escape sequence '\Q'
+  TARGET PATH: D:\QuantumTrade19\engines\monitors\market_data_monitor.py
+
+2026-08-30T13:07:36.176Z | WARNING  | MainThread | py.warnings | D:\QuantumTrade19\engines\workers\market_data\candle_store_worker.py:3: SyntaxWarning: invalid escape sequence '\Q'
+  TARGET PATH: D:\QuantumTrade19\engines\workers\market_data\candle_store_worker.py
+
+2026-08-30T13:07:36.193Z | WARNING  | MainThread | py.warnings | D:\QuantumTrade19\engines\workers\market_data\history_depth_prober_worker.py:3: SyntaxWarning: invalid escape sequence '\Q'
+  TARGET PATH: D:\QuantumTrade19\engines\workers\market_data\history_depth_prober_worker.py
+
+2026-08-30T13:09:17.380Z | ERROR    | MainThread | market_data.monitor | market_data_subscribe_failed symbol=B-ETH_USDT
+Traceback (most recent call last):
+  File "D:\QuantumTrade19\venv\Lib\site-packages\urllib3\connectionpool.py", line 464, in _make_request
+    self._validate_conn(conn)
+  File "D:\QuantumTrade19\venv\Lib\site-packages\urllib3\connectionpool.py", line 1106, in _validate_conn
+    conn.connect()
+  File "D:\QuantumTrade19\venv\Lib\site-packages\urllib3\connection.py", line 796, in connect
+    sock_and_verified = _ssl_wrap_socket_and_match_hostname(
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\urllib3\connection.py", line 975, in _ssl_wrap_socket_and_match_hostname
+    ssl_sock = ssl_wrap_socket(
+               ^^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\urllib3\util\ssl_.py", line 433, in ssl_wrap_socket
+    ssl_sock = _ssl_wrap_socket_impl(sock, context, tls_in_tls, server_hostname)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\urllib3\util\ssl_.py", line 477, in _ssl_wrap_socket_impl
+    return ssl_context.wrap_socket(sock, server_hostname=server_hostname)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python312\Lib\ssl.py", line 455, in wrap_socket
+    return self.sslsocket_class._create(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python312\Lib\ssl.py", line 1041, in _create
+    self.do_handshake()
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python312\Lib\ssl.py", line 1319, in do_handshake
+    self._sslobj.do_handshake()
+TimeoutError: _ssl.c:993: The handshake operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "D:\QuantumTrade19\venv\Lib\site-packages\requests\adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\urllib3\connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\urllib3\util\retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\urllib3\util\util.py", line 39, in reraise
+    raise value
+  File "D:\QuantumTrade19\venv\Lib\site-packages\urllib3\connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\urllib3\connectionpool.py", line 488, in _make_request
+    raise new_e
+  File "D:\QuantumTrade19\venv\Lib\site-packages\urllib3\connectionpool.py", line 466, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=conn.timeout)
+  File "D:\QuantumTrade19\venv\Lib\site-packages\urllib3\connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='public.coindcx.com', port=443): Read timed out. (read timeout=10)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\QuantumTrade19\engines\monitors\market_data_monitor.py", line 74, in subscribe
+    self._seed_baseline_history(symbol)
+  File "D:\QuantumTrade19\engines\monitors\market_data_monitor.py", line 159, in _seed_baseline_history
+    baseline = self.historical_loader.backfill_baseline(symbol)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\engines\workers\market_data\historical_data_loader_worker.py", line 103, in backfill_baseline
+    result[tf] = self.fetch_range(pair, tf, start_ms, end_ms)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\engines\workers\market_data\historical_data_loader_worker.py", line 88, in fetch_range
+    return self._fetch_native(pair, timeframe, start_ms, end_ms)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\engines\workers\market_data\historical_data_loader_worker.py", line 115, in _fetch_native
+    resp = self._http_get(
+           ^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\requests\api.py", line 87, in get
+    return request("get", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\requests\api.py", line 71, in request
+    return session.request(method=method, url=url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\requests\sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\requests\sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\requests\adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='public.coindcx.com', port=443): Read timed out. (read timeout=10)
+2026-08-30T13:16:45.876Z | WARNING  | MainThread | py.warnings | D:\QuantumTrade19\engines\monitors\market_data_monitor.py:3: SyntaxWarning: invalid escape sequence '\Q'
+  TARGET PATH: D:\QuantumTrade19\engines\monitors\market_data_monitor.py
+
+2026-08-30T16:49:05.389Z | WARNING  | CoinDCXSocketReader | market_data.coindcx_transport | transport_reader_recv_failed error=WebSocketClosed
+Traceback (most recent call last):
+  File "D:\QuantumTrade19\engines\workers\market_data\coindcx_socket_transport.py", line 121, in _read_loop
+    data, _ = self._ws.recv()
+              ^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\curl_cffi\requests\websockets.py", line 450, in recv
+    chunk, frame = self.recv_fragment()
+                   ^^^^^^^^^^^^^^^^^^^^
+  File "D:\QuantumTrade19\venv\Lib\site-packages\curl_cffi\requests\websockets.py", line 415, in recv_fragment
+    raise WebSocketClosed("WebSocket is already closed")
+curl_cffi.requests.websockets.WebSocketClosed: WebSocket is already closed
+2026-08-30T16:49:10.089Z | WARNING  | WSFeedReconnect | market_data.ws_feed | ws_reconnect_scheduled attempt=1 backoff_s=1.0
+2026-08-30T16:51:16.976Z | WARNING  | MainThread | py.warnings | D:\QuantumTrade19\engines\monitors\market_data_monitor.py:3: SyntaxWarning: invalid escape sequence '\Q'
+  TARGET PATH: D:\QuantumTrade19\engines\monitors\market_data_monitor.py
+
+
+----------------------------------------------------------------------------------------------------
+END FILE: errors.log
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: quantumtrade19.log
+FULL PATH: D:\QuantumTrade19\logs\quantumtrade19.log
+----------------------------------------------------------------------------------------------------
+2026-09-02T21:56:48.977Z | INFO     | MainThread | system.logging | logging_configured log_dir=D:\QuantumTrade19\logs retention_days=30 console_level=ERROR
+2026-09-02T21:56:50.645Z | INFO     | MainThread | market_data.monitor | market_data_monitor_created
+2026-09-02T21:56:59.375Z | INFO     | reflex-telemetry_0 | httpx | HTTP Request: POST https://app.posthog.com/capture/ "HTTP/1.1 200 OK"
+2026-09-02T21:57:00.362Z | INFO     | MainThread | system.logging | logging_configured log_dir=D:\QuantumTrade19\logs retention_days=30 console_level=ERROR
+2026-09-02T21:57:00.808Z | INFO     | MainThread | market_data.monitor | market_data_monitor_created
+2026-09-02T21:57:04.237Z | INFO     | MainThread | market_data.monitor | market_data_monitor_start active_symbols=['B-BTC_USDT', 'B-ETH_USDT', 'B-XAU_USDT']
+2026-09-02T21:57:04.237Z | INFO     | MainThread | market_data.ws_feed | ws_start_requested url=wss://stream.coindcx.com channel=currentPrices@futures@rt
+2026-09-02T21:57:04.237Z | INFO     | MainThread | market_data.coindcx_transport | transport_connect_requested host=stream.coindcx.com impersonate=chrome124
+2026-09-02T21:57:04.458Z | INFO     | CoinDCXSocketReader | market_data.coindcx_transport | transport_reader_started
+2026-09-02T21:57:04.458Z | INFO     | MainThread | market_data.coindcx_transport | transport_connected
+2026-09-02T21:57:04.458Z | INFO     | MainThread | market_data.ws_feed | ws_connected_joined reason=startup channel=currentPrices@futures@rt
+2026-09-02T21:57:04.470Z | INFO     | WSFeedWatchdog | market_data.ws_feed | ws_watchdog_started timeout_s=5.0
+2026-09-02T21:57:04.470Z | INFO     | WSFeedReconnect | market_data.ws_feed | ws_reconnect_loop_started
+2026-09-02T21:57:04.486Z | INFO     | CoinDCXSocketReader | market_data.coindcx_transport | transport_socketio_namespace_connected
+2026-09-02T21:57:09.133Z | INFO     | MainThread | market_data.ws_feed | ws_symbol_subscribed symbol=B-BTC_USDT aggregate_alive=True
+2026-09-02T21:57:13.871Z | INFO     | MainThread | market_data.ws_feed | ws_symbol_subscribed symbol=B-ETH_USDT aggregate_alive=True
+2026-09-02T21:57:18.485Z | INFO     | MainThread | market_data.ws_feed | ws_symbol_subscribed symbol=B-XAU_USDT aggregate_alive=True
+2026-09-02T21:58:01.192Z | INFO     | MainThread | system.logging | logging_configured log_dir=D:\QuantumTrade19\logs retention_days=30 console_level=ERROR
+2026-09-02T21:58:01.623Z | INFO     | MainThread | market_data.monitor | market_data_monitor_created
+2026-09-02T21:58:04.716Z | INFO     | MainThread | market_data.monitor | market_data_monitor_start active_symbols=['B-BTC_USDT', 'B-ETH_USDT', 'B-XAU_USDT']
+2026-09-02T21:58:04.716Z | INFO     | MainThread | market_data.ws_feed | ws_start_requested url=wss://stream.coindcx.com channel=currentPrices@futures@rt
+2026-09-02T21:58:04.716Z | INFO     | MainThread | market_data.coindcx_transport | transport_connect_requested host=stream.coindcx.com impersonate=chrome124
+2026-09-02T21:58:04.982Z | INFO     | CoinDCXSocketReader | market_data.coindcx_transport | transport_reader_started
+2026-09-02T21:58:04.982Z | INFO     | MainThread | market_data.coindcx_transport | transport_connected
+2026-09-02T21:58:04.982Z | INFO     | MainThread | market_data.ws_feed | ws_connected_joined reason=startup channel=currentPrices@futures@rt
+2026-09-02T21:58:04.982Z | INFO     | WSFeedWatchdog | market_data.ws_feed | ws_watchdog_started timeout_s=5.0
+2026-09-02T21:58:04.982Z | INFO     | WSFeedReconnect | market_data.ws_feed | ws_reconnect_loop_started
+2026-09-02T21:58:05.066Z | INFO     | CoinDCXSocketReader | market_data.coindcx_transport | transport_socketio_namespace_connected
+2026-09-02T21:58:05.183Z | INFO     | reflex-telemetry_0 | httpx | HTTP Request: POST https://app.posthog.com/capture/ "HTTP/1.1 200 OK"
+2026-09-02T21:58:09.454Z | INFO     | MainThread | market_data.ws_feed | ws_symbol_subscribed symbol=B-BTC_USDT aggregate_alive=True
+2026-09-02T21:58:13.945Z | INFO     | MainThread | market_data.ws_feed | ws_symbol_subscribed symbol=B-ETH_USDT aggregate_alive=True
+2026-09-02T21:58:18.439Z | INFO     | MainThread | market_data.ws_feed | ws_symbol_subscribed symbol=B-XAU_USDT aggregate_alive=True
+2026-09-02T21:59:02.388Z | INFO     | MainThread | system.logging | logging_configured log_dir=D:\QuantumTrade19\logs retention_days=30 console_level=ERROR
+2026-09-02T21:59:03.033Z | INFO     | MainThread | market_data.monitor | market_data_monitor_created
+2026-09-02T21:59:03.501Z | INFO     | MainThread | system.logging | logging_configured log_dir=D:\QuantumTrade19\logs retention_days=30 console_level=ERROR
+2026-09-02T21:59:04.200Z | INFO     | MainThread | market_data.monitor | market_data_monitor_created
+2026-09-02T21:59:07.840Z | INFO     | MainThread | market_data.monitor | market_data_monitor_start active_symbols=['B-BTC_USDT', 'B-ETH_USDT', 'B-XAU_USDT']
+2026-09-02T21:59:07.840Z | INFO     | MainThread | market_data.ws_feed | ws_start_requested url=wss://stream.coindcx.com channel=currentPrices@futures@rt
+2026-09-02T21:59:07.840Z | INFO     | MainThread | market_data.coindcx_transport | transport_connect_requested host=stream.coindcx.com impersonate=chrome124
+2026-09-02T21:59:07.969Z | INFO     | CoinDCXSocketReader | market_data.coindcx_transport | transport_reader_started
+2026-09-02T21:59:07.969Z | INFO     | MainThread | market_data.coindcx_transport | transport_connected
+2026-09-02T21:59:07.969Z | INFO     | MainThread | market_data.ws_feed | ws_connected_joined reason=startup channel=currentPrices@futures@rt
+2026-09-02T21:59:07.969Z | INFO     | WSFeedWatchdog | market_data.ws_feed | ws_watchdog_started timeout_s=5.0
+2026-09-02T21:59:07.969Z | INFO     | WSFeedReconnect | market_data.ws_feed | ws_reconnect_loop_started
+2026-09-02T21:59:08.002Z | INFO     | CoinDCXSocketReader | market_data.coindcx_transport | transport_socketio_namespace_connected
+2026-09-02T21:59:08.354Z | INFO     | reflex-telemetry_0 | httpx | HTTP Request: POST https://app.posthog.com/capture/ "HTTP/1.1 200 OK"
+2026-09-02T21:59:12.442Z | INFO     | MainThread | market_data.ws_feed | ws_symbol_subscribed symbol=B-BTC_USDT aggregate_alive=True
+2026-09-02T21:59:16.923Z | INFO     | MainThread | market_data.ws_feed | ws_symbol_subscribed symbol=B-ETH_USDT aggregate_alive=True
+2026-09-02T21:59:21.357Z | INFO     | MainThread | market_data.ws_feed | ws_symbol_subscribed symbol=B-XAU_USDT aggregate_alive=True
+2026-09-02T21:59:36.572Z | INFO     | MainThread | market_data.monitor | market_data_health_transition symbol=B-BTC_USDT previous=UNSET current=OK
+2026-09-02T21:59:36.572Z | INFO     | MainThread | market_data.monitor | market_data_health_transition symbol=B-ETH_USDT previous=UNSET current=OK
+2026-09-02T21:59:36.572Z | INFO     | MainThread | market_data.monitor | market_data_health_transition symbol=B-XAU_USDT previous=UNSET current=OK
+2026-09-02T22:00:01.327Z | INFO     | MainThread | system.logging | logging_configured log_dir=D:\QuantumTrade19\logs retention_days=30 console_level=ERROR
+2026-09-02T22:00:01.830Z | INFO     | MainThread | market_data.monitor | market_data_monitor_created
+2026-09-02T22:00:02.242Z | INFO     | MainThread | system.logging | logging_configured log_dir=D:\QuantumTrade19\logs retention_days=30 console_level=ERROR
+2026-09-02T22:00:02.697Z | INFO     | MainThread | market_data.monitor | market_data_monitor_created
+2026-09-02T22:00:05.451Z | INFO     | MainThread | market_data.monitor | market_data_monitor_start active_symbols=['B-BTC_USDT', 'B-ETH_USDT', 'B-XAU_USDT']
+2026-09-02T22:00:05.451Z | INFO     | MainThread | market_data.ws_feed | ws_start_requested url=wss://stream.coindcx.com channel=currentPrices@futures@rt
+2026-09-02T22:00:05.451Z | INFO     | MainThread | market_data.coindcx_transport | transport_connect_requested host=stream.coindcx.com impersonate=chrome124
+2026-09-02T22:00:05.566Z | INFO     | CoinDCXSocketReader | market_data.coindcx_transport | transport_reader_started
+2026-09-02T22:00:05.566Z | INFO     | MainThread | market_data.coindcx_transport | transport_connected
+2026-09-02T22:00:05.566Z | INFO     | MainThread | market_data.ws_feed | ws_connected_joined reason=startup channel=currentPrices@futures@rt
+2026-09-02T22:00:05.569Z | INFO     | WSFeedWatchdog | market_data.ws_feed | ws_watchdog_started timeout_s=5.0
+2026-09-02T22:00:05.570Z | INFO     | WSFeedReconnect | market_data.ws_feed | ws_reconnect_loop_started
+2026-09-02T22:00:05.582Z | INFO     | CoinDCXSocketReader | market_data.coindcx_transport | transport_socketio_namespace_connected
+2026-09-02T22:00:06.371Z | INFO     | reflex-telemetry_0 | httpx | HTTP Request: POST https://app.posthog.com/capture/ "HTTP/1.1 200 OK"
+2026-09-02T22:00:10.515Z | INFO     | MainThread | market_data.ws_feed | ws_symbol_subscribed symbol=B-BTC_USDT aggregate_alive=True
+2026-09-02T22:00:15.207Z | INFO     | MainThread | market_data.ws_feed | ws_symbol_subscribed symbol=B-ETH_USDT aggregate_alive=True
+2026-09-02T22:00:19.631Z | INFO     | MainThread | market_data.ws_feed | ws_symbol_subscribed symbol=B-XAU_USDT aggregate_alive=True
+
+----------------------------------------------------------------------------------------------------
+END FILE: quantumtrade19.log
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BUNDLE SUMMARY
+Files successfully added: 8
+Files skipped/failed: 0
+----------------------------------------------------------------------------------------------------
+

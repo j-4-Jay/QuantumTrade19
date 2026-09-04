@@ -1,6 +1,22 @@
 """Shared imports and constants for executable AppState mixins.
 
 PATH: state/app_state_mixins/shared.py
+REPLACE THE ENTIRE FILE.
+
+FIX v0.4.22 - app would still not start after v0.4.21:
+
+Different mixin files in this project use two DIFFERENT import names for
+the same shared engine instance:
+    - trading_panel_mixin.py does:  from state.app_state_mixins.shared import engine, ...
+    - core_shell_mixin.py does:     from state.app_state_mixins.shared import _engine, ...
+
+v0.4.21 only defined `engine`, which fixed trading_panel_mixin.py but then
+broke core_shell_mixin.py (ImportError: cannot import name '_engine').
+
+Fix: both names are now defined here, pointing to the exact SAME
+MasterAppEngine() instance, so every mixin file works regardless of which
+name it was written to import. There is still only ONE engine object
+constructed - `_engine` is just an alias, not a second instance.
 """
 from __future__ import annotations
 
@@ -16,13 +32,17 @@ from config.settings import (
     TRANSITION_EFFECTS,
 )
 
-_engine = MasterAppEngine()
+
+engine = MasterAppEngine()
+_engine = engine  # alias - some mixin files import the underscore-prefixed name
+
 
 PINNED_SYMBOL_MAP = {
     "BTCUSD": "B-BTC_USDT",
     "ETHUSD": "B-ETH_USDT",
     "Gold": "B-XAU_USDT",
 }
+
 
 POI_LINE_TF_ORDER = ["1m", "5m", "15m", "1H", "4H", "1D", "1W", "1M"]
 POI_LINE_TF_LABELS = {
@@ -43,6 +63,7 @@ POI_ZONE_TYPES = [
 ]
 POI_DEFAULT_STRATEGY_TYPES = {"4H_HIGH", "4H_LOW", "PDH", "PDL"}
 
+
 TRADING_PANEL_TF_OPTIONS = ["1m", "5m", "15m"]
 TRADING_PANEL_DAY_PRESETS = ["1", "3", "5", "7", "14", "30", "90"]
 TRADING_PANEL_PERIOD_MAP = {
@@ -51,9 +72,11 @@ TRADING_PANEL_PERIOD_MAP = {
     "15m": {"type": "minute", "span": 15},
 }
 
+
 # Stable DOM id for the KLineChart instance. Must match the id used by
 # ui/components/trading_panel_chart.py and the window.QT19_CHARTS registry
 # key set in ui/components/kline_chart.py's onReady handler.
 TRADING_PANEL_CHART_ID = "qt19-trading-panel-kline"
+
 
 SHELL_STATE_CLASS = ShellScreen

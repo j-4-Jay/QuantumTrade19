@@ -13,3 +13,6 @@ logs/
 .web/
 *.bak_*
 .pytest_cache/
+data/historical/*.db
+data/historical/manifests/
+logs/

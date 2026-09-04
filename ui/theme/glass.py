@@ -2,15 +2,34 @@
 
 PATH: ui/theme/glass.py  (REPLACE ENTIRE FILE)
 
-CHANGE (v0.3.7): added HOVER_GLOW_CLASS constant - pass this as class_name
-on any card-style component to get the soft, theme-contrast hover glow
-defined in ui/theme/global_css.py (.qt19-hover-glow). Nothing else in this
-file changed from the previous locked version.
+FIX v0.4.50:
+  - Reduced side (left/right) padding by 50%: GLASS_CARD_STYLE's padding
+    was a single uniform "1.25rem" on all four sides. Split into vertical
+    vs horizontal so only the SIDE spacing shrinks (1.25rem -> 0.625rem),
+    vertical padding is unchanged. GLASS_CARD_3XL_STYLE inherits this
+    automatically since it spreads GLASS_CARD_STYLE.
+  - Added explicit "overflow": "visible" to GLASS_CARD_STYLE. This style
+    itself was never clipping anything, but making it explicit here rules
+    this file out entirely as a cause and prevents any future accidental
+    overflow:hidden regression on this shared style from silently clipping
+    every card's own box-shadow (a shadow renders OUTSIDE the border box,
+    so overflow:hidden on the same element always clips its own glow).
+
+NOTE: the actual mouse-hover glow effect itself (.qt19-hover-glow, used via
+HOVER_GLOW_CLASS below) is defined in ui/theme/global_css.py, not here. If
+the glow still looks clipped/thin after this change, that CSS class
+definition is almost certainly where the real remaining issue is - I don't
+have that file's source yet.
+
+CHANGE (v0.3.7, unchanged): HOVER_GLOW_CLASS constant - pass this as
+class_name on any card-style component to get the soft, theme-contrast
+hover glow defined in ui/theme/global_css.py (.qt19-hover-glow).
 """
 from __future__ import annotations
 
 
 _THEME_CROSSFADE = "background 0.9s ease, border-color 0.9s ease, box-shadow 0.9s ease, color 0.9s ease"
+
 
 HOVER_GLOW_CLASS: str = "qt19-hover-glow"
 
@@ -21,7 +40,8 @@ GLASS_CARD_STYLE: dict = {
     "border": "1px solid var(--qt19-glass-border)",
     "border_radius": "1.5rem",
     "box_shadow": "0 8px 32px rgba(0,0,0,0.18)",
-    "padding": "1.25rem",
+    "padding": "1.25rem 0.625rem",
+    "overflow": "visible",
     "transition": _THEME_CROSSFADE,
 }
 

@@ -1,26 +1,40 @@
-"""Executable AppState mixin: core shell, splash, transitions, tabs, sounds.
+"""Executable AppState mixin: core shell, splash, transitions, tabs, and sounds.
 
-PATH: state/app_state_mixins/core_shell_mixin.py
+PATH: state/app_state_mixins/core_shell_mixin.py  (REPLACE ENTIRE FILE)
 
-CHANGE (v0.3.7): added sidebar_collapsed load-on-startup and
-toggle_sidebar_collapsed(), persisted via SettingsPersistenceWorker so the
-collapsed/expanded state survives an app restart.
+FIX v0.4.41 - "live chart only updates on tab switch" root cause found:
+now that active_tab correctly persists (v0.4.36), a restart/reload that
+lands directly on "Trading Panel" or "Settings" NEVER started their
+background pollers - that only ever happened inside set_active_tab(),
+which on_load() does not call (it restores active_tab directly). Fixed by
+having on_load() perform the SAME chart-refresh + poller-start steps
+set_active_tab() does, for whichever tab was actually restored.
+
+FIX v0.4.41 - Settings sub-tab (Appearance/Data & Connection/Security/
+Trading Defaults) was never persisted at all - added
+settings_active_subtab, restored in on_load() and saved in the new
+set_settings_active_subtab().
+
+FIX v0.4.36 (carried forward) - active_tab itself now round-trips through
+persistence.save()/on_load() exactly like every other shell setting.
 """
 from __future__ import annotations
 
 import asyncio
+
 import reflex as rx
 
+from config.settings import TRADING_PANEL_DEFAULT_DISPLAY_DAYS
 from state.app_state_mixins.shared import (
     _engine,
     SHELL_STATE_CLASS,
+    SIDEBAR_TABS,
     SPLASH_DURATION_SECONDS,
     SPLASH_HOLD_SECONDS,
     THEMES,
     THEME_LABELS,
     THEME_ORDER,
     TRANSITION_EFFECTS,
-    SIDEBAR_TABS,
 )
 
 
@@ -30,24 +44,33 @@ class CoreShellMixin(rx.State, mixin=True):
         self.paper_mode = _engine.paper_mode
         self.sound_muted = not _engine.ui.sound.is_master_on()
         settings = _engine.security.persistence.load()
+
+        self.active_tab = settings.get("active_tab", self.active_tab)
+        self.settings_active_subtab = settings.get("settings_active_subtab", self.settings_active_subtab)
         self.transition_effects_enabled = settings.get("transition_effects_enabled", self.transition_effects_enabled)
         self.transition_mode = settings.get("transition_mode", self.transition_mode)
         self.tab_transition_effects_enabled = settings.get("tab_transition_effects_enabled", self.tab_transition_effects_enabled)
         self.tab_transition_mode = settings.get("tab_transition_mode", self.tab_transition_mode)
         self.trading_panel_chart_theme = settings.get("trading_panel_chart_theme", self.trading_panel_chart_theme)
+        self.trading_panel_symbol = settings.get("trading_panel_symbol", self.trading_panel_symbol)
+        self.trading_panel_chart_tf = settings.get("trading_panel_chart_tf", self.trading_panel_chart_tf)
         self.sidebar_collapsed = bool(settings.get("sidebar_collapsed", False))
+
+        saved_days = settings.get(f"chart_display_days::{self.trading_panel_symbol}", TRADING_PANEL_DEFAULT_DISPLAY_DAYS)
+        self.trading_panel_display_days_input = str(saved_days)
+        self.trading_panel_display_days_draft = str(saved_days)
+
         _engine.ensure_market_data_started()
         self.refresh_symbol_rows()
-        return type(self).start_poi_monitor_background
+
+        background_tasks = [type(self).start_poi_monitor_background, type(self).poll_deep_history_cards]
+        if self.active_tab == "Trading Panel":
+            self.refresh_trading_panel_chart()
+            background_tasks.append(type(self).poll_trading_panel_chart)
+        return background_tasks
 
     @rx.event(background=True)
     async def start_poi_monitor_background(self):
-        """POIMonitor's construction makes many blocking network calls
-        (every active symbol x every POI Worker type x up to 8 timeframes).
-        Running it via asyncio.to_thread() offloads that blocking work to a
-        separate OS thread so it never freezes the shared asyncio event
-        loop the rest of the app depends on.
-        """
         async with self:
             if self._poi_monitor_starting:
                 return
@@ -61,10 +84,6 @@ class CoreShellMixin(rx.State, mixin=True):
                 self._poi_monitor_starting = False
 
     async def run_splash_sequence(self):
-        """Fires the bar-fill animation fresh via rx.call_script, waits the fill duration,
-        holds at 100%, then dissolves to Register/Login (hardcoded, never the random pool).
-        Guarded against React Strict Mode's double-invocation of on_mount - see module docstring.
-        """
         if self._splash_task_running:
             return
         self._splash_task_running = True
@@ -118,12 +137,22 @@ class CoreShellMixin(rx.State, mixin=True):
 
     def set_active_tab(self, tab: str) -> None:
         self.active_tab = tab
+        _engine.security.persistence.save({"active_tab": tab})
         self.detail_popup_open = False
         self._pick_tab_transition_effect()
         if tab == "Trading Panel":
             self.refresh_trading_panel_chart()
             return [self.play_sound("tab-slide"), type(self).poll_trading_panel_chart]
+        if tab == "Settings":
+            return [self.play_sound("tab-slide"), type(self).poll_deep_history_cards]
         return self.play_sound("tab-slide")
+
+    def set_settings_active_subtab(self, subtab: str) -> None:
+        """Persists which Settings sub-tab (Appearance / Data & Connection /
+        Security & Notifications / Trading Defaults) was last open, so it
+        is restored on the next app restart - same pattern as active_tab."""
+        self.settings_active_subtab = subtab
+        _engine.security.persistence.save({"settings_active_subtab": subtab})
 
     def set_theme(self, key: str) -> None:
         if _engine.ui.theme.set_active_key(key):
@@ -180,9 +209,14 @@ class CoreShellMixin(rx.State, mixin=True):
     def theme_vars(self) -> dict[str, str]:
         t = THEMES[self.theme_key]
         return {
-            "accent": t.accent, "accent_glow": t.accent_glow, "bg_from": t.bg_from, "bg_to": t.bg_to,
-            "glass_bg": t.glass_bg, "glass_border": t.glass_border,
-            "text_primary": t.text_primary, "text_muted": t.text_muted,
+            "accent": t.accent,
+            "accent_glow": t.accent_glow,
+            "bg_from": t.bg_from,
+            "bg_to": t.bg_to,
+            "glass_bg": t.glass_bg,
+            "glass_border": t.glass_border,
+            "text_primary": t.text_primary,
+            "text_muted": t.text_muted,
         }
 
     @rx.var

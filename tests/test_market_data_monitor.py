@@ -104,6 +104,35 @@ def make_fake_ticker_http_get(price_holder, symbol):
     return _get
 
 
+class TestTradingPanelRenderData(unittest.TestCase):
+    def test_closed_1m_bar_is_persisted_for_chart_render(self):
+        transport = FakeSocketTransport()
+        monitor = MarketDataMonitor(transport=transport)
+        candle = Candle(
+            symbol="B-BTC_USDT",
+            timeframe="1m",
+            open_time=1_700_000_000_000,
+            close_time=1_700_000_059_999,
+            open=100.0,
+            high=101.0,
+            low=99.5,
+            close=100.75,
+            volume=2.5,
+            is_closed=True,
+        )
+
+        monitor._publish_candle_closed(candle)
+
+        page = monitor.candle_store.get_recent_window(
+            "B-BTC_USDT",
+            "1m",
+            end_ms=candle.close_time + 60_000,
+            visible_days=1,
+            older_buffer_days=0,
+        )
+        assert any(row.open_time == candle.open_time for row in page["candles"])
+
+
 class TestCandleBuilderContinuity(unittest.TestCase):
     def test_no_gap_no_duplicate_across_synthetic_soak(self):
         from engines.workers.market_data.candle_builder_worker import CandleBuilderWorker

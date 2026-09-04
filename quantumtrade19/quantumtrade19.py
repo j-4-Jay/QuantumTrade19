@@ -2,15 +2,32 @@
 
 PATH: quantumtrade19/quantumtrade19.py  (REPLACE ENTIRE FILE)
 
-CHANGE (v0.3.8.2 - fix Trading Panel right-click menu offset): mounted
-trading_panel_context_menu() as a direct sibling of the main transformed
-screen box, at the true top level of index()'s returned fragment - NOT
-nested inside it. The screen box carries a CSS `transform` via its
-qt19-transition-* class (even the resting `translateX(0)` state counts,
-per the CSS spec), which makes any `position: fixed` descendant measure
-from THAT box instead of the real browser viewport. Mounting the menu
-outside that box entirely is what makes its position:fixed left/top values
-finally match the real click coordinates.
+FIX v0.4.48 - "Trading Panel chart card stops at row-1 height instead of
+filling the page" - found ANOTHER broken link in the height chain (in
+addition to the ui/pages/trading_panel.py and trading_panel_chart.py
+flex/height fixes already applied): _shell_body()'s per-tab content
+wrapper (the rx.box wrapping all five pages) had width="100%" but NO
+height at all, so it always sized itself to content height regardless of
+what any child page tried to declare - every child's own height="100%"
+was resolving against this height-less parent, collapsing to "auto"
+every time. Added height="100%", flex="1", min_height="0", display=flex/
+flex_direction=column, and overflow_y="auto" (so Dashboard/Journal/Alerts/
+Settings, which are naturally content-height and may exceed the viewport,
+can still scroll internally exactly as before - only Trading Panel, which
+already declares its own overflow="hidden" internally, actually uses the
+new fill-height behavior).
+
+NOTE: this is very likely still not the FULL fix - qt19_page_shell()
+(ui/components/page_shell.py) sits between this file's outer
+height="100vh" box and this wrapper, and I don't have that file's source
+yet. If the chart still doesn't fill the page after this change, that
+file is almost certainly the remaining missing link in the chain.
+
+CHANGE (v0.3.8.2, unchanged): trading_panel_context_menu() stays mounted
+as a direct sibling of the main transformed screen box, at the true top
+level of index()'s returned fragment - NOT nested inside it, so its
+position:fixed coordinates are measured from the real viewport instead of
+the screen box's own CSS transform context.
 """
 from __future__ import annotations
 
@@ -53,6 +70,12 @@ def _shell_body() -> rx.Component:
             key=AppState.active_tab,
             class_name="qt19-transition-" + AppState.tab_transition_active_effect,
             width="100%",
+            height="100%",
+            flex="1",
+            min_height="0",
+            display="flex",
+            flex_direction="column",
+            overflow_y="auto",
         ),
         symbol_detail_popup(),
     )

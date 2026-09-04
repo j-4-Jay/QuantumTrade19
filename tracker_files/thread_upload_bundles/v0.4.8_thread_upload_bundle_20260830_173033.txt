@@ -1,0 +1,3020 @@
+QUANTUMTRADE19 - NEW THREAD UPLOAD BUNDLE
+Created: 2026-08-30 17:30:33 +05:30
+Detected project root: D:\QuantumTrade19
+Latest tracker: tracker_files\v0.4.8_TradingPanel_DataIntegrity_Tracker.md
+====================================================================================================
+COMMON NEXT-THREAD PROMPT
+----------------------------------------------------------------------------------------------------
+Read the uploaded QuantumTrade19 thread bundle completely before making changes.
+
+1. Treat the LATEST TRACKER and its continuation prompt inside the bundle as the current phase instructions.
+2. Treat every BEGIN FILE / END FILE section as the current source of truth for that file.
+3. Do not ask me to paste or upload files already included in this bundle.
+4. Follow the project rules: provide full downloadable replacement files only; include full paths; update the versioned tracker; preserve the build -> check -> debug -> re-check -> lock workflow; do not manually edit .web.
+5. First tell me the exact next action, then proceed with the current incomplete phase.
+====================================================================================================
+LATEST TRACKER
+SOURCE PATH: tracker_files\v0.4.8_TradingPanel_DataIntegrity_Tracker.md
+----------------------------------------------------------------------------------------------------
+# QuantumTrade19 — Tracker v0.4.8 — Trading Panel Data Integrity & Three-TF History Loading
+
+**Status:** READY TO BUILD IN A NEW THREAD
+**Created:** 2026-08-30
+**Phase:** 03.1 Pre-File-04 Enhancement Patch — Trading Panel polish phase
+**Base branch:** `master`
+**Prior tracker:** `tracker_files/v0.4.1_TradingPanel_Polish_Tracker.md`
+**Prior locked module:** File 03 POI Monitor — v0.3.0-alpha
+**Governing specification:** `03.1_Pre-File-04 Enhancement Patch.md`
+
+---
+
+## 1. Purpose of v0.4.8
+
+This is a **File 02 Market Data integrity bug-fix patch** required by the 03.1 Trading Panel enhancement phase. It does not re-derive, alter, or expand locked File 03 POI/FVG/Order Block logic.
+
+The Trading Panel currently reports incorrect local-history coverage and can stop downloading too early. The UI previously stated values such as `Available in QT19 Database: 1191 Days`, while the actual physical SQLite candle rows only covered a much shorter period.
+
+v0.4.8 makes local-history numbers truthful, keeps broker history ceilings separate from local stored data, downloads all three Trading Panel timeframes together when the user enters a day value, and adds a mandatory combined progress display.
+
+---
+
+## 2. Real Evidence Captured
+
+A read-only diagnostic was executed against:
+
+```text
+D:\QuantumTrade19\data\historical\candles.db
+```
+
+Observed physical SQLite contents at the time of diagnosis:
+
+| Symbol | Timeframe | Physical rows | Earliest stored UTC | Latest stored UTC | Approximate actual span |
+|---|---:|---:|---|---|---:|
+| `B-BTC_USDT` | 15m | 1,000 | 2026-08-19 20:15 | 2026-08-30 06:00 | 10.4 days |
+| `B-BTC_USDT` | 5m | 8,000 | 2026-07-30 00:15 | 2026-08-30 06:10 | 31.3 days |
+| `B-ETH_USDT` | 15m | 1,000 | 2026-08-19 21:00 | 2026-08-30 06:45 | 10.4 days |
+| `B-ETH_USDT` | 1m | 2,000 | 2026-08-28 21:35 | 2026-08-30 06:54 | 1.4 days |
+| `B-ETH_USDT` | 5m | 1,000 | 2026-08-23 08:15 | 2026-08-26 19:30 | 3.5 days; archive is stale/gapped |
+
+Diagnostic conclusion:
+
+- The chart cannot render candles that do not physically exist in `candles.db`.
+- `B-BTC_USDT` 5m successfully rendered 15 days because actual local rows existed for that range.
+- `B-BTC_USDT` 15m could render only about 10 days because actual local rows numbered 1,000, which equals about 10.4 days at 15m.
+- 1m and 15m reports of much larger local coverage were false.
+
+---
+
+## 3. Confirmed Root Cause
+
+`HistoryDepthProberWorker` currently calls:
+
+```python
+self._manifest.mark_covered(symbol, timeframe, batch_oldest, batch_newest)
+```
+
+while probing broker depth.
+
+A broker-depth probe does **not** save those candles to:
+
+```text
+D:\QuantumTrade19\data\historical\candles.db
+```
+
+Therefore, the probe corrupts the manifest used to represent locally downloaded coverage. The app then incorrectly treats broker availability as physical QT19 local data. The downloader also trusts the inflated manifest coverage and can stop prematurely after only one or a few API batches.
+
+**Mandatory rule going forward:** A broker probe is not a local download. It must never mark local download coverage.
+
+---
+
+## 4. Locked Requirements for v0.4.8
+
+| # | Requirement | Status |
+|---|---|---|
+| 1 | One `Display Last: X Days` value is persisted per selected symbol and applies to 1m, 5m, and 15m together. | ⬜ Open |
+| 2 | On Enter/blur, QT19 checks actual SQLite coverage for all three Trading Panel TFs. | ⬜ Open |
+| 3 | If a TF already has the requested local coverage, it must not download again. | ⬜ Open |
+| 4 | If a TF is short, QT19 must download only its missing historical range until locally verified, or report a broker ceiling. | ⬜ Open |
+| 5 | `Available in QT19 Database` comes only from actual `candles.db` rows; never manifest span and never broker probe output. | ⬜ Open |
+| 6 | `Available in Broker Database` comes only from broker-depth probe results and remains separate from local coverage. | ⬜ Open |
+| 7 | Broker probing must not call `HistoryManifestWorker.mark_covered()` or otherwise change local download coverage. | ⬜ Open |
+| 8 | Show one mandatory combined progress bar beside the days input while any of 1m/5m/15m is downloading. Display the combined integer percentage **inside** the bar. | ⬜ Open |
+| 9 | Show compact individual status/progress for 1m, 5m, and 15m. | ⬜ Open |
+| 10 | The selected chart auto-refreshes after its newly needed local candles are physically saved; no QT19 restart, no tab switch, no TF switch. | ⬜ Open |
+| 11 | Live current-candle update remains 0.5-second incremental `chart.updateData(bar)` only; never resend the whole historical array per tick. | ⬜ Open |
+| 12 | Requested Display Days survives normal restart, browser reload/reconnect, and crash recovery via persisted settings. | ⬜ Open |
+| 13 | Add a memory-safety guard. Preserve the saved requested-days value. Only when a measured/requested render limit is exceeded, temporarily render 5 days and visibly explain that safe mode is active. Never silently overwrite user preference. | ⬜ Open |
+| 14 | Add a one-time repair script that backs up manifests and rebuilds local metadata from actual SQLite rows without deleting/downloading/modifying candle rows. | ⬜ Open |
+| 15 | Return normal logging from temporary DEBUG diagnostic mode to INFO after test evidence is gathered, unless a specific test still requires DEBUG. | ⬜ Open |
+
+---
+
+## 5. Data and Performance Rules
+
+- **CoinDCX Futures only. Never Spot.**
+- Candle timestamps, broker math, deep-history boundaries, and POI calculations remain UTC-correct.
+- User-visible time remains New York / DST-aware where chart labels or tooltips display source time.
+- Trading Panel UI must only consume monitor interfaces; it must not call CoinDCX endpoints directly.
+- `MAX_LIMIT_PER_CALL = 1000` means one remote batch represents approximately:
+
+| Timeframe | Approximate duration of 1,000 candles |
+|---|---:|
+| 1m | 16.7 hours |
+| 5m | 3.47 days |
+| 15m | 10.4 days |
+
+- For a 15-day request, expected approximate physical candle counts are: 1m = 21,600; 5m = 4,320; 15m = 1,440. Counts can vary slightly at the current forming candle/range edge.
+- Do not use a manifest’s summed range span as a substitute for physical SQLite coverage.
+- Do not resend thousands of historical rows every 0.5 seconds.
+- A one-time full chart reload after an explicit user day change or completed download is acceptable in v0.4.8, subject to the memory safety guard.
+- True buffered/infinite local chart paging is deferred to the next dedicated patch after v0.4.8 data integrity passes.
+
+---
+
+## 6. Required Implementation Files
+
+```text
+config/settings.py
+config/logging_config.py
+state/app_state.py
+state/app_state_mixins/core_shell_mixin.py
+state/app_state_mixins/trading_panel_mixin.py
+engines/monitors/market_data_monitor.py
+engines/workers/market_data/candle_builder_worker.py
+engines/workers/market_data/candle_store_worker.py
+engines/workers/market_data/history_manifest_worker.py
+engines/workers/market_data/deep_history_downloader_worker.py
+engines/workers/market_data/history_depth_prober_worker.py
+ui/components/kline_chart.py
+ui/components/trading_panel_chart.py
+ui/pages/trading_panel.py
+```
+
+## 7. Required New Files
+
+```text
+Repair_QT19_Historical_Coverage_v0.4.8.ps1
+tracker_files/v0.4.8_TradingPanel_DataIntegrity_Tracker.md
+```
+
+---
+
+## 8. Build and Validation Gate
+
+### Build order
+
+1. Inspect the uploaded current source bundle completely before changing design.
+2. Build SQL-backed coverage/gap methods in `CandleStoreWorker`.
+3. Separate broker depth probing from local manifests.
+4. Repair monitor interfaces and all-three-timeframe download coordination.
+5. Update `AppState` and Trading Panel mixin state/event logic.
+6. Update Trading Panel progress UI.
+7. Add the manifest repair script.
+8. Return complete replacement files only; no manual code fragments.
+
+### Required tests
+
+1. Run the one-time repair script and confirm it reports physical SQLite coverage only.
+2. Choose a symbol and set `Display Last` to a value smaller than all local TF coverages.
+   - No downloader launches.
+   - No progress bar appears.
+   - Each selected chart renders local rows only.
+3. Enter a value larger than local coverage for at least one of 1m/5m/15m.
+   - One combined progress bar appears.
+   - Percentage is inside the bar.
+   - Individual 1m/5m/15m statuses update.
+4. Confirm 1m, 5m, and 15m receive sufficient batches to cover the same requested calendar range, unless broker ceiling says otherwise.
+5. Confirm the selected chart refreshes itself at completion without application restart, browser reset, symbol switch, or TF switch.
+6. Confirm `Available in QT19 Database` matches a direct SQLite diagnostic query.
+7. Confirm `Available in Broker Database` is filled after a probe and does not alter local database coverage.
+8. Close/restart QT19 after selecting a non-default symbol, TF, and Display Days number.
+   - Confirm symbol, TF, and days are restored.
+9. Leave the chart open for at least 15 minutes at 0.5-second live updates.
+   - Confirm live candle remains smooth.
+   - Confirm browser memory remains stable.
+10. Run existing File 02 and File 03 tests. Preserve passing behavior.
+
+### Lock condition
+
+Do not lock v0.4.8 until every Section 4 row and every applicable validation item is ✅.
+
+---
+
+## 9. Deferred Next Patch
+
+After v0.4.8 passes and is locked, start a new dedicated patch for **buffered/infinite local chart history**:
+
+- Safe recent initial chart page.
+- Configured pre/post-visible-candle buffer.
+- Load older SQLite pages only when the user pans toward the left edge.
+- Preserve zoom, visible range, and live `updateData()` behavior.
+- Browser memory cap and page eviction strategy.
+- No broker request caused by chart panning; local SQLite only.
+
+Do not start File 04 Setup Detection Monitor until the full 03.1 Trading Panel enhancement patch is explicitly locked.
+
+---
+
+## 10. Continuation Prompt
+
+```text
+Continue QuantumTrade19 under v0.4.8 Trading Panel Data Integrity & Three-TF History Loading.
+
+Read the uploaded thread bundle completely before changing anything. The bundle includes the latest tracker and every required current source file.
+
+This is a File 02 integrity bug-fix inside the 03.1 Pre-File-04 Enhancement Patch. Do not re-derive or alter locked File 03 POI/FVG/Order Block logic.
+
+Confirmed facts:
+- Broker probe currently contaminates local coverage because HistoryDepthProberWorker calls HistoryManifestWorker.mark_covered() without persisting probe candles to SQLite.
+- Local coverage must be determined only from physical rows in data/historical/candles.db.
+- One Display Days value per selected symbol must coordinate 1m + 5m + 15m together.
+- A mandatory combined progress bar must show integer % inside it plus compact per-TF status.
+- Keep 0.5s live updates incremental through chart.updateData(bar); never resend history every tick.
+- Saved symbol, TF, and Display Days must restore after restart/crash.
+- Memory guard must preserve requested days and only temporarily display 5 days with a clear notice when a real render limit is exceeded.
+- Build the SQLite truth / download integrity patch now. Buffered infinite local paging is deferred until v0.4.8 is validated and locked.
+
+Provide complete downloadable replacement files only. Give exact Windows paths. Update this tracker as a new version after each checked sub-step. Do not ask for files that are already in the uploaded bundle.
+```
+
+====================================================================================================
+BEGIN FILE: tracker_files\v0.4.8_TradingPanel_DataIntegrity_Tracker.md
+FULL PATH: D:\QuantumTrade19\tracker_files\v0.4.8_TradingPanel_DataIntegrity_Tracker.md
+FILE TYPE: .md
+----------------------------------------------------------------------------------------------------
+# QuantumTrade19 — Tracker v0.4.8 — Trading Panel Data Integrity & Three-TF History Loading
+
+**Status:** READY TO BUILD IN A NEW THREAD
+**Created:** 2026-08-30
+**Phase:** 03.1 Pre-File-04 Enhancement Patch — Trading Panel polish phase
+**Base branch:** `master`
+**Prior tracker:** `tracker_files/v0.4.1_TradingPanel_Polish_Tracker.md`
+**Prior locked module:** File 03 POI Monitor — v0.3.0-alpha
+**Governing specification:** `03.1_Pre-File-04 Enhancement Patch.md`
+
+---
+
+## 1. Purpose of v0.4.8
+
+This is a **File 02 Market Data integrity bug-fix patch** required by the 03.1 Trading Panel enhancement phase. It does not re-derive, alter, or expand locked File 03 POI/FVG/Order Block logic.
+
+The Trading Panel currently reports incorrect local-history coverage and can stop downloading too early. The UI previously stated values such as `Available in QT19 Database: 1191 Days`, while the actual physical SQLite candle rows only covered a much shorter period.
+
+v0.4.8 makes local-history numbers truthful, keeps broker history ceilings separate from local stored data, downloads all three Trading Panel timeframes together when the user enters a day value, and adds a mandatory combined progress display.
+
+---
+
+## 2. Real Evidence Captured
+
+A read-only diagnostic was executed against:
+
+```text
+D:\QuantumTrade19\data\historical\candles.db
+```
+
+Observed physical SQLite contents at the time of diagnosis:
+
+| Symbol | Timeframe | Physical rows | Earliest stored UTC | Latest stored UTC | Approximate actual span |
+|---|---:|---:|---|---|---:|
+| `B-BTC_USDT` | 15m | 1,000 | 2026-08-19 20:15 | 2026-08-30 06:00 | 10.4 days |
+| `B-BTC_USDT` | 5m | 8,000 | 2026-07-30 00:15 | 2026-08-30 06:10 | 31.3 days |
+| `B-ETH_USDT` | 15m | 1,000 | 2026-08-19 21:00 | 2026-08-30 06:45 | 10.4 days |
+| `B-ETH_USDT` | 1m | 2,000 | 2026-08-28 21:35 | 2026-08-30 06:54 | 1.4 days |
+| `B-ETH_USDT` | 5m | 1,000 | 2026-08-23 08:15 | 2026-08-26 19:30 | 3.5 days; archive is stale/gapped |
+
+Diagnostic conclusion:
+
+- The chart cannot render candles that do not physically exist in `candles.db`.
+- `B-BTC_USDT` 5m successfully rendered 15 days because actual local rows existed for that range.
+- `B-BTC_USDT` 15m could render only about 10 days because actual local rows numbered 1,000, which equals about 10.4 days at 15m.
+- 1m and 15m reports of much larger local coverage were false.
+
+---
+
+## 3. Confirmed Root Cause
+
+`HistoryDepthProberWorker` currently calls:
+
+```python
+self._manifest.mark_covered(symbol, timeframe, batch_oldest, batch_newest)
+```
+
+while probing broker depth.
+
+A broker-depth probe does **not** save those candles to:
+
+```text
+D:\QuantumTrade19\data\historical\candles.db
+```
+
+Therefore, the probe corrupts the manifest used to represent locally downloaded coverage. The app then incorrectly treats broker availability as physical QT19 local data. The downloader also trusts the inflated manifest coverage and can stop prematurely after only one or a few API batches.
+
+**Mandatory rule going forward:** A broker probe is not a local download. It must never mark local download coverage.
+
+---
+
+## 4. Locked Requirements for v0.4.8
+
+| # | Requirement | Status |
+|---|---|---|
+| 1 | One `Display Last: X Days` value is persisted per selected symbol and applies to 1m, 5m, and 15m together. | ⬜ Open |
+| 2 | On Enter/blur, QT19 checks actual SQLite coverage for all three Trading Panel TFs. | ⬜ Open |
+| 3 | If a TF already has the requested local coverage, it must not download again. | ⬜ Open |
+| 4 | If a TF is short, QT19 must download only its missing historical range until locally verified, or report a broker ceiling. | ⬜ Open |
+| 5 | `Available in QT19 Database` comes only from actual `candles.db` rows; never manifest span and never broker probe output. | ⬜ Open |
+| 6 | `Available in Broker Database` comes only from broker-depth probe results and remains separate from local coverage. | ⬜ Open |
+| 7 | Broker probing must not call `HistoryManifestWorker.mark_covered()` or otherwise change local download coverage. | ⬜ Open |
+| 8 | Show one mandatory combined progress bar beside the days input while any of 1m/5m/15m is downloading. Display the combined integer percentage **inside** the bar. | ⬜ Open |
+| 9 | Show compact individual status/progress for 1m, 5m, and 15m. | ⬜ Open |
+| 10 | The selected chart auto-refreshes after its newly needed local candles are physically saved; no QT19 restart, no tab switch, no TF switch. | ⬜ Open |
+| 11 | Live current-candle update remains 0.5-second incremental `chart.updateData(bar)` only; never resend the whole historical array per tick. | ⬜ Open |
+| 12 | Requested Display Days survives normal restart, browser reload/reconnect, and crash recovery via persisted settings. | ⬜ Open |
+| 13 | Add a memory-safety guard. Preserve the saved requested-days value. Only when a measured/requested render limit is exceeded, temporarily render 5 days and visibly explain that safe mode is active. Never silently overwrite user preference. | ⬜ Open |
+| 14 | Add a one-time repair script that backs up manifests and rebuilds local metadata from actual SQLite rows without deleting/downloading/modifying candle rows. | ⬜ Open |
+| 15 | Return normal logging from temporary DEBUG diagnostic mode to INFO after test evidence is gathered, unless a specific test still requires DEBUG. | ⬜ Open |
+
+---
+
+## 5. Data and Performance Rules
+
+- **CoinDCX Futures only. Never Spot.**
+- Candle timestamps, broker math, deep-history boundaries, and POI calculations remain UTC-correct.
+- User-visible time remains New York / DST-aware where chart labels or tooltips display source time.
+- Trading Panel UI must only consume monitor interfaces; it must not call CoinDCX endpoints directly.
+- `MAX_LIMIT_PER_CALL = 1000` means one remote batch represents approximately:
+
+| Timeframe | Approximate duration of 1,000 candles |
+|---|---:|
+| 1m | 16.7 hours |
+| 5m | 3.47 days |
+| 15m | 10.4 days |
+
+- For a 15-day request, expected approximate physical candle counts are: 1m = 21,600; 5m = 4,320; 15m = 1,440. Counts can vary slightly at the current forming candle/range edge.
+- Do not use a manifest’s summed range span as a substitute for physical SQLite coverage.
+- Do not resend thousands of historical rows every 0.5 seconds.
+- A one-time full chart reload after an explicit user day change or completed download is acceptable in v0.4.8, subject to the memory safety guard.
+- True buffered/infinite local chart paging is deferred to the next dedicated patch after v0.4.8 data integrity passes.
+
+---
+
+## 6. Required Implementation Files
+
+```text
+config/settings.py
+config/logging_config.py
+state/app_state.py
+state/app_state_mixins/core_shell_mixin.py
+state/app_state_mixins/trading_panel_mixin.py
+engines/monitors/market_data_monitor.py
+engines/workers/market_data/candle_builder_worker.py
+engines/workers/market_data/candle_store_worker.py
+engines/workers/market_data/history_manifest_worker.py
+engines/workers/market_data/deep_history_downloader_worker.py
+engines/workers/market_data/history_depth_prober_worker.py
+ui/components/kline_chart.py
+ui/components/trading_panel_chart.py
+ui/pages/trading_panel.py
+```
+
+## 7. Required New Files
+
+```text
+Repair_QT19_Historical_Coverage_v0.4.8.ps1
+tracker_files/v0.4.8_TradingPanel_DataIntegrity_Tracker.md
+```
+
+---
+
+## 8. Build and Validation Gate
+
+### Build order
+
+1. Inspect the uploaded current source bundle completely before changing design.
+2. Build SQL-backed coverage/gap methods in `CandleStoreWorker`.
+3. Separate broker depth probing from local manifests.
+4. Repair monitor interfaces and all-three-timeframe download coordination.
+5. Update `AppState` and Trading Panel mixin state/event logic.
+6. Update Trading Panel progress UI.
+7. Add the manifest repair script.
+8. Return complete replacement files only; no manual code fragments.
+
+### Required tests
+
+1. Run the one-time repair script and confirm it reports physical SQLite coverage only.
+2. Choose a symbol and set `Display Last` to a value smaller than all local TF coverages.
+   - No downloader launches.
+   - No progress bar appears.
+   - Each selected chart renders local rows only.
+3. Enter a value larger than local coverage for at least one of 1m/5m/15m.
+   - One combined progress bar appears.
+   - Percentage is inside the bar.
+   - Individual 1m/5m/15m statuses update.
+4. Confirm 1m, 5m, and 15m receive sufficient batches to cover the same requested calendar range, unless broker ceiling says otherwise.
+5. Confirm the selected chart refreshes itself at completion without application restart, browser reset, symbol switch, or TF switch.
+6. Confirm `Available in QT19 Database` matches a direct SQLite diagnostic query.
+7. Confirm `Available in Broker Database` is filled after a probe and does not alter local database coverage.
+8. Close/restart QT19 after selecting a non-default symbol, TF, and Display Days number.
+   - Confirm symbol, TF, and days are restored.
+9. Leave the chart open for at least 15 minutes at 0.5-second live updates.
+   - Confirm live candle remains smooth.
+   - Confirm browser memory remains stable.
+10. Run existing File 02 and File 03 tests. Preserve passing behavior.
+
+### Lock condition
+
+Do not lock v0.4.8 until every Section 4 row and every applicable validation item is ✅.
+
+---
+
+## 9. Deferred Next Patch
+
+After v0.4.8 passes and is locked, start a new dedicated patch for **buffered/infinite local chart history**:
+
+- Safe recent initial chart page.
+- Configured pre/post-visible-candle buffer.
+- Load older SQLite pages only when the user pans toward the left edge.
+- Preserve zoom, visible range, and live `updateData()` behavior.
+- Browser memory cap and page eviction strategy.
+- No broker request caused by chart panning; local SQLite only.
+
+Do not start File 04 Setup Detection Monitor until the full 03.1 Trading Panel enhancement patch is explicitly locked.
+
+---
+
+## 10. Continuation Prompt
+
+```text
+Continue QuantumTrade19 under v0.4.8 Trading Panel Data Integrity & Three-TF History Loading.
+
+Read the uploaded thread bundle completely before changing anything. The bundle includes the latest tracker and every required current source file.
+
+This is a File 02 integrity bug-fix inside the 03.1 Pre-File-04 Enhancement Patch. Do not re-derive or alter locked File 03 POI/FVG/Order Block logic.
+
+Confirmed facts:
+- Broker probe currently contaminates local coverage because HistoryDepthProberWorker calls HistoryManifestWorker.mark_covered() without persisting probe candles to SQLite.
+- Local coverage must be determined only from physical rows in data/historical/candles.db.
+- One Display Days value per selected symbol must coordinate 1m + 5m + 15m together.
+- A mandatory combined progress bar must show integer % inside it plus compact per-TF status.
+- Keep 0.5s live updates incremental through chart.updateData(bar); never resend history every tick.
+- Saved symbol, TF, and Display Days must restore after restart/crash.
+- Memory guard must preserve requested days and only temporarily display 5 days with a clear notice when a real render limit is exceeded.
+- Build the SQLite truth / download integrity patch now. Buffered infinite local paging is deferred until v0.4.8 is validated and locked.
+
+Provide complete downloadable replacement files only. Give exact Windows paths. Update this tracker as a new version after each checked sub-step. Do not ask for files that are already in the uploaded bundle.
+```
+
+END FILE: tracker_files\v0.4.8_TradingPanel_DataIntegrity_Tracker.md
+====================================================================================================
+
+====================================================================================================
+BEGIN FILE: config\settings.py
+FULL PATH: D:\QuantumTrade19\config\settings.py
+FILE TYPE: .py
+----------------------------------------------------------------------------------------------------
+"""Module 01 - UI/UX & App Shell. Global static config.
+
+PATH: config/settings.py  (REPLACE ENTIRE FILE)
+
+CHANGE (v0.3.7): added Lime Green Day/Night as a 4th theme hue (8 total
+themes now). Existing Yellow/Saffron/Blue themes are untouched.
+"""
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Literal
+
+APP_NAME: str = "QuantumTrade19"
+APP_SUBHEADING: str = "by Jayprakash Pattnaik"
+APP_TAGLINE: str = "Precision. Quantum. Profits."
+APP_VERSION: str = "v0.1.0-alpha"
+SIDEBAR_TABS: list[str] = ["Dashboard", "Trading Panel", "Journal & Reports", "Alerts", "Settings"]
+SPLASH_DURATION_SECONDS: float = 5.0
+SPLASH_HOLD_SECONDS: float = 2.0
+
+ThemeHue = Literal["yellow", "saffron", "blue", "lime"]
+ThemeMode = Literal["day", "night"]
+
+
+@dataclass(frozen=True)
+class ThemeDefinition:
+    hue: ThemeHue
+    mode: ThemeMode
+    accent: str
+    accent_glow: str
+    bg_from: str
+    bg_to: str
+    glass_bg: str
+    glass_border: str
+    text_primary: str
+    text_muted: str
+
+
+THEMES: dict[str, ThemeDefinition] = {
+    "yellow-day": ThemeDefinition("yellow", "day", "#F5C518", "#FFE68A", "#FFF9E5", "#FDEFC0", "rgba(255,255,255,0.55)", "rgba(245,197,24,0.45)", "#2B2400", "#6B5E00"),
+    "yellow-night": ThemeDefinition("yellow", "night", "#F5C518", "#FFE68A", "#141200", "#232000", "rgba(20,18,0,0.55)", "rgba(245,197,24,0.35)", "#FFF4CC", "#C9B65B"),
+    "saffron-day": ThemeDefinition("saffron", "day", "#FF7A18", "#FFB067", "#FFF1E5", "#FFE0C2", "rgba(255,255,255,0.55)", "rgba(255,122,24,0.45)", "#361A00", "#8A4E12"),
+    "saffron-night": ThemeDefinition("saffron", "night", "#FF7A18", "#FFB067", "#1A0D00", "#2B1500", "rgba(26,13,0,0.55)", "rgba(255,122,24,0.35)", "#FFE3C6", "#D69A64"),
+    "blue-day": ThemeDefinition("blue", "day", "#1E8FFF", "#8FCBFF", "#E9F4FF", "#CFE7FF", "rgba(255,255,255,0.55)", "rgba(30,143,255,0.45)", "#00203B", "#2E5D85"),
+    "blue-night": ThemeDefinition("blue", "night", "#1E8FFF", "#8FCBFF", "#00060F", "#001A33", "rgba(0,6,15,0.55)", "rgba(30,143,255,0.35)", "#D6ECFF", "#6FA6D9"),
+    "lime-day": ThemeDefinition("lime", "day", "#65D22C", "#B6F29A", "#F2FCE9", "#DEF5C4", "rgba(255,255,255,0.55)", "rgba(101,210,44,0.45)", "#173500", "#3F6B1A"),
+    "lime-night": ThemeDefinition("lime", "night", "#65D22C", "#B6F29A", "#0A1300", "#132400", "rgba(10,19,0,0.55)", "rgba(101,210,44,0.35)", "#E8FBD8", "#96C878"),
+}
+DEFAULT_THEME_KEY: str = "blue-night"
+THEME_ORDER: list[str] = [
+    "yellow-day", "yellow-night",
+    "saffron-day", "saffron-night",
+    "blue-day", "blue-night",
+    "lime-day", "lime-night",
+]
+THEME_LABELS: dict[str, str] = {
+    "yellow-day": "Yellow \u00b7 Day", "yellow-night": "Yellow \u00b7 Night",
+    "saffron-day": "Saffron \u00b7 Day", "saffron-night": "Saffron \u00b7 Night",
+    "blue-day": "Blue \u00b7 Day", "blue-night": "Blue \u00b7 Night",
+    "lime-day": "Lime Green \u00b7 Day", "lime-night": "Lime Green \u00b7 Night",
+}
+
+LIVE_GLOW_COLOR: str = "#EF4444"
+LIVE_GLOW_SHADOW: str = "rgba(239,68,68,0.55)"
+LOGO_IMAGE_PATH: str = "/branding/logo.png"
+FAVICON_NOTE: str = "Place favicon.ico directly in assets/favicon.ico (NOT assets/branding/)."
+MIN_PASSWORD_LENGTH: int = 4
+
+CURSOR_DEFAULT_IMAGE_PATH: str = "/branding/cursor_default.png"
+CURSOR_ACTIVE_IMAGE_PATH: str = "/branding/cursor_active.png"
+
+TRANSITION_EFFECTS: dict[str, str] = {
+    "dissolve": "Dissolve",
+    "zoom-in": "Zoom In",
+    "zoom-out": "Zoom Out",
+    "slide-up": "Page Slide Up",
+    "slide-down": "Page Slide Down",
+    "slide-left": "Page Slide Left",
+    "slide-right": "Page Slide Right",
+    "flip-x": "Page Flip (Horizontal)",
+    "flip-y": "Page Flip (Vertical)",
+    "blur-in": "Blur In",
+}
+
+END FILE: config\settings.py
+====================================================================================================
+
+====================================================================================================
+BEGIN FILE: config\logging_config.py
+FULL PATH: D:\QuantumTrade19\config\logging_config.py
+FILE TYPE: .py
+----------------------------------------------------------------------------------------------------
+"""QuantumTrade19 runtime logging: quiet console, complete rotating file logs.
+
+PATH: config/logging_config.py  (REPLACE ENTIRE FILE)
+
+CHANGE (diagnostic - temporary DEBUG level): configure_logging()'s default
+level changed from logging.INFO to logging.DEBUG so the all_events file
+handler (logs/quantumtrade19.log) now captures logger.debug(...) calls too -
+including MarketDataMonitor.get_chart_candles()'s
+"market_data_chart_local_read" diagnostic line, which is what we need to
+see right now to find the Trading Panel day-count bug. Console output is
+unaffected - it stays at ERROR only, exactly as before. Once the bug is
+found and fixed, this can be changed back to logging.INFO to reduce log
+file size/noise for normal day-to-day use.
+"""
+from __future__ import annotations
+
+import logging
+import logging.handlers
+import sys
+import threading
+from pathlib import Path
+
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_LOG_DIR = _PROJECT_ROOT / "logs"
+_CONFIG_LOCK = threading.Lock()
+_CONFIGURED = False
+
+
+LOG_FORMAT = "%(asctime)s.%(msecs)03dZ | %(levelname)-8s | %(threadName)s | %(name)s | %(message)s"
+DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
+
+
+class _UTCFormatter(logging.Formatter):
+    """Format all persisted runtime records with UTC timestamps."""
+
+    converter = staticmethod(__import__("time").gmtime)
+
+
+def _formatter() -> logging.Formatter:
+    return _UTCFormatter(LOG_FORMAT, datefmt=DATE_FORMAT)
+
+
+def configure_logging(level: int = logging.DEBUG) -> None:
+    """Configure a quiet terminal and complete daily-rotating runtime files."""
+    global _CONFIGURED
+    with _CONFIG_LOCK:
+        if _CONFIGURED:
+            return
+
+        _LOG_DIR.mkdir(parents=True, exist_ok=True)
+        formatter = _formatter()
+        root = logging.getLogger()
+        root.setLevel(logging.DEBUG)
+
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:
+                pass
+
+        # The terminal is intentionally reserved for application errors.
+        # Reflex still prints its own startup URLs separately.
+        console = logging.StreamHandler(sys.stdout)
+        console.setLevel(logging.ERROR)
+        console.setFormatter(formatter)
+
+        all_events = logging.handlers.TimedRotatingFileHandler(
+            _LOG_DIR / "quantumtrade19.log",
+            when="midnight",
+            interval=1,
+            backupCount=30,
+            encoding="utf-8",
+            utc=True,
+        )
+        all_events.setLevel(level)
+        all_events.setFormatter(formatter)
+
+        errors = logging.handlers.TimedRotatingFileHandler(
+            _LOG_DIR / "errors.log",
+            when="midnight",
+            interval=1,
+            backupCount=30,
+            encoding="utf-8",
+            utc=True,
+        )
+        errors.setLevel(logging.WARNING)
+        errors.setFormatter(formatter)
+
+        root.addHandler(console)
+        root.addHandler(all_events)
+        root.addHandler(errors)
+
+        # These framework/client lifecycle warnings are expected in Reflex
+        # development reloads and are retained in quantumtrade19.log only.
+        logging.getLogger("reflex").setLevel(logging.ERROR)
+        logging.getLogger("reflex.state").setLevel(logging.ERROR)
+        logging.getLogger("socketio").setLevel(logging.ERROR)
+        logging.getLogger("engineio").setLevel(logging.ERROR)
+        logging.captureWarnings(True)
+        _install_exception_hooks()
+        _CONFIGURED = True
+        logging.getLogger("system.logging").info(
+            "logging_configured log_dir=%s retention_days=30 console_level=ERROR",
+            _LOG_DIR,
+        )
+
+
+def _install_exception_hooks() -> None:
+    """Persist unhandled main-thread and worker-thread exceptions."""
+    logger = logging.getLogger("system.unhandled_exception")
+
+    def main_hook(exc_type, exc_value, exc_traceback) -> None:
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        logger.critical(
+            "unhandled_main_thread_exception",
+            exc_info=(exc_type, exc_value, exc_traceback),
+        )
+
+    def thread_hook(args: threading.ExceptHookArgs) -> None:
+        if issubclass(args.exc_type, KeyboardInterrupt):
+            return
+        logger.critical(
+            "unhandled_worker_thread_exception thread=%s",
+            args.thread.name if args.thread else "unknown",
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    sys.excepthook = main_hook
+    threading.excepthook = thread_hook
+
+END FILE: config\logging_config.py
+====================================================================================================
+
+====================================================================================================
+BEGIN FILE: state\app_state.py
+FULL PATH: D:\QuantumTrade19\state\app_state.py
+FILE TYPE: .py
+----------------------------------------------------------------------------------------------------
+"""Reflex State - thin UI binding layer over the Master App Engine (no business logic here).
+
+PATH: state/app_state.py  (REPLACE ENTIRE FILE)
+
+Composes executable mixins from state/app_state_mixins/.
+
+CHANGE (v0.3.8): added trading_panel_menu_open/trading_panel_menu_x/
+trading_panel_menu_y - drive the custom, fully Reflex-rendered right-click
+menu on the Trading Panel chart (see trading_panel_mixin.py + ui/pages/
+trading_panel.py). Replaces the previous rx.context_menu attempt, which
+never opened because klinecharts' own canvas already calls
+preventDefault() on the native contextmenu event.
+"""
+from __future__ import annotations
+
+import reflex as rx
+
+from config.settings import DEFAULT_THEME_KEY
+from state.app_state_mixins.shared import SHELL_STATE_CLASS
+from state.app_state_mixins.core_shell_mixin import CoreShellMixin
+from state.app_state_mixins.auth_security_mixin import AuthSecurityMixin
+from state.app_state_mixins.market_dashboard_mixin import MarketDashboardMixin
+from state.app_state_mixins.poi_settings_mixin import PoiSettingsMixin
+from state.app_state_mixins.trading_panel_mixin import TradingPanelMixin
+
+TRADING_PANEL_TF_OPTIONS = ["1m", "5m", "15m"]
+TRADING_PANEL_DAY_PRESETS = ["1", "3", "5", "7", "14", "30", "90"]
+
+
+class AppState(
+    CoreShellMixin,
+    AuthSecurityMixin,
+    MarketDashboardMixin,
+    PoiSettingsMixin,
+    TradingPanelMixin,
+    rx.State,
+):
+    screen: str = SHELL_STATE_CLASS.SPLASH.value
+    active_tab: str = "Dashboard"
+    theme_key: str = DEFAULT_THEME_KEY
+    paper_mode: bool = True
+    is_locked: bool = False
+    sound_muted: bool = False
+    sidebar_collapsed: bool = False
+
+    totp_required: bool = False
+
+    reg_username: str = ""
+    reg_password: str = ""
+    reg_confirm_password: str = ""
+    reg_enable_totp: bool = False
+    reg_error: str = ""
+    reg_stage: str = "form"
+    reg_qr_data_uri: str = ""
+    reg_totp_code: str = ""
+    show_reg_password: bool = False
+    show_reg_confirm_password: bool = False
+
+    login_username: str = ""
+    login_password: str = ""
+    login_totp: str = ""
+    login_error: str = ""
+    show_login_password: bool = False
+    show_lock_password: bool = False
+    login_credentials_match: bool = False
+    login_error_seq: int = 0
+    login_remember_device: bool = False
+
+    manage_username: str = ""
+    manage_password: str = ""
+    manage_error: str = ""
+    manage_stage: str = "verify"
+    manage_totp_qr: str = ""
+    manage_totp_code: str = ""
+    show_manage_password: bool = False
+    tg_bot_token: str = ""
+    tg_chat_id: str = ""
+    tg_enabled: bool = False
+    tg_configured: bool = False
+    tg_message: str = ""
+    dc_webhook_url: str = ""
+    dc_enabled: bool = False
+    dc_configured: bool = False
+    dc_message: str = ""
+
+    forgot_stage: str = "choose"
+    forgot_selected_method: str = ""
+    forgot_code: str = ""
+    forgot_otp_sent: bool = False
+    forgot_verified: bool = False
+    forgot_new_password: str = ""
+    forgot_confirm_password: str = ""
+    forgot_error: str = ""
+    show_forgot_new_password: bool = False
+    show_forgot_confirm_password: bool = False
+    forgot_available_methods: list[str] = []
+    forgot_has_any_method: bool = False
+
+    show_logout_dialog: bool = False
+    logout_stage: str = "confirm"
+
+    detail_popup_open: bool = False
+    detail_popup_symbol: str = ""
+    ws_status: str = "connected"
+    pinned_prices: dict[str, str] = {}
+    symbol_rows: list[dict] = []
+    deep_history_symbol: str = "B-BTC_USDT"
+    deep_history_timeframe: str = "1m"
+    deep_history_target_days: str = ""
+    deep_history_ceiling_days: str = "Not checked yet"
+    deep_history_covered_days: str = "0"
+    deep_history_is_downloading: bool = False
+    deep_history_status_message: str = ""
+
+    poi_settings_loaded: bool = False
+    poi_display_enabled: dict[str, bool] = {}
+    poi_strategy_enabled: dict[str, bool] = {}
+    poi_zone_source_tf_enabled: dict[str, bool] = {}
+    poi_show_labels: bool = True
+    poi_show_tooltips: bool = True
+    poi_line_transparency: int = 100
+    poi_zone_opacity: int = 30
+    poi_show_source_tf_badge: bool = True
+    poi_show_logical_id: bool = False
+    poi_reduced_motion: bool = False
+    poi_backend_busy: bool = False
+
+    transition_effects_enabled: list[str] = ["dissolve", "zoom-in", "slide-up", "flip-x", "blur-in"]
+    transition_mode: str = "shuffle"
+    transition_active_effect: str = "dissolve"
+    _transition_sequence_index: int = 0
+
+    tab_transition_effects_enabled: list[str] = ["slide-left"]
+    tab_transition_mode: str = "single"
+    tab_transition_active_effect: str = "slide-left"
+    _tab_transition_sequence_index: int = 0
+
+    _splash_task_running: bool = False
+    _ws_poll_running: bool = False
+    _price_poll_running: bool = False
+    _deep_history_poll_running: bool = False
+    _poi_monitor_starting: bool = False
+
+    # --- Trading Panel chart state (react-klinecharts) ---
+    trading_panel_symbol: str = "B-BTC_USDT"
+    trading_panel_chart_tf: str = "5m"
+    trading_panel_display_days_input: str = "5"
+    trading_panel_display_days_draft: str = "5"
+    trading_panel_chart_theme: str = "night"
+    trading_panel_grid_enabled: bool = False
+    trading_panel_candles: list[dict] = []
+    trading_panel_current_open: str = "--"
+    trading_panel_current_high: str = "--"
+    trading_panel_current_low: str = "--"
+    trading_panel_current_close: str = "--"
+    trading_panel_local_days: str = "0"
+    trading_panel_broker_days: str = "Not checked yet"
+    trading_panel_notice: str = ""
+    trading_panel_follow_live: bool = False
+    _trading_panel_poll_running: bool = False
+    _trading_panel_last_candle_ts: float = 0.0
+
+    # --- Custom right-click chart menu (v0.3.8) ---
+    trading_panel_menu_open: bool = False
+    trading_panel_menu_x: int = 0
+    trading_panel_menu_y: int = 0
+
+END FILE: state\app_state.py
+====================================================================================================
+
+====================================================================================================
+BEGIN FILE: state\app_state_mixins\core_shell_mixin.py
+FULL PATH: D:\QuantumTrade19\state\app_state_mixins\core_shell_mixin.py
+FILE TYPE: .py
+----------------------------------------------------------------------------------------------------
+"""Executable AppState mixin: core shell, splash, transitions, tabs, sounds.
+
+PATH: state/app_state_mixins/core_shell_mixin.py  (REPLACE ENTIRE FILE)
+
+CHANGE (v0.4.6 - remember last symbol/timeframe): on_load() now restores
+trading_panel_symbol and trading_panel_chart_tf from persisted settings, the
+same way trading_panel_chart_theme and sidebar_collapsed already were. The
+actual saving of these two values happens in
+state/app_state_mixins/trading_panel_mixin.py's set_trading_panel_symbol()
+and set_trading_panel_chart_tf() (also updated alongside this file) - both
+files need to be replaced together for this to work.
+
+CHANGE (v0.3.7, carried forward): added sidebar_collapsed load-on-startup
+and toggle_sidebar_collapsed(), persisted via SettingsPersistenceWorker so
+the collapsed/expanded state survives an app restart.
+"""
+from __future__ import annotations
+
+import asyncio
+import reflex as rx
+
+from state.app_state_mixins.shared import (
+    _engine,
+    SHELL_STATE_CLASS,
+    SPLASH_DURATION_SECONDS,
+    SPLASH_HOLD_SECONDS,
+    THEMES,
+    THEME_LABELS,
+    THEME_ORDER,
+    TRANSITION_EFFECTS,
+    SIDEBAR_TABS,
+)
+
+
+class CoreShellMixin(rx.State, mixin=True):
+    async def on_load(self) -> None:
+        self.theme_key = _engine.ui.theme.get_active_key()
+        self.paper_mode = _engine.paper_mode
+        self.sound_muted = not _engine.ui.sound.is_master_on()
+        settings = _engine.security.persistence.load()
+        self.transition_effects_enabled = settings.get("transition_effects_enabled", self.transition_effects_enabled)
+        self.transition_mode = settings.get("transition_mode", self.transition_mode)
+        self.tab_transition_effects_enabled = settings.get("tab_transition_effects_enabled", self.tab_transition_effects_enabled)
+        self.tab_transition_mode = settings.get("tab_transition_mode", self.tab_transition_mode)
+        self.trading_panel_chart_theme = settings.get("trading_panel_chart_theme", self.trading_panel_chart_theme)
+        self.trading_panel_symbol = settings.get("trading_panel_symbol", self.trading_panel_symbol)
+        self.trading_panel_chart_tf = settings.get("trading_panel_chart_tf", self.trading_panel_chart_tf)
+        self.sidebar_collapsed = bool(settings.get("sidebar_collapsed", False))
+        _engine.ensure_market_data_started()
+        self.refresh_symbol_rows()
+        return type(self).start_poi_monitor_background
+
+    @rx.event(background=True)
+    async def start_poi_monitor_background(self):
+        """POIMonitor's construction makes many blocking network calls
+        (every active symbol x every POI Worker type x up to 8 timeframes).
+        Running it via asyncio.to_thread() offloads that blocking work to a
+        separate OS thread so it never freezes the shared asyncio event
+        loop the rest of the app depends on.
+        """
+        async with self:
+            if self._poi_monitor_starting:
+                return
+            self._poi_monitor_starting = True
+        try:
+            await asyncio.to_thread(_engine.ensure_poi_monitor_started)
+            async with self:
+                self.load_poi_settings()
+        finally:
+            async with self:
+                self._poi_monitor_starting = False
+
+    async def run_splash_sequence(self):
+        """Fires the bar-fill animation fresh via rx.call_script, waits the fill duration,
+        holds at 100%, then dissolves to Register/Login (hardcoded, never the random pool).
+        Guarded against React Strict Mode's double-invocation of on_mount - see module docstring.
+        """
+        if self._splash_task_running:
+            return
+        self._splash_task_running = True
+        try:
+            duration_ms = int(SPLASH_DURATION_SECONDS * 1000)
+            yield rx.call_script(
+                f"""
+                (function() {{
+                    const fill = document.getElementById('qt19-splash-bar-fill');
+                    const pct = document.getElementById('qt19-splash-pct');
+                    if (fill) {{
+                        fill.style.transition = 'none';
+                        fill.style.transform = 'scaleX(0)';
+                        void fill.offsetWidth;
+                        fill.style.transition = 'transform {SPLASH_DURATION_SECONDS}s linear';
+                        requestAnimationFrame(function() {{ fill.style.transform = 'scaleX(1)'; }});
+                    }}
+                    if (pct) {{ pct.textContent = '0%'; }}
+                    const start = Date.now();
+                    const durationMs = {duration_ms};
+                    const interval = setInterval(function() {{
+                        const elapsed = Date.now() - start;
+                        const percent = Math.min(100, Math.round((elapsed / durationMs) * 100));
+                        if (pct) {{ pct.textContent = percent + '%'; }}
+                        if (elapsed >= durationMs) {{ clearInterval(interval); }}
+                    }}, 100);
+                }})();
+                """
+            )
+            await asyncio.sleep(SPLASH_DURATION_SECONDS)
+            await asyncio.sleep(SPLASH_HOLD_SECONDS)
+            self.totp_required = _engine.security.is_totp_enabled() and not _engine.security.is_device_trusted()
+            self.transition_active_effect = "dissolve"
+            self.screen = _engine.finish_splash().value
+        finally:
+            self._splash_task_running = False
+
+    def _pick_transition_effect(self) -> None:
+        effect, next_index = _engine.ui.transitions.pick(
+            self.transition_effects_enabled, self.transition_mode, self._transition_sequence_index
+        )
+        self.transition_active_effect = effect
+        self._transition_sequence_index = next_index
+
+    def _pick_tab_transition_effect(self) -> None:
+        effect, next_index = _engine.ui.transitions.pick(
+            self.tab_transition_effects_enabled, self.tab_transition_mode, self._tab_transition_sequence_index
+        )
+        self.tab_transition_active_effect = effect
+        self._tab_transition_sequence_index = next_index
+
+    def set_active_tab(self, tab: str) -> None:
+        self.active_tab = tab
+        self.detail_popup_open = False
+        self._pick_tab_transition_effect()
+        if tab == "Trading Panel":
+            self.refresh_trading_panel_chart()
+            return [self.play_sound("tab-slide"), type(self).poll_trading_panel_chart]
+        return self.play_sound("tab-slide")
+
+    def set_theme(self, key: str) -> None:
+        if _engine.ui.theme.set_active_key(key):
+            self.theme_key = key
+
+    def toggle_sound(self) -> None:
+        is_on = _engine.ui.sound.toggle_master()
+        self.sound_muted = not is_on
+
+    def toggle_sidebar_collapsed(self) -> None:
+        self.sidebar_collapsed = not self.sidebar_collapsed
+        _engine.security.persistence.save({"sidebar_collapsed": self.sidebar_collapsed})
+
+    def play_sound(self, event_name: str):
+        url = _engine.ui.play_sound(event_name)
+        if not url:
+            return
+        return rx.call_script(
+            f"(function(){{ try {{ new Audio('{url}').play().catch(function(){{}}); }} "
+            f"catch(e) {{}} }})();"
+        )
+
+    def toggle_transition_effect(self, effect: str, checked: bool) -> None:
+        current = list(self.transition_effects_enabled)
+        if checked and effect not in current:
+            current.append(effect)
+        elif not checked and effect in current:
+            current.remove(effect)
+        if not current:
+            current = [effect]
+        self.transition_effects_enabled = current
+        _engine.security.persistence.save({"transition_effects_enabled": current})
+
+    def set_transition_mode(self, mode: str) -> None:
+        self.transition_mode = mode
+        _engine.security.persistence.save({"transition_mode": mode})
+
+    def toggle_tab_transition_effect(self, effect: str, checked: bool) -> None:
+        current = list(self.tab_transition_effects_enabled)
+        if checked and effect not in current:
+            current.append(effect)
+        elif not checked and effect in current:
+            current.remove(effect)
+        if not current:
+            current = [effect]
+        self.tab_transition_effects_enabled = current
+        _engine.security.persistence.save({"tab_transition_effects_enabled": current})
+
+    def set_tab_transition_mode(self, mode: str) -> None:
+        self.tab_transition_mode = mode
+        _engine.security.persistence.save({"tab_transition_mode": mode})
+
+    @rx.var
+    def theme_vars(self) -> dict[str, str]:
+        t = THEMES[self.theme_key]
+        return {
+            "accent": t.accent, "accent_glow": t.accent_glow, "bg_from": t.bg_from, "bg_to": t.bg_to,
+            "glass_bg": t.glass_bg, "glass_border": t.glass_border,
+            "text_primary": t.text_primary, "text_muted": t.text_muted,
+        }
+
+    @rx.var
+    def sidebar_tabs(self) -> list[str]:
+        return SIDEBAR_TABS
+
+    @rx.var
+    def theme_options(self) -> list[dict[str, str]]:
+        return [{"key": k, "label": THEME_LABELS[k]} for k in THEME_ORDER]
+
+    @rx.var
+    def transition_effect_options(self) -> list[dict[str, str]]:
+        return [{"key": k, "label": v} for k, v in TRANSITION_EFFECTS.items()]
+
+END FILE: state\app_state_mixins\core_shell_mixin.py
+====================================================================================================
+
+====================================================================================================
+BEGIN FILE: state\app_state_mixins\trading_panel_mixin.py
+FULL PATH: D:\QuantumTrade19\state\app_state_mixins\trading_panel_mixin.py
+FILE TYPE: .py
+----------------------------------------------------------------------------------------------------
+"""Executable AppState mixin: Trading Panel chart state and methods (react-klinecharts).
+
+PATH: state/app_state_mixins/trading_panel_mixin.py  (REPLACE ENTIRE FILE)
+
+CHANGE (v0.4.6 - remember last symbol/timeframe): set_trading_panel_symbol()
+and set_trading_panel_chart_tf() now persist the chosen value via
+SettingsPersistenceWorker, exactly like set_trading_panel_chart_theme()
+already does. state/app_state_mixins/core_shell_mixin.py's on_load() (also
+updated alongside this file) restores both on startup - both files need to
+be replaced together for this to work.
+
+CHANGE (v0.4.5, carried forward - visible backfill progress + auto-update
+on completion): trading_panel_backfill_active / trading_panel_backfill_percent
+computed vars drive a progress bar + percent text in the UI while a
+Display-Days-triggered backfill is downloading. _build_live_ohlc_update()
+auto-calls refresh_trading_panel_chart() exactly once the moment the
+backfill catches up to the requested day count - no restart or manual
+symbol/timeframe switch needed to see the new candles.
+
+CHANGE (v0.4.4, carried forward - fix browser "Out of memory" crash):
+trading_panel_candles is only ever reassigned by refresh_trading_panel_chart()
+(full reload). The continuous 0.5s poll tick never touches this list - it
+pushes just the one current/newest candle straight into the chart via
+klinecharts' own chart.updateData(bar) method instead of resending the
+whole history.
+
+Everything else (per-symbol Display Days, once-per-day coverage caching,
+no-jump/Follow-Live/Reset View/Go Live logic, Enter-to-commit Display Days,
+timestamp-in-ms normalization, the 0.5s poll interval, and the theme-aware
+solid right-click menu style) is unchanged.
+"""
+from __future__ import annotations
+
+import asyncio
+import datetime
+import json
+import reflex as rx
+
+from state.app_state_mixins.shared import (
+    _engine,
+    TRADING_PANEL_CHART_ID,
+    TRADING_PANEL_PERIOD_MAP,
+    TRADING_PANEL_TF_OPTIONS,
+    TRADING_PANEL_DAY_PRESETS,
+)
+
+
+def _today_str() -> str:
+    return datetime.date.today().isoformat()
+
+
+def _normalize_timestamp_ms(value) -> int:
+    """Converts a candle's open_time to milliseconds if it looks like a
+    seconds-based epoch timestamp (10 digits, ~1.7e9 right now). Leaves it
+    untouched if it already looks like milliseconds (13 digits, ~1.7e12)."""
+    numeric = int(value)
+    if numeric < 10_000_000_000:
+        return numeric * 1000
+    return numeric
+
+
+class TradingPanelMixin(rx.State, mixin=True):
+    def _symbol_display_days_key(self, symbol: str) -> str:
+        return f"chart_display_days::{symbol}"
+
+    def _coverage_cache_key(self, symbol: str, tf: str) -> str:
+        return f"chart_coverage_cache::{symbol}::{tf}"
+
+    def _load_trading_panel_display_days(self) -> None:
+        saved = _engine.security.persistence.load().get(
+            self._symbol_display_days_key(self.trading_panel_symbol)
+        )
+        value = str(saved) if saved else "5"
+        self.trading_panel_display_days_input = value
+        self.trading_panel_display_days_draft = value
+
+    def _get_coverage(self, symbol: str, tf: str, force: bool = False) -> tuple[int, str]:
+        """Returns (local_days, broker_days_label). Uses a once-per-calendar-
+        day cache unless force=True (used right after triggering a backfill,
+        and on every poll tick while a backfill for this symbol+tf is
+        pending)."""
+        settings = _engine.security.persistence.load()
+        cache_key = self._coverage_cache_key(symbol, tf)
+        cached = settings.get(cache_key)
+
+        if not force and cached and cached.get("date") == _today_str():
+            return int(cached.get("local_days", 0)), str(cached.get("broker_days", "Not checked yet"))
+
+        progress = _engine.market_data.get_deep_history_progress(symbol, tf)
+        local_days = int(progress["covered_days"])
+        ceiling = _engine.market_data.get_ceiling_days(symbol, tf)
+        broker_label = f"{ceiling} days" if ceiling is not None else "Not checked yet"
+
+        _engine.security.persistence.save({
+            cache_key: {"date": _today_str(), "local_days": local_days, "broker_days": broker_label}
+        })
+        return local_days, broker_label
+
+    def _set_coverage_pending(self, symbol: str, tf: str, pending: bool) -> None:
+        _engine.security.persistence.save({f"chart_coverage_pending::{symbol}::{tf}": pending})
+
+    def _is_coverage_pending(self, symbol: str, tf: str) -> bool:
+        return bool(_engine.security.persistence.load().get(f"chart_coverage_pending::{symbol}::{tf}", False))
+
+    def set_trading_panel_symbol(self, value: str) -> None:
+        self.trading_panel_symbol = value
+        _engine.security.persistence.save({"trading_panel_symbol": value})
+        self._load_trading_panel_display_days()
+        self.refresh_trading_panel_chart()
+
+    def set_trading_panel_chart_tf(self, value: str) -> None:
+        self.trading_panel_chart_tf = value
+        _engine.security.persistence.save({"trading_panel_chart_tf": value})
+        self.refresh_trading_panel_chart()
+
+    def set_trading_panel_display_days_draft(self, value: str) -> None:
+        """Updates on every keystroke. Never persisted, never reloads the
+        chart - purely lets the user type freely without the server
+        overwriting what they're typing."""
+        self.trading_panel_display_days_draft = value
+
+    def handle_display_days_keydown(self, key: str) -> None:
+        """Pressing Enter commits immediately - no Apply button needed."""
+        if key == "Enter":
+            self.commit_trading_panel_display_days()
+
+    def commit_trading_panel_display_days(self) -> None:
+        """Call this on blur or Enter. Validates, persists, and triggers the
+        actual full candle reload."""
+        self.set_trading_panel_display_days(self.trading_panel_display_days_draft)
+
+    def set_trading_panel_display_days(self, value: str) -> None:
+        """Applies to ALL THREE timeframes of the current symbol.
+
+        Smaller-or-equal case: if local coverage is already >= the
+        requested days, no backfill is started - refresh_trading_panel_chart()
+        just renders the trimmed local window directly from data already on
+        disk.
+
+        Larger case: if local coverage is short, a backfill is started for
+        that specific timeframe and marked pending. While pending, the
+        existing 0.5s poll tick (_build_live_ohlc_update) keeps local_days
+        fresh and drives the visible progress bar/percent, and
+        automatically calls refresh_trading_panel_chart() itself the moment
+        the backfill catches up, with no further action needed here.
+
+        Note: if the broker itself does not have as many days of history as
+        requested (a real exchange data limit, not a software bug), local
+        coverage will plateau at whatever the broker's ceiling is - check
+        the "Available in Broker Database" value shown next to this
+        control."""
+        self.trading_panel_display_days_input = value
+        self.trading_panel_display_days_draft = value
+        try:
+            requested_days = int(value)
+            if requested_days <= 0:
+                self.trading_panel_notice = "Enter a positive whole number of days."
+                return
+        except ValueError:
+            self.trading_panel_notice = "Enter a positive whole number of days."
+            return
+
+        symbol = self.trading_panel_symbol
+        _engine.security.persistence.save({
+            self._symbol_display_days_key(symbol): requested_days
+        })
+
+        for tf in TRADING_PANEL_TF_OPTIONS:
+            local_days, _ = self._get_coverage(symbol, tf, force=True)
+            if local_days < requested_days:
+                _engine.market_data.start_deep_history(symbol, tf, requested_days)
+                self._set_coverage_pending(symbol, tf, True)
+            else:
+                self._set_coverage_pending(symbol, tf, False)
+
+        self.refresh_trading_panel_chart()
+
+    def set_trading_panel_chart_theme(self, value: str) -> None:
+        """Chart-local only - never touches the app-wide theme_key."""
+        self.trading_panel_chart_theme = value
+        _engine.security.persistence.save({"trading_panel_chart_theme": value})
+
+    def toggle_trading_panel_grid(self) -> None:
+        """Grid default is OFF (best for viewing POI lines/zones cleanly).
+        This is a real reactive style change via trading_panel_styles -
+        no JS call needed."""
+        self.trading_panel_grid_enabled = not self.trading_panel_grid_enabled
+        _engine.security.persistence.save({"trading_panel_grid_enabled": self.trading_panel_grid_enabled})
+
+    def toggle_trading_panel_follow_live(self) -> None:
+        self.trading_panel_follow_live = not self.trading_panel_follow_live
+        _engine.security.persistence.save({"trading_panel_follow_live": self.trading_panel_follow_live})
+
+    def reset_trading_panel_view(self):
+        """Resets only zoom/bar-spacing (X-axis scale). klinecharts
+        auto-scales the Y axis to the visible data already, so this alone
+        gives a clean 'reset zoom' without moving the chart to the live
+        candle. Also triggered by double-clicking anywhere inside the
+        chart (see ui/pages/trading_panel.py)."""
+        return rx.call_script(
+            f"""
+            (function() {{
+                var chart = window.QT19_CHARTS && window.QT19_CHARTS["{TRADING_PANEL_CHART_ID}"];
+                if (chart && typeof chart.setBarSpace === "function") {{
+                    chart.setBarSpace(6);
+                }}
+            }})();
+            """
+        )
+
+    def go_live_trading_panel(self):
+        """Immediate jump to the newest candle - the ONLY control that
+        deliberately moves the viewport on demand."""
+        return rx.call_script(
+            f"""
+            (function() {{
+                var chart = window.QT19_CHARTS && window.QT19_CHARTS["{TRADING_PANEL_CHART_ID}"];
+                if (chart && typeof chart.scrollToRealTime === "function") {{
+                    chart.scrollToRealTime();
+                }}
+            }})();
+            """
+        )
+
+    def open_trading_panel_menu(self, x: int, y: int) -> None:
+        """Opens the custom right-click chart menu at the exact click
+        position. Called by the real on_context_menu event trigger declared
+        on ui/components/kline_chart.py's KLineChart component."""
+        self.trading_panel_menu_x = int(x)
+        self.trading_panel_menu_y = int(y)
+        self.trading_panel_menu_open = True
+
+    def close_trading_panel_menu(self) -> None:
+        self.trading_panel_menu_open = False
+
+    def refresh_trading_panel_chart(self) -> None:
+        """Full reload: rebuilds the entire candle array. Called on Trading
+        Panel open, symbol change, timeframe change, Display Last X Days
+        change, and automatically once when a pending backfill finishes.
+        Never called from the continuous 0.5s poll tick otherwise - that
+        tick uses _build_live_ohlc_update() below, which pushes a single
+        bar straight to the chart via JS instead of touching this array."""
+        symbol = self.trading_panel_symbol
+        tf = self.trading_panel_chart_tf
+
+        try:
+            requested_days = int(self.trading_panel_display_days_input)
+        except ValueError:
+            requested_days = 5
+
+        force = self._is_coverage_pending(symbol, tf)
+        local_days, broker_label = self._get_coverage(symbol, tf, force=force)
+        self.trading_panel_local_days = str(local_days)
+        self.trading_panel_broker_days = broker_label
+
+        if local_days >= requested_days and force:
+            self._set_coverage_pending(symbol, tf, False)
+
+        effective_days = min(requested_days, local_days) if local_days else requested_days
+        if local_days and requested_days > local_days:
+            self.trading_panel_notice = f"{requested_days} days requested \u2022 {local_days} days available locally \u2022 downloading the rest\u2026"
+        elif not local_days:
+            self.trading_panel_notice = "No local historical coverage yet for this symbol/timeframe \u2022 downloading\u2026"
+        else:
+            self.trading_panel_notice = ""
+
+        candles = _engine.market_data.get_chart_candles(symbol, tf, effective_days)
+
+        # ASSUMPTION CONFIRMED (v0.3.9.1): Candle fields are open/high/low/close/open_time.
+        # Volume is NOT confirmed available on Candle - defaulted to 0.0 here.
+        # open_time is normalized to milliseconds via _normalize_timestamp_ms().
+        rows = [
+            {
+                "timestamp": _normalize_timestamp_ms(c.open_time),
+                "open": float(c.open),
+                "high": float(c.high),
+                "low": float(c.low),
+                "close": float(c.close),
+                "volume": float(c.volume),
+            }
+            for c in candles
+        ]
+
+        self.trading_panel_candles = rows
+
+        current = candles[-1] if candles else None
+        if current:
+            self.trading_panel_current_open = f"{current.open:,.2f}"
+            self.trading_panel_current_high = f"{current.high:,.2f}"
+            self.trading_panel_current_low = f"{current.low:,.2f}"
+            self.trading_panel_current_close = f"{current.close:,.2f}"
+            self._trading_panel_last_candle_ts = float(current.open_time)
+        else:
+            self.trading_panel_current_open = self.trading_panel_current_high = \
+                self.trading_panel_current_low = self.trading_panel_current_close = "--"
+            self._trading_panel_last_candle_ts = 0.0
+
+    def _build_live_ohlc_update(self):
+        """Reads the current live candle, updates the small OHLC text
+        fields, and returns (live_row_dict_or_None, candle_closed_bool).
+        Does NOT touch trading_panel_candles for the live-tick case - the
+        returned live_row is meant to be pushed straight into the chart via
+        JS by the caller (poll_trading_panel_chart).
+
+        Also re-checks pending backfill coverage every tick so Local/Broker
+        day counts - and therefore the visible progress bar/percent -
+        update live. The moment local_days reaches the requested day count
+        while a backfill was pending, this calls refresh_trading_panel_chart()
+        itself exactly once, so the chart auto-updates with the newly
+        downloaded candles with no restart and no manual symbol/timeframe
+        switch. If the broker's own ceiling is below the requested days,
+        local_days will plateau there and progress will stop below 100% -
+        that is a real exchange data limit, not a bug."""
+        symbol = self.trading_panel_symbol
+        tf = self.trading_panel_chart_tf
+
+        if self._is_coverage_pending(symbol, tf):
+            try:
+                requested_days = int(self.trading_panel_display_days_input)
+            except ValueError:
+                requested_days = 5
+            local_days, broker_label = self._get_coverage(symbol, tf, force=True)
+            self.trading_panel_local_days = str(local_days)
+            self.trading_panel_broker_days = broker_label
+            if local_days >= requested_days:
+                self._set_coverage_pending(symbol, tf, False)
+                self.trading_panel_notice = ""
+                # Backfill just finished for the symbol/tf currently on
+                # screen - redraw once with the newly available candles.
+                self.refresh_trading_panel_chart()
+
+        live = _engine.market_data.get_live_candle(symbol, tf)
+        if not live:
+            return None, False
+
+        self.trading_panel_current_open = f"{live.open:,.2f}"
+        self.trading_panel_current_high = f"{live.high:,.2f}"
+        self.trading_panel_current_low = f"{live.low:,.2f}"
+        self.trading_panel_current_close = f"{live.close:,.2f}"
+
+        live_ts = _normalize_timestamp_ms(live.open_time)
+        live_row = {
+            "timestamp": live_ts,
+            "open": float(live.open),
+            "high": float(live.high),
+            "low": float(live.low),
+            "close": float(live.close),
+            "volume": float(getattr(live, "volume", 0.0) or 0.0),
+        }
+
+        candle_closed = (
+            self._trading_panel_last_candle_ts != 0.0
+            and float(live.open_time) != self._trading_panel_last_candle_ts
+        )
+        self._trading_panel_last_candle_ts = float(live.open_time)
+        return live_row, candle_closed
+
+    @rx.event(background=True)
+    async def poll_trading_panel_chart(self):
+        """Same guarded-loop pattern as poll_ws_status/poll_pinned_prices.
+        Every 0.5 seconds: reads the live candle, updates the small OHLC
+        text values (and, while a backfill is pending, the Local/Broker day
+        counts and progress percent), then pushes ONLY that one bar into
+        the chart via klinecharts' own chart.updateData(bar) method - never
+        resends the full history. If Follow Live is ON and a candle just
+        closed, also scrolls the chart to the live edge.
+        KNOWN SIMPLIFICATION: does not stop when the user leaves the Trading
+        Panel tab - deliberately deferred, not an oversight."""
+        async with self:
+            if self._trading_panel_poll_running:
+                return
+            self._trading_panel_poll_running = True
+        try:
+            while True:
+                live_row = None
+                should_snap = False
+                async with self:
+                    live_row, candle_closed = self._build_live_ohlc_update()
+                    if candle_closed and self.trading_panel_follow_live:
+                        should_snap = True
+
+                if live_row is not None:
+                    bar_json = json.dumps(live_row)
+                    snap_call = (
+                        f'if (chart.updateData) {{ chart.updateData({bar_json}); }} '
+                        f'if ({str(should_snap).lower()} && chart.scrollToRealTime) {{ chart.scrollToRealTime(); }}'
+                    )
+                    yield rx.call_script(
+                        f"""
+                        (function() {{
+                            var chart = window.QT19_CHARTS && window.QT19_CHARTS["{TRADING_PANEL_CHART_ID}"];
+                            if (chart) {{
+                                {snap_call}
+                            }}
+                        }})();
+                        """
+                    )
+                await asyncio.sleep(0.5)
+        finally:
+            async with self:
+                self._trading_panel_poll_running = False
+
+    @rx.var
+    def trading_panel_backfill_active(self) -> bool:
+        """True while a Display-Days-triggered backfill is still pending
+        for the currently selected symbol + chart timeframe. Drives the
+        progress bar's visibility in ui/pages/trading_panel.py."""
+        return self._is_coverage_pending(self.trading_panel_symbol, self.trading_panel_chart_tf)
+
+    @rx.var
+    def trading_panel_backfill_percent(self) -> int:
+        """0-100 progress for the visible progress bar/percent text.
+        Derived from local_days (kept fresh every 0.5s poll tick while
+        pending) versus the requested day count - no extra stored field or
+        extra polling needed."""
+        try:
+            requested_days = int(self.trading_panel_display_days_input)
+        except ValueError:
+            requested_days = 5
+        if requested_days <= 0:
+            return 0
+        try:
+            local_days = int(self.trading_panel_local_days)
+        except ValueError:
+            local_days = 0
+        pct = int(round((local_days / requested_days) * 100))
+        return max(0, min(100, pct))
+
+    @rx.var
+    def trading_panel_symbol_options(self) -> list[str]:
+        return _engine.market_data.symbol_registry.get_symbols_sorted(active_only=True)
+
+    @rx.var
+    def trading_panel_symbol_info(self) -> dict:
+        """Shape expected by <KLineChart symbol={...}>: {ticker, precision}.
+        precision (decimal places) is derived from the real tick_size on
+        SymbolRegistryWorker - falls back to 2 if the symbol isn't found."""
+        registry = _engine.market_data.symbol_registry
+        info = registry.get_symbol_info(self.trading_panel_symbol)
+        if info is None or not info.tick_size:
+            return {"ticker": self.trading_panel_symbol, "precision": 2}
+        tick = info.tick_size
+        precision = 0
+        while round(tick, precision) != tick and precision < 8:
+            precision += 1
+        return {"ticker": self.trading_panel_symbol, "precision": precision}
+
+    @rx.var
+    def trading_panel_period(self) -> dict:
+        return TRADING_PANEL_PERIOD_MAP.get(self.trading_panel_chart_tf, TRADING_PANEL_PERIOD_MAP["5m"])
+
+    @rx.var
+    def trading_panel_styles(self) -> dict:
+        """Real klinecharts Styles object. Grid on/off and Day/Night are
+        both driven declaratively from here - toggling either AppState
+        field re-renders the chart with the correct styles automatically,
+        with no JS-side DOM manipulation required."""
+        day = self.trading_panel_chart_theme == "day"
+        grid_show = self.trading_panel_grid_enabled
+        foreground = "#152238" if day else "#dce8f7"
+        grid_color = "rgba(56,78,108,.14)" if day else "rgba(151,176,207,.15)"
+        return {
+            "grid": {
+                "show": grid_show,
+                "horizontal": {"show": grid_show, "color": grid_color},
+                "vertical": {"show": grid_show, "color": grid_color},
+            },
+            "candle": {
+                "bar": {
+                    "upColor": "#16c784",
+                    "downColor": "#ea3943",
+                    "noChangeColor": "#8b98aa",
+                },
+            },
+            "xAxis": {
+                "axisLine": {"color": grid_color},
+                "tickLine": {"color": grid_color},
+                "tickText": {"color": foreground},
+            },
+            "yAxis": {
+                "axisLine": {"color": grid_color},
+                "tickLine": {"color": grid_color},
+                "tickText": {"color": foreground},
+            },
+        }
+
+    @rx.var
+    def trading_panel_menu_style(self) -> dict:
+        """SOLID, theme-aware style for the custom right-click menu box -
+        matches the chart's own Day/Night setting (not the app's global
+        theme), with a clean border and readable text."""
+        day = self.trading_panel_chart_theme == "day"
+        background = "#f4f7fb" if day else "#141d29"
+        border_color = "rgba(20,30,50,0.18)" if day else "rgba(147,173,205,0.28)"
+        text_color = "#152238" if day else "#dce8f7"
+        return {
+            "background": background,
+            "border": f"1px solid {border_color}",
+            "border_radius": "0.9rem",
+            "box_shadow": "0 10px 30px rgba(0,0,0,0.28)",
+            "color": text_color,
+            "left": f"{self.trading_panel_menu_x}px",
+            "top": f"{self.trading_panel_menu_y}px",
+        }
+
+END FILE: state\app_state_mixins\trading_panel_mixin.py
+====================================================================================================
+
+====================================================================================================
+BEGIN FILE: engines\monitors\market_data_monitor.py
+FULL PATH: D:\QuantumTrade19\engines\monitors\market_data_monitor.py
+FILE TYPE: .py
+----------------------------------------------------------------------------------------------------
+"""Market Data Monitor (Tier 2 Assembly).
+
+PATH: engines/monitors/market_data_monitor.py  (REPLACE ENTIRE FILE)
+
+CHANGE (v0.3.9 - fix "deep history never reaches the chart"): added
+CandleStoreWorker, a persistent SQLite store. _handle_deep_history_chunk()
+now actually saves downloaded candles there (previously it only logged
+them and threw them away). get_chart_candles() now merges the persistent
+store with CandleBuilderWorker's live in-memory series - RAM wins on any
+timestamp collision (it always has the current forming candle). This is
+what actually lets the Trading Panel chart show more than the 5-day
+baseline once a deep-history backfill has run.
+
+get_deep_history_progress() now also reports the download's real state
+(queued/downloading/paused/complete/error) and error message, sourced from
+DeepHistoryDownloaderWorker.get_status() - previously a failed download
+looked identical to an idle one from the outside.
+
+Everything else, including get_historical_candles() (explicit broker-history
+reads outside the Trading Panel) and the WS/REST/health-report logic, is
+unchanged.
+"""
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from typing import Dict, List, Optional
+
+from engines.workers.market_data.symbol_registry_worker import SymbolRegistryWorker
+from engines.workers.market_data.ws_feed_worker import WSFeedWorker, SocketTransport
+from engines.workers.market_data.rest_poll_fallback_worker import RestPollFallbackWorker
+from engines.workers.market_data.historical_data_loader_worker import HistoricalDataLoaderWorker
+from engines.workers.market_data.tick_normalizer_worker import TickNormalizerWorker
+from engines.workers.market_data.candle_builder_worker import (
+    CandleBuilderWorker,
+    Candle,
+    TRADING_TFS,
+    POI_TFS,
+)
+from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
+from engines.workers.market_data.deep_history_downloader_worker import DeepHistoryDownloaderWorker
+from engines.workers.market_data.history_depth_prober_worker import HistoryDepthProberWorker
+from engines.workers.market_data.candle_store_worker import CandleStoreWorker
+
+
+logger = logging.getLogger("market_data.monitor")
+
+
+class MarketDataMonitor:
+    def __init__(self, transport: SocketTransport) -> None:
+        self._lock = threading.RLock()
+
+        self.symbol_registry = SymbolRegistryWorker()
+        self.candle_builder = CandleBuilderWorker(on_candle_closed=self._publish_candle_closed)
+        self.historical_loader = HistoricalDataLoaderWorker()
+        self.rest_fallback = RestPollFallbackWorker(on_tick=self._handle_rest_tick)
+        self.ws_feed = WSFeedWorker(
+            transport=transport,
+            on_tick=self._handle_ws_tick,
+            on_drop=self._handle_ws_drop,
+            on_restore=self._handle_ws_restore,
+        )
+
+        self.history_manifest = HistoryManifestWorker()
+        self.candle_store = CandleStoreWorker()
+        self.deep_history_downloader = DeepHistoryDownloaderWorker(
+            manifest=self.history_manifest,
+            on_chunk=self._handle_deep_history_chunk,
+        )
+        self.depth_prober = HistoryDepthProberWorker(manifest=self.history_manifest)
+
+        self._subscribed: set[str] = set()
+        self._degraded: set[str] = set()
+        self._last_health: Dict[str, str] = {}
+        logger.info("market_data_monitor_created")
+
+    # ================= public interface =================
+
+    def start(self) -> None:
+        active_symbols = self.symbol_registry.get_active_symbols()
+        logger.info("market_data_monitor_start active_symbols=%s", active_symbols)
+        self.ws_feed.start()
+        for symbol in active_symbols:
+            self.subscribe(symbol)
+
+    def stop(self) -> None:
+        logger.info("market_data_monitor_stop subscribed_count=%d", len(self._subscribed))
+        with self._lock:
+            symbols = list(self._subscribed)
+        for symbol in symbols:
+            self.unsubscribe(symbol)
+        self.ws_feed.stop()
+
+    def subscribe(self, symbol: str) -> None:
+        with self._lock:
+            if symbol in self._subscribed:
+                logger.debug("market_data_subscribe_ignored_already_subscribed symbol=%s", symbol)
+                return
+            self._subscribed.add(symbol)
+        logger.info("market_data_subscribe_started symbol=%s", symbol)
+        try:
+            self._seed_baseline_history(symbol)
+            self.ws_feed.subscribe(symbol)
+            logger.info("market_data_subscribe_complete symbol=%s", symbol)
+        except Exception:
+            with self._lock:
+                self._subscribed.discard(symbol)
+            logger.exception("market_data_subscribe_failed symbol=%s", symbol)
+            raise
+
+    def unsubscribe(self, symbol: str) -> None:
+        with self._lock:
+            was_subscribed = symbol in self._subscribed
+            self._subscribed.discard(symbol)
+            self._degraded.discard(symbol)
+            self._last_health.pop(symbol, None)
+        self.ws_feed.unsubscribe(symbol)
+        self.rest_fallback.disengage(symbol)
+        if was_subscribed:
+            logger.info("market_data_unsubscribed symbol=%s", symbol)
+
+    def get_live_candle(self, symbol: str, timeframe: str) -> Optional[Candle]:
+        return self.candle_builder.get_live_candle(symbol, timeframe)
+
+    def get_historical_candles(self, symbol: str, timeframe: str, days: int) -> List[Candle]:
+        """Explicit broker-history read.
+
+        This method may call CoinDCX through HistoricalDataLoaderWorker.
+        It is not permitted for Trading Panel rendering or chart polling.
+        Use get_chart_candles() for chart data.
+        """
+        end_ms = self._now_ms()
+        start_ms = end_ms - days * 24 * 60 * 60 * 1000
+        candles = self.historical_loader.fetch_range(symbol, timeframe, start_ms, end_ms)
+        logger.debug(
+            "market_data_historical_fetch symbol=%s timeframe=%s days=%d candles=%d",
+            symbol,
+            timeframe,
+            days,
+            len(candles),
+        )
+        return candles
+
+    def get_chart_candles(self, symbol: str, timeframe: str, days: int) -> List[Candle]:
+        """Return local-only chart candles, oldest to newest.
+
+        CHANGE (v0.3.9): now merges two sources:
+          1. CandleStoreWorker (persistent SQLite) - deep-downloaded older
+             candles, saved by _handle_deep_history_chunk().
+          2. CandleBuilderWorker's in-memory RAM series - baseline 5-day
+             window + live ticks since app start, including the current
+             forming candle.
+        RAM wins on any timestamp collision between the two (it always has
+        the live/current forming candle, which the persisted store never
+        will). This makes deep-history backfills actually visible on the
+        Trading Panel chart, not just recorded in a manifest.
+        """
+        if days <= 0:
+            return []
+
+        cutoff_ms = self._now_ms() - days * 24 * 60 * 60 * 1000
+        now_ms = self._now_ms()
+
+        merged: Dict[int, Candle] = {}
+
+        persisted = self.candle_store.get_candles(symbol, timeframe, cutoff_ms, now_ms)
+        for candle in persisted:
+            merged[candle.open_time] = candle
+
+        series = self.candle_builder.get_series(symbol, timeframe)
+        for candle in series:
+            if candle.open_time >= cutoff_ms:
+                merged[candle.open_time] = candle
+
+        result = [merged[open_time] for open_time in sorted(merged)]
+
+        logger.debug(
+            "market_data_chart_local_read symbol=%s timeframe=%s requested_days=%d persisted=%d ram=%d merged=%d",
+            symbol,
+            timeframe,
+            days,
+            len(persisted),
+            len(series),
+            len(result),
+        )
+        return result
+
+    def get_chart_coverage_days(self, symbol: str, timeframe: str) -> float:
+        """Return actual in-memory chart coverage in days.
+
+        This deliberately measures retained CandleBuilderWorker data rather
+        than manifest coverage. A manifest can describe broker/download
+        coverage even when that candle payload is not locally readable yet.
+        """
+        series = self.candle_builder.get_series(symbol, timeframe)
+        if len(series) < 2:
+            return 0.0
+        span_ms = max(0, series[-1].open_time - series[0].open_time)
+        return round(span_ms / (24 * 60 * 60 * 1000), 1)
+
+    def get_health(self) -> Dict[str, str]:
+        report: Dict[str, str] = {}
+        with self._lock:
+            symbols = list(self._subscribed)
+        for symbol in symbols:
+            if self.ws_feed.is_healthy(symbol):
+                health = "OK"
+            elif self.rest_fallback.is_engaged(symbol):
+                health = "DEGRADED"
+            else:
+                health = "DOWN"
+            report[symbol] = health
+            self._log_health_transition(symbol, health)
+        return report
+
+    # ================= deep history / ceiling interface =================
+
+    def start_deep_history(self, symbol: str, timeframe: str, target_days: Optional[int] = None) -> None:
+        logger.info("deep_history_started symbol=%s timeframe=%s target_days=%s", symbol, timeframe, target_days)
+        self.deep_history_downloader.start_download(symbol, timeframe, target_days)
+
+    def cancel_deep_history(self, symbol: str, timeframe: str) -> None:
+        logger.info("deep_history_cancel_requested symbol=%s timeframe=%s", symbol, timeframe)
+        self.deep_history_downloader.cancel_download(symbol, timeframe)
+
+    def get_deep_history_progress(self, symbol: str, timeframe: str) -> dict:
+        from engines.workers.market_data.deep_history_downloader_worker import (
+            covered_days,
+            is_fully_downloaded,
+        )
+
+        status = self.deep_history_downloader.get_status(symbol, timeframe)
+        return {
+            "covered_days": covered_days(self.history_manifest, symbol, timeframe),
+            "is_complete": is_fully_downloaded(self.history_manifest, symbol, timeframe),
+            "state": status["state"],
+            "error": status["error"],
+        }
+
+    def delete_deep_history(self, symbol: str, timeframe: str) -> None:
+        logger.warning("deep_history_delete_requested symbol=%s timeframe=%s", symbol, timeframe)
+        self.history_manifest.delete_symbol_manifest(symbol)
+        self.candle_store.delete_symbol_timeframe(symbol, timeframe)
+
+    def start_ceiling_probe(self, symbol: str, timeframe: str) -> None:
+        logger.info("history_ceiling_probe_started symbol=%s timeframe=%s", symbol, timeframe)
+        self.depth_prober.start_probe(symbol, timeframe)
+
+    def get_ceiling_days(self, symbol: str, timeframe: str):
+        return self.depth_prober.get_ceiling_days(symbol, timeframe)
+
+    # ================= internal wiring =================
+
+    def _seed_baseline_history(self, symbol: str) -> None:
+        started = time.monotonic()
+        logger.info("baseline_seed_started symbol=%s timeframes=%s", symbol, TRADING_TFS)
+        baseline = self.historical_loader.backfill_baseline(symbol)
+        counts: Dict[str, int] = {}
+        for timeframe, candles in baseline.items():
+            self.candle_builder.seed_historical(symbol, timeframe, candles)
+            counts[timeframe] = len(candles)
+        logger.info(
+            "baseline_seed_complete symbol=%s counts=%s duration_s=%.3f",
+            symbol,
+            counts,
+            time.monotonic() - started,
+        )
+
+    def _handle_ws_tick(self, symbol: str, payload: dict) -> None:
+        """Handle only price-bearing aggregate deltas from WSFeedWorker."""
+        tick = TickNormalizerWorker.from_ws_payload(symbol, payload)
+        if TickNormalizerWorker.is_valid(tick):
+            self.candle_builder.ingest(tick, timeframes=TRADING_TFS + POI_TFS)
+        else:
+            logger.warning(
+                "ws_price_bearing_delta_rejected_by_normalizer symbol=%s keys=%s",
+                symbol,
+                sorted(payload.keys()) if isinstance(payload, dict) else type(payload).__name__,
+            )
+
+    def _handle_rest_tick(self, symbol: str, payload: dict) -> None:
+        tick = TickNormalizerWorker.from_rest_ticker(symbol, payload)
+        if TickNormalizerWorker.is_valid(tick):
+            self.candle_builder.ingest(tick, timeframes=TRADING_TFS + POI_TFS)
+        else:
+            logger.debug("rest_tick_rejected_by_normalizer symbol=%s", symbol)
+
+    def _handle_ws_drop(self, symbol: str) -> None:
+        with self._lock:
+            already_degraded = symbol in self._degraded
+            self._degraded.add(symbol)
+        if not already_degraded:
+            logger.warning("ws_drop_rest_fallback_engaging symbol=%s", symbol)
+        self.rest_fallback.engage(symbol)
+
+    def _handle_ws_restore(self, symbol: str) -> None:
+        with self._lock:
+            was_degraded = symbol in self._degraded
+            self._degraded.discard(symbol)
+        self.rest_fallback.disengage(symbol)
+        if was_degraded:
+            logger.info("ws_restored_rest_fallback_disengaged symbol=%s", symbol)
+
+    def _handle_deep_history_chunk(self, symbol: str, timeframe: str, candles: list) -> None:
+        self.candle_store.save_candles(symbol, timeframe, candles)
+        logger.debug(
+            "deep_history_chunk_persisted symbol=%s timeframe=%s candles=%d",
+            symbol,
+            timeframe,
+            len(candles),
+        )
+
+    def _publish_candle_closed(self, candle: Candle) -> None:
+        logger.debug(
+            "candle_closed symbol=%s timeframe=%s open_time=%d close=%s",
+            candle.symbol,
+            candle.timeframe,
+            candle.open_time,
+            candle.close,
+        )
+
+    def _log_health_transition(self, symbol: str, health: str) -> None:
+        with self._lock:
+            previous = self._last_health.get(symbol)
+            self._last_health[symbol] = health
+        if previous != health:
+            level = logging.INFO if health == "OK" else logging.WARNING
+            logger.log(
+                level,
+                "market_data_health_transition symbol=%s previous=%s current=%s",
+                symbol,
+                previous or "UNSET",
+                health,
+            )
+
+    @staticmethod
+    def _now_ms() -> int:
+        return int(time.time() * 1000)
+
+END FILE: engines\monitors\market_data_monitor.py
+====================================================================================================
+
+====================================================================================================
+BEGIN FILE: engines\workers\market_data\candle_builder_worker.py
+FULL PATH: D:\QuantumTrade19\engines\workers\market_data\candle_builder_worker.py
+FILE TYPE: .py
+----------------------------------------------------------------------------------------------------
+"""
+FULL PATH: engines/workers/market_data/candle_builder_worker.py
+File 02 — Market Data Monitor — Worker 6/6
+
+Aggregates normalized ticks into 1m/5m/15m (trading) and 1H/4H/Daily/Weekly/Monthly
+(POI) candles. Stitches historical backfill + live ticks into ONE continuous series
+— no gap, no duplicate candle. Verified via tests/test_market_data_monitor.py
+(5/5 passing, mocked data — no live network required).
+"""
+from __future__ import annotations
+
+import threading
+from dataclasses import dataclass, asdict
+from typing import Callable, Dict, List, Optional, Tuple
+
+TRADING_TFS = ["1m", "5m", "15m"]
+POI_TFS = ["1H", "4H", "1D", "1W", "1M"]
+ALL_TFS = TRADING_TFS + POI_TFS
+
+_TF_MS: Dict[str, int] = {
+    "1m": 60_000, "5m": 5 * 60_000, "15m": 15 * 60_000,
+    "1H": 60 * 60_000, "4H": 4 * 60 * 60_000, "1D": 24 * 60 * 60_000,
+    "1W": 7 * 24 * 60 * 60_000, "1M": 30 * 24 * 60 * 60_000,  # 1M = calendar approx bucket
+}
+
+
+@dataclass
+class Candle:
+    symbol: str
+    timeframe: str
+    open_time: int
+    close_time: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    is_closed: bool = False
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def _bucket_start(exchange_ts: int, tf: str) -> int:
+    step = _TF_MS[tf]
+    return (exchange_ts // step) * step
+
+
+class CandleBuilderWorker:
+    """One instance shared across all symbols/timeframes; state keyed by (symbol, tf)."""
+
+    def __init__(self, on_candle_closed: Optional[Callable[["Candle"], None]] = None) -> None:
+        self._lock = threading.RLock()
+        self._current: Dict[Tuple[str, str], Candle] = {}
+        self._closed_history: Dict[Tuple[str, str], List[Candle]] = {}
+        self._last_closed_time: Dict[Tuple[str, str], int] = {}
+        self._on_candle_closed = on_candle_closed
+
+    def seed_historical(self, symbol: str, timeframe: str, candles: List[Candle]) -> None:
+        """Loads Historical_Data_Loader_Worker output so the live series starts
+        continuous - no gap between backfill and first live tick.
+
+        FIX: the last baseline candle is CoinDCX's still-forming "current"
+        bucket at fetch time, not a truly closed one. Holding it back into
+        _current (instead of _closed_history) lets the first live tick
+        extend it in place, instead of creating a second candle with the
+        same open_time that later duplicates on close."""
+        key = (symbol, timeframe)
+        with self._lock:
+            ordered = sorted(candles, key=lambda c: c.open_time)
+            if not ordered:
+                return
+            last = ordered[-1]
+            closed_part = ordered[:-1]
+            self._closed_history[key] = closed_part
+            if closed_part:
+                self._last_closed_time[key] = closed_part[-1].open_time
+            reopened = Candle(
+                symbol=last.symbol, timeframe=last.timeframe,
+                open_time=last.open_time, close_time=last.close_time,
+                open=last.open, high=last.high, low=last.low,
+                close=last.close, volume=last.volume, is_closed=False,
+            )
+            self._current[key] = reopened
+    def ingest(self, tick, timeframes: Optional[List[str]] = None) -> List[Candle]:
+        """Feeds one normalized tick into every requested timeframe bucket.
+        Returns the list of candles that just CLOSED as a result (may be empty)."""
+        tfs = timeframes or ALL_TFS
+        closed_now: List[Candle] = []
+        with self._lock:
+            for tf in tfs:
+                key = (tick.symbol, tf)
+                bucket_open = _bucket_start(tick.exchange_ts, tf)
+                current = self._current.get(key)
+
+                if current is None:
+                    current = Candle(
+                        symbol=tick.symbol, timeframe=tf,
+                        open_time=bucket_open, close_time=bucket_open + _TF_MS[tf] - 1,
+                        open=tick.price, high=tick.price, low=tick.price,
+                        close=tick.price, volume=tick.volume,
+                    )
+                    self._current[key] = current
+                    continue
+
+                if bucket_open == current.open_time:
+                    current.high = max(current.high, tick.price)
+                    current.low = min(current.low, tick.price)
+                    current.close = tick.price
+                    current.volume += tick.volume
+                elif bucket_open > current.open_time:
+                    # current bucket is finished — close it, then open the new one
+                    current.is_closed = True
+                    self._closed_history.setdefault(key, []).append(current)
+                    self._last_closed_time[key] = current.open_time
+                    closed_now.append(current)
+                    if self._on_candle_closed:
+                        self._on_candle_closed(current)
+
+                    new_candle = Candle(
+                        symbol=tick.symbol, timeframe=tf,
+                        open_time=bucket_open, close_time=bucket_open + _TF_MS[tf] - 1,
+                        open=tick.price, high=tick.price, low=tick.price,
+                        close=tick.price, volume=tick.volume,
+                    )
+                    self._current[key] = new_candle
+                # bucket_open < current.open_time -> stale/late tick, dropped (never rewrites a closed candle)
+        return closed_now
+
+    def get_live_candle(self, symbol: str, timeframe: str) -> Optional[Candle]:
+        with self._lock:
+            return self._current.get((symbol, timeframe))
+
+    def get_series(self, symbol: str, timeframe: str, limit: Optional[int] = None) -> List[Candle]:
+        """Closed history + current forming candle, oldest -> newest, no gaps/dupes."""
+        key = (symbol, timeframe)
+        with self._lock:
+            series = list(self._closed_history.get(key, []))
+            live = self._current.get(key)
+            if live is not None:
+                series = series + [live]
+            if limit:
+                series = series[-limit:]
+            return series
+
+    def check_continuity(self, symbol: str, timeframe: str) -> Dict[str, object]:
+        """Check-gate helper: scans closed history for gaps/dupes. Returns a report dict."""
+        key = (symbol, timeframe)
+        step = _TF_MS[timeframe]
+        with self._lock:
+            history = self._closed_history.get(key, [])
+            gaps, dupes = [], []
+            for i in range(1, len(history)):
+                delta = history[i].open_time - history[i - 1].open_time
+                if delta == 0:
+                    dupes.append(history[i].open_time)
+                elif delta != step:
+                    gaps.append((history[i - 1].open_time, history[i].open_time))
+            return {"symbol": symbol, "timeframe": timeframe, "candle_count": len(history),
+                    "gaps": gaps, "duplicates": dupes, "clean": not gaps and not dupes}
+
+END FILE: engines\workers\market_data\candle_builder_worker.py
+====================================================================================================
+
+====================================================================================================
+BEGIN FILE: engines\workers\market_data\candle_store_worker.py
+FULL PATH: D:\QuantumTrade19\engines\workers\market_data\candle_store_worker.py
+FILE TYPE: .py
+----------------------------------------------------------------------------------------------------
+"""Candle_Store_Worker: persistent SQLite storage for deep-downloaded historical candles.
+
+PATH: engines/workers/market_data/candle_store_worker.py  (NEW FILE)
+
+This is the missing piece that makes Deep Historical Data actually usable.
+Previously, DeepHistoryDownloaderWorker's on_chunk callback only logged
+downloaded candles and threw them away - MarketDataMonitor.get_chart_candles()
+only ever read CandleBuilderWorker's in-memory RAM series (baseline 5-day
+window + live ticks since app start), so downloaded deep-history data could
+never reach the Trading Panel chart no matter how long a download ran.
+
+This worker gives deep-downloaded candles a real, durable home
+(data/historical/candles.db) that get_chart_candles() can merge with the
+live in-memory series.
+"""
+from __future__ import annotations
+
+import sqlite3
+import threading
+from pathlib import Path
+from typing import List
+
+from engines.workers.market_data.candle_builder_worker import Candle
+
+_DB_PATH = Path("data") / "historical" / "candles.db"
+
+
+class CandleStoreWorker:
+    def __init__(self, db_path: Path = _DB_PATH) -> None:
+        self._db_path = db_path
+        self._lock = threading.Lock()
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(str(self._db_path), timeout=30)
+
+    def _init_schema(self) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS candles (
+                    symbol TEXT NOT NULL,
+                    timeframe TEXT NOT NULL,
+                    open_time INTEGER NOT NULL,
+                    close_time INTEGER NOT NULL,
+                    open REAL NOT NULL,
+                    high REAL NOT NULL,
+                    low REAL NOT NULL,
+                    close REAL NOT NULL,
+                    volume REAL NOT NULL,
+                    PRIMARY KEY (symbol, timeframe, open_time)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_candles_lookup ON candles (symbol, timeframe, open_time)"
+            )
+            conn.commit()
+
+    def save_candles(self, symbol: str, timeframe: str, candles: List[Candle]) -> None:
+        if not candles:
+            return
+        rows = [
+            (symbol, timeframe, c.open_time, c.close_time, c.open, c.high, c.low, c.close, c.volume)
+            for c in candles
+        ]
+        with self._lock, self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO candles (symbol, timeframe, open_time, close_time, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (symbol, timeframe, open_time) DO UPDATE SET
+                    close_time=excluded.close_time,
+                    open=excluded.open,
+                    high=excluded.high,
+                    low=excluded.low,
+                    close=excluded.close,
+                    volume=excluded.volume
+                """,
+                rows,
+            )
+            conn.commit()
+
+    def get_candles(self, symbol: str, timeframe: str, start_ms: int, end_ms: int) -> List[Candle]:
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT open_time, close_time, open, high, low, close, volume
+                FROM candles
+                WHERE symbol = ? AND timeframe = ? AND open_time >= ? AND open_time <= ?
+                ORDER BY open_time ASC
+                """,
+                (symbol, timeframe, start_ms, end_ms),
+            )
+            rows = cursor.fetchall()
+        return [
+            Candle(
+                symbol=symbol,
+                timeframe=timeframe,
+                open_time=row[0],
+                close_time=row[1],
+                open=row[2],
+                high=row[3],
+                low=row[4],
+                close=row[5],
+                volume=row[6],
+                is_closed=True,
+            )
+            for row in rows
+        ]
+
+    def delete_symbol_timeframe(self, symbol: str, timeframe: str) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "DELETE FROM candles WHERE symbol = ? AND timeframe = ?",
+                (symbol, timeframe),
+            )
+            conn.commit()
+
+END FILE: engines\workers\market_data\candle_store_worker.py
+====================================================================================================
+
+====================================================================================================
+BEGIN FILE: engines\workers\market_data\history_manifest_worker.py
+FULL PATH: D:\QuantumTrade19\engines\workers\market_data\history_manifest_worker.py
+FILE TYPE: .py
+----------------------------------------------------------------------------------------------------
+"""History_Manifest_Worker: tracks exactly which date ranges are already downloaded, per symbol per timeframe.
+Drives Deep_History_Downloader_Worker's skip-logic and the Settings-card progress bars.
+"""
+from __future__ import annotations
+import json
+import threading
+from pathlib import Path
+from typing import List, Tuple
+
+_MANIFEST_DIR = Path("data") / "historical" / "manifests"
+
+
+class HistoryManifestWorker:
+    def __init__(self, manifest_dir: Path = _MANIFEST_DIR) -> None:
+        self._dir = manifest_dir
+        self._lock = threading.Lock()
+        self._dir.mkdir(parents=True, exist_ok=True)
+
+    def _path_for(self, symbol: str) -> Path:
+        return self._dir / f"{symbol}.json"
+
+    def _load(self, symbol: str) -> dict:
+        path = self._path_for(symbol)
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text())
+        except json.JSONDecodeError:
+            return {}
+
+    def _save(self, symbol: str, data: dict) -> None:
+        self._path_for(symbol).write_text(json.dumps(data, indent=2))
+
+    def get_covered_ranges(self, symbol: str, timeframe: str) -> List[Tuple[int, int]]:
+        with self._lock:
+            data = self._load(symbol)
+            return [tuple(r) for r in data.get(timeframe, [])]
+
+    def mark_covered(self, symbol: str, timeframe: str, start_ms: int, end_ms: int) -> None:
+        with self._lock:
+            data = self._load(symbol)
+            ranges = data.setdefault(timeframe, [])
+            ranges.append([start_ms, end_ms])
+            ranges.sort(key=lambda r: r[0])
+            merged: List[list] = []
+            for r in ranges:
+                if merged and r[0] <= merged[-1][1]:
+                    merged[-1][1] = max(merged[-1][1], r[1])
+                else:
+                    merged.append(list(r))
+            data[timeframe] = merged
+            self._save(symbol, data)
+
+    def find_gaps(self, symbol: str, timeframe: str, full_start_ms: int, full_end_ms: int) -> List[Tuple[int, int]]:
+        covered = self.get_covered_ranges(symbol, timeframe)
+        gaps: List[Tuple[int, int]] = []
+        cursor = full_start_ms
+        for start, end in covered:
+            if end <= cursor:
+                continue
+            if start > cursor:
+                gaps.append((cursor, min(start, full_end_ms)))
+            cursor = max(cursor, end)
+            if cursor >= full_end_ms:
+                break
+        if cursor < full_end_ms:
+            gaps.append((cursor, full_end_ms))
+        return [g for g in gaps if g[0] < g[1]]
+
+    def coverage_percent(self, symbol: str, timeframe: str, full_start_ms: int, full_end_ms: int) -> float:
+        total_span = full_end_ms - full_start_ms
+        if total_span <= 0:
+            return 100.0
+        gap_span = sum(end - start for start, end in self.find_gaps(symbol, timeframe, full_start_ms, full_end_ms))
+        return round(max(0.0, min(100.0, (1 - gap_span / total_span) * 100)), 2)
+
+    def delete_symbol_manifest(self, symbol: str) -> None:
+        path = self._path_for(symbol)
+        with self._lock:
+            if path.exists():
+                path.unlink()
+
+END FILE: engines\workers\market_data\history_manifest_worker.py
+====================================================================================================
+
+====================================================================================================
+BEGIN FILE: engines\workers\market_data\deep_history_downloader_worker.py
+FULL PATH: D:\QuantumTrade19\engines\workers\market_data\deep_history_downloader_worker.py
+FILE TYPE: .py
+----------------------------------------------------------------------------------------------------
+"""
+FULL PATH: engines/workers/market_data/deep_history_downloader_worker.py  (REPLACE ENTIRE FILE)
+
+CHANGE (v0.4.7 - fix silent gaps in downloaded history, File 02 bug fix):
+_download_loop() previously only ever extended the timeline backward from
+whatever the CURRENT earliest covered point was. It never re-checked
+whether earlier download sessions (interrupted by app restarts/cancels
+during testing, or resumed with a different target_days) had left a hole
+somewhere in the MIDDLE of the timeline. HistoryManifestWorker.find_gaps()
+already existed to detect exactly this, but nothing ever called it - so a
+gap, once created, was invisible and permanent; is_fully_downloaded() would
+still report true because it only checks whether ANY covered range reaches
+back to EARLY_START_MS, regardless of holes elsewhere.
+
+Fix: the loop now computes the full target range (EARLY_START_MS-to-now, or
+now-minus-target_days-to-now when target_days is given), calls
+manifest.find_gaps() against that range, and fills every gap it finds -
+newest gap first, so the most recently missing data becomes usable fastest.
+It re-checks find_gaps() after each gap closes, so multiple separate holes
+all eventually get filled in one run. If the exchange itself has no candles
+for part of a gap (a genuine exchange-side data hole, not our bug), that
+sub-range is still marked covered so we don't retry it forever.
+
+State tracking (queued/downloading/paused/complete/error via get_status())
+and the on_chunk/on_progress callback wiring are unchanged from v0.3.9.
+"""
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from typing import Callable, Optional
+
+import requests
+
+from engines.workers.market_data.candle_builder_worker import Candle
+from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
+
+logger = logging.getLogger("market_data.deep_history_downloader")
+
+CANDLES_URL = "https://public.coindcx.com/market_data/candles/"
+MAX_LIMIT_PER_CALL = 1000
+CHUNK_PACING_S = 0.35
+_TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000}
+EARLY_START_MS = 1420070400000  # 2015-01-01 UTC, our "search floor"
+
+
+def covered_days(manifest: HistoryManifestWorker, symbol: str, timeframe: str) -> float:
+    ranges = manifest.get_covered_ranges(symbol, timeframe)
+    total_ms = sum(end - start for start, end in ranges)
+    return round(total_ms / (1000 * 60 * 60 * 24), 1)
+
+
+def is_fully_downloaded(manifest: HistoryManifestWorker, symbol: str, timeframe: str) -> bool:
+    ranges = manifest.get_covered_ranges(symbol, timeframe)
+    return any(start <= EARLY_START_MS + 1 for start, _ in ranges)
+
+
+def earliest_covered_ms(manifest: HistoryManifestWorker, symbol: str, timeframe: str) -> Optional[int]:
+    ranges = manifest.get_covered_ranges(symbol, timeframe)
+    if not ranges:
+        return None
+    return min(start for start, _ in ranges)
+
+
+class DeepHistoryDownloaderWorker:
+    def __init__(self, manifest: HistoryManifestWorker, http_get=None,
+                 on_chunk: Optional[Callable[[str, str, list], None]] = None,
+                 on_progress: Optional[Callable[[str, str, dict], None]] = None) -> None:
+        self._manifest = manifest
+        self._http_get = http_get or requests.get
+        self._on_chunk = on_chunk
+        self._on_progress = on_progress
+        self._active: dict[tuple, threading.Event] = {}
+        self._status: dict[tuple, dict] = {}
+        self._lock = threading.RLock()
+
+    def _set_status(self, symbol: str, timeframe: str, **kwargs) -> None:
+        with self._lock:
+            current = dict(self._status.get((symbol, timeframe), {}))
+            current.update(kwargs)
+            self._status[(symbol, timeframe)] = current
+
+    def get_status(self, symbol: str, timeframe: str) -> dict:
+        with self._lock:
+            status = dict(self._status.get((symbol, timeframe), {}))
+        return {
+            "state": status.get("state", "idle"),
+            "error": status.get("error"),
+        }
+
+    def start_download(self, symbol: str, timeframe: str, target_days: Optional[int] = None) -> None:
+        key = (symbol, timeframe)
+        with self._lock:
+            if key in self._active:
+                return
+            stop_event = threading.Event()
+            self._active[key] = stop_event
+        self._set_status(symbol, timeframe, state="queued", error=None)
+        t = threading.Thread(target=self._download_loop, args=(symbol, timeframe, target_days, stop_event), daemon=True)
+        t.start()
+
+    def cancel_download(self, symbol: str, timeframe: str) -> None:
+        with self._lock:
+            stop_event = self._active.pop((symbol, timeframe), None)
+            if stop_event:
+                stop_event.set()
+        self._set_status(symbol, timeframe, state="paused", error=None)
+
+    def is_downloading(self, symbol: str, timeframe: str) -> bool:
+        with self._lock:
+            return (symbol, timeframe) in self._active
+
+    def _fill_gap(self, symbol: str, timeframe: str, gap_start: int, gap_end: int,
+                   stop_event: threading.Event, target_days: Optional[int]) -> bool:
+        """Downloads backward within [gap_start, gap_end] until the gap is
+        closed, the exchange has nothing further back, stop is requested, or
+        target_days is reached. Returns True if a stop/target-reached signal
+        means the caller should stop entirely (not just move to the next
+        gap)."""
+        cursor_end = gap_end
+        while not stop_event.is_set() and cursor_end > gap_start:
+            resp = self._http_get(CANDLES_URL, params={
+                "pair": symbol, "interval": timeframe,
+                "startTime": gap_start, "endTime": cursor_end,
+                "limit": MAX_LIMIT_PER_CALL,
+            }, timeout=10)
+            resp.raise_for_status()
+            rows = resp.json() or []
+
+            if not rows:
+                # Nothing further back in this specific gap - the exchange
+                # genuinely has no data here (e.g. before listing date, or a
+                # real outage window). Mark it covered so we stop retrying
+                # this exact hole forever.
+                self._manifest.mark_covered(symbol, timeframe, gap_start, cursor_end)
+                return False
+
+            candles = [Candle(
+                symbol=symbol, timeframe=timeframe,
+                open_time=int(r["time"]), close_time=int(r["time"]) + _TF_MS[timeframe] - 1,
+                open=float(r["open"]), high=float(r["high"]), low=float(r["low"]),
+                close=float(r["close"]), volume=float(r.get("volume", 0.0) or 0.0), is_closed=True,
+            ) for r in rows]
+
+            batch_oldest = min(c.open_time for c in candles)
+            batch_newest = max(c.open_time for c in candles)
+            self._manifest.mark_covered(symbol, timeframe, max(batch_oldest, gap_start), batch_newest)
+
+            if self._on_chunk:
+                self._on_chunk(symbol, timeframe, candles)
+            if self._on_progress:
+                self._on_progress(symbol, timeframe, {
+                    "covered_days": covered_days(self._manifest, symbol, timeframe),
+                    "is_complete": is_fully_downloaded(self._manifest, symbol, timeframe),
+                })
+
+            self._set_status(symbol, timeframe, state="downloading", error=None)
+
+            if target_days is not None and covered_days(self._manifest, symbol, timeframe) >= target_days:
+                self._set_status(symbol, timeframe, state="complete", error=None)
+                return True
+
+            if batch_oldest <= gap_start:
+                return False
+            cursor_end = batch_oldest - 1
+            time.sleep(CHUNK_PACING_S)
+        return stop_event.is_set()
+
+    def _download_loop(self, symbol: str, timeframe: str, target_days: Optional[int], stop_event: threading.Event) -> None:
+        self._set_status(symbol, timeframe, state="downloading", error=None)
+        try:
+            now_ms = int(time.time() * 1000)
+            if target_days is not None:
+                full_start_ms = max(EARLY_START_MS, now_ms - target_days * 24 * 60 * 60 * 1000)
+            else:
+                full_start_ms = EARLY_START_MS
+            full_end_ms = now_ms
+
+            while not stop_event.is_set():
+                if target_days is not None and covered_days(self._manifest, symbol, timeframe) >= target_days:
+                    self._set_status(symbol, timeframe, state="complete", error=None)
+                    break
+
+                gaps = self._manifest.find_gaps(symbol, timeframe, full_start_ms, full_end_ms)
+                if not gaps:
+                    self._set_status(symbol, timeframe, state="complete", error=None)
+                    break
+
+                # Fill the newest (most recent) gap first, so the most
+                # useful data for chart display becomes available soonest.
+                gap_start, gap_end = gaps[-1]
+                should_stop = self._fill_gap(symbol, timeframe, gap_start, gap_end, stop_event, target_days)
+                if should_stop:
+                    break
+
+            if stop_event.is_set():
+                self._set_status(symbol, timeframe, state="paused", error=None)
+        except Exception as exc:
+            logger.exception("deep_history_download_failed symbol=%s timeframe=%s", symbol, timeframe)
+            self._set_status(symbol, timeframe, state="error", error=str(exc))
+        finally:
+            with self._lock:
+                self._active.pop((symbol, timeframe), None)
+
+END FILE: engines\workers\market_data\deep_history_downloader_worker.py
+====================================================================================================
+
+====================================================================================================
+BEGIN FILE: engines\workers\market_data\history_depth_prober_worker.py
+FULL PATH: D:\QuantumTrade19\engines\workers\market_data\history_depth_prober_worker.py
+FILE TYPE: .py
+----------------------------------------------------------------------------------------------------
+"""
+FULL PATH: engines/workers/market_data/history_depth_prober_worker.py (REPLACE ENTIRE FILE)
+
+REWRITTEN to use your EXISTING HistoryManifestWorker.mark_covered() instead of
+a method that doesn't exist on your real manifest. Probing now feeds discovered
+ranges directly into the manifest as it walks back, so a probe run also counts
+as real downloaded coverage -- no wasted requests.
+"""
+from __future__ import annotations
+
+import threading
+import time
+from typing import Callable, Optional
+
+import requests
+
+from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
+
+CANDLES_URL = "https://public.coindcx.com/market_data/candles/"
+MAX_LIMIT_PER_CALL = 1000
+PROBE_PACING_S = 0.3
+EARLY_START_MS = 1420070400000
+
+
+class HistoryDepthProberWorker:
+    def __init__(self, manifest: HistoryManifestWorker, http_get=None,
+                 on_progress: Optional[Callable[[str, str, dict], None]] = None) -> None:
+        self._manifest = manifest
+        self._http_get = http_get or requests.get
+        self._on_progress = on_progress
+        self._active: dict[tuple, threading.Event] = {}
+        self._lock = threading.RLock()
+        self._results: dict[tuple, dict] = {}
+
+    def start_probe(self, symbol: str, timeframe: str) -> None:
+        key = (symbol, timeframe)
+        with self._lock:
+            if key in self._active:
+                return
+            stop_event = threading.Event()
+            self._active[key] = stop_event
+        t = threading.Thread(target=self._probe_loop, args=(symbol, timeframe, stop_event), daemon=True)
+        t.start()
+
+    def is_probing(self, symbol: str, timeframe: str) -> bool:
+        with self._lock:
+            return (symbol, timeframe) in self._active
+
+    def get_ceiling_days(self, symbol: str, timeframe: str) -> Optional[float]:
+        with self._lock:
+            result = self._results.get((symbol, timeframe))
+        return result["span_days"] if result else None
+
+    def _probe_loop(self, symbol: str, timeframe: str, stop_event: threading.Event) -> None:
+        end_ms = int(time.time() * 1000)
+        cursor_end = end_ms
+        oldest_ms = end_ms
+        newest_ms = None
+
+        try:
+            while not stop_event.is_set():
+                resp = self._http_get(CANDLES_URL, params={
+                    "pair": symbol, "interval": timeframe,
+                    "startTime": EARLY_START_MS, "endTime": cursor_end,
+                    "limit": MAX_LIMIT_PER_CALL,
+                }, timeout=10)
+                resp.raise_for_status()
+                rows = resp.json() or []
+
+                if not rows:
+                    self._manifest.mark_covered(symbol, timeframe, EARLY_START_MS, cursor_end)
+                    break
+
+                batch_oldest = min(int(r["time"]) for r in rows)
+                batch_newest = max(int(r["time"]) for r in rows)
+                if newest_ms is None:
+                    newest_ms = batch_newest
+                oldest_ms = min(oldest_ms, batch_oldest)
+                self._manifest.mark_covered(symbol, timeframe, batch_oldest, batch_newest)
+
+                if self._on_progress:
+                    span_days = (newest_ms - oldest_ms) / (1000 * 60 * 60 * 24)
+                    self._on_progress(symbol, timeframe, {"probing": True, "span_days_so_far": round(span_days, 1)})
+
+                if batch_oldest >= cursor_end:
+                    break
+                cursor_end = batch_oldest - 1
+                time.sleep(PROBE_PACING_S)
+
+            span_days = (newest_ms - oldest_ms) / (1000 * 60 * 60 * 24) if newest_ms else 0.0
+            with self._lock:
+                self._results[(symbol, timeframe)] = {"span_days": round(span_days, 1)}
+            if self._on_progress:
+                self._on_progress(symbol, timeframe, {"probing": False, "ceiling_days": round(span_days, 1)})
+        finally:
+            with self._lock:
+                self._active.pop((symbol, timeframe), None)
+
+END FILE: engines\workers\market_data\history_depth_prober_worker.py
+====================================================================================================
+
+====================================================================================================
+BEGIN FILE: ui\components\kline_chart.py
+FULL PATH: D:\QuantumTrade19\ui\components\kline_chart.py
+FILE TYPE: .py
+----------------------------------------------------------------------------------------------------
+"""Interactive React KLineCharts wrapper for Reflex.
+
+PATH: ui/components/kline_chart.py  (REPLACE ENTIRE FILE)
+
+CHANGE (v0.3.8 - fix right-click menu not opening): klinecharts renders on
+an HTML <canvas> and calls preventDefault() on the browser's native
+"contextmenu" event itself (to suppress the OS/browser right-click menu).
+Radix's rx.context_menu relies on that same native event to detect a
+right-click, so it was silently never firing - hence the previous menu
+"not opening" at all.
+
+Fix: this wrapper now attaches its OWN onContextMenu handler on the
+wrapping <div> (one level above the chart's own canvas). React's synthetic
+event system still bubbles this handler even though klinecharts already
+called preventDefault() on the underlying native event (preventDefault
+does not stop propagation/bubbling - only stopPropagation would, and
+klinecharts does not call that). This handler calls preventDefault() again
+defensively, then invokes a real Reflex event trigger (on_context_menu)
+with the click's screen coordinates, which state/app_state_mixins/
+trading_panel_mixin.py uses to open a fully custom, Reflex-rendered menu
+(see ui/pages/trading_panel.py) - no dependency on Radix's native-event
+detection at all anymore.
+"""
+from __future__ import annotations
+
+import reflex as rx
+from reflex.utils.imports import ImportVar
+
+
+class KLineChart(rx.Component):
+    """Registry-backed wrapper around react-klinecharts' <KLineChart>."""
+
+    tag = "QT19KLineChart"
+
+    data: rx.Var[list[dict]]
+    symbol: rx.Var[dict]
+    period: rx.Var[dict]
+    styles: rx.Var[dict]
+    zoom_enabled: rx.Var[bool] = True
+    scroll_enabled: rx.Var[bool] = True
+    chart_id: rx.Var[str]
+
+    def add_imports(self) -> dict[str, list[ImportVar]]:
+        return {
+            "react": [ImportVar(tag="useEffect"), ImportVar(tag="useRef")],
+            "react-klinecharts": [ImportVar(tag="KLineChart", alias="RKLineChart")],
+        }
+
+    def get_event_triggers(self) -> dict:
+        return {
+            **super().get_event_triggers(),
+            "on_context_menu": lambda e: [e.clientX, e.clientY],
+        }
+
+    def add_custom_code(self) -> list[str]:
+        return [
+            r"""
+function QT19KLineChart(props) {
+  const { chartId, data, symbol, period, styles, zoomEnabled, scrollEnabled, onContextMenu, ...rest } = props;
+  const chartRef = useRef(null);
+
+  const handleReady = (chart) => {
+    chartRef.current = chart;
+    if (typeof window !== "undefined") {
+      window.QT19_CHARTS = window.QT19_CHARTS || {};
+      window.QT19_CHARTS[chartId] = chart;
+    }
+  };
+
+  const handleContextMenu = (e) => {
+    e.preventDefault();
+    if (typeof onContextMenu === "function") {
+      onContextMenu(e);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (typeof window !== "undefined" && window.QT19_CHARTS) {
+        delete window.QT19_CHARTS[chartId];
+      }
+    };
+  }, [chartId]);
+
+  return (
+    <div
+      onContextMenu={handleContextMenu}
+      style={{ width: "100%", height: "100%" }}
+    >
+      <RKLineChart
+        data={data}
+        symbol={symbol}
+        period={period}
+        styles={styles}
+        zoomEnabled={zoomEnabled}
+        scrollEnabled={scrollEnabled}
+        onReady={handleReady}
+        {...rest}
+      />
+    </div>
+  );
+}
+"""
+        ]
+
+
+kline_chart = KLineChart.create
+
+END FILE: ui\components\kline_chart.py
+====================================================================================================
+
+====================================================================================================
+BEGIN FILE: ui\components\trading_panel_chart.py
+FULL PATH: D:\QuantumTrade19\ui\components\trading_panel_chart.py
+FILE TYPE: .py
+----------------------------------------------------------------------------------------------------
+"""Trading Panel interactive candlestick chart component.
+
+PATH: ui/components/trading_panel_chart.py  (REPLACE ENTIRE FILE)
+
+CHANGE (v0.3.8): passes on_context_menu through to the real Reflex event
+trigger declared on KLineChart (see ui/components/kline_chart.py). This
+drives the custom right-click menu in ui/pages/trading_panel.py.
+"""
+from __future__ import annotations
+
+import reflex as rx
+
+from state.app_state import AppState
+from state.app_state_mixins.shared import TRADING_PANEL_CHART_ID
+from ui.components.kline_chart import kline_chart
+
+
+def trading_panel_chart() -> rx.Component:
+    """Render the interactive KLineCharts surface."""
+    return rx.box(
+        kline_chart(
+            data=AppState.trading_panel_candles,
+            symbol=AppState.trading_panel_symbol_info,
+            period=AppState.trading_panel_period,
+            styles=AppState.trading_panel_styles,
+            chart_id=TRADING_PANEL_CHART_ID,
+            id=TRADING_PANEL_CHART_ID,
+            on_context_menu=AppState.open_trading_panel_menu,
+            style={
+                "width": "100%",
+                "height": "520px",
+                "min_height": "520px",
+                "border_radius": "14px",
+                "border": "1px solid rgba(147, 173, 205, 0.18)",
+                "background": rx.cond(
+                    AppState.trading_panel_chart_theme == "day",
+                    "#f7f9fc",
+                    "#101722",
+                ),
+            },
+        ),
+        width="100%",
+        height="520px",
+    )
+
+END FILE: ui\components\trading_panel_chart.py
+====================================================================================================
+
+====================================================================================================
+BEGIN FILE: ui\pages\trading_panel.py
+FULL PATH: D:\QuantumTrade19\ui\pages\trading_panel.py
+FILE TYPE: .py
+----------------------------------------------------------------------------------------------------
+"""Trading Panel tab - Futures-only chart foundation.
+
+PATH: ui/pages/trading_panel.py  (REPLACE ENTIRE FILE)
+
+CHANGE (v0.4.5 - visible backfill progress bar): added a progress bar +
+live percent text beside the Display Days input, visible only while
+AppState.trading_panel_backfill_active is True (i.e. only when the entered
+day count is larger than what's available locally and a background
+download is running). Percent comes from AppState.trading_panel_backfill_percent.
+No layout change when a backfill isn't running.
+
+CHANGE (v0.4.3, carried forward): label wording fixed to match
+03.1_Pre-File-04 Enhancement Patch.md Scope B3/F exactly - "Available in
+QT19 Database: A Days" / "Available in Broker Database: B Days" - and the
+page is split into three glass-card sections (header, controls, chart).
+
+CHANGE (v0.3.9, carried forward): removed the Apply button. Pressing Enter
+inside the Display Last Days input now commits the value directly.
+Clicking away (on_blur) still also commits, as before - Enter is just the
+faster path now.
+"""
+from __future__ import annotations
+
+import reflex as rx
+
+from state.app_state import AppState, TRADING_PANEL_TF_OPTIONS
+from ui.components.trading_panel_chart import trading_panel_chart
+from ui.theme.glass import GLASS_CARD_3XL_STYLE, HOVER_GLOW_CLASS
+
+
+def _ohlc_pill(label: str, value) -> rx.Component:
+    return rx.hstack(
+        rx.text(label, font_size="0.7rem", color="var(--qt19-text-muted)"),
+        rx.text(value, font_size="0.82rem", font_weight="700"),
+        spacing="1",
+    )
+
+
+def _tf_buttons() -> rx.Component:
+    return rx.hstack(
+        *[
+            rx.button(
+                tf,
+                size="1",
+                variant=rx.cond(
+                    AppState.trading_panel_chart_tf == tf,
+                    "solid",
+                    "outline",
+                ),
+                on_click=AppState.set_trading_panel_chart_tf(tf),
+            )
+            for tf in TRADING_PANEL_TF_OPTIONS
+        ],
+        spacing="1",
+    )
+
+
+def _header() -> rx.Component:
+    return rx.box(
+        rx.hstack(
+            rx.select(
+                AppState.trading_panel_symbol_options,
+                value=AppState.trading_panel_symbol,
+                on_change=AppState.set_trading_panel_symbol,
+                width="170px",
+            ),
+            _tf_buttons(),
+            rx.spacer(),
+            _ohlc_pill("O", AppState.trading_panel_current_open),
+            _ohlc_pill("H", AppState.trading_panel_current_high),
+            _ohlc_pill("L", AppState.trading_panel_current_low),
+            _ohlc_pill("C", AppState.trading_panel_current_close),
+            rx.badge(AppState.ws_status, variant="soft"),
+            width="100%",
+            align_items="center",
+            spacing="4",
+            wrap="wrap",
+        ),
+        style=GLASS_CARD_3XL_STYLE,
+        class_name=HOVER_GLOW_CLASS,
+        width="100%",
+        padding="0.9rem 1.1rem",
+    )
+
+
+def _backfill_progress() -> rx.Component:
+    """Small progress bar + percent text, shown ONLY while a Display-Days
+    backfill is actively downloading for the current symbol/timeframe.
+    Disappears automatically once the download finishes (the chart itself
+    also auto-refreshes at that moment - see trading_panel_mixin.py)."""
+    return rx.cond(
+        AppState.trading_panel_backfill_active,
+        rx.hstack(
+            rx.progress(
+                value=AppState.trading_panel_backfill_percent,
+                max=100,
+                width="120px",
+                height="8px",
+            ),
+            rx.text(
+                f"{AppState.trading_panel_backfill_percent}%",
+                font_size="0.72rem",
+                font_weight="700",
+                color="var(--qt19-accent)",
+            ),
+            spacing="2",
+            align_items="center",
+        ),
+    )
+
+
+def _display_window_controls() -> rx.Component:
+    return rx.box(
+        rx.hstack(
+            rx.text("Display Last:", font_size="0.8rem"),
+            rx.input(
+                value=AppState.trading_panel_display_days_draft,
+                on_change=AppState.set_trading_panel_display_days_draft,
+                on_blur=AppState.commit_trading_panel_display_days,
+                on_key_down=AppState.handle_display_days_keydown,
+                width="70px",
+                size="1",
+            ),
+            rx.text("Days (applies to 1m/5m/15m for this symbol \u2022 press Enter)", font_size="0.75rem", color="var(--qt19-text-muted)"),
+            _backfill_progress(),
+            rx.divider(orientation="vertical", height="1.2rem"),
+            rx.text(
+                f"Available in QT19 Database: {AppState.trading_panel_local_days} Days",
+                font_size="0.75rem",
+                color="var(--qt19-text-muted)",
+            ),
+            rx.text(
+                f"Available in Broker Database: {AppState.trading_panel_broker_days}",
+                font_size="0.75rem",
+                color="var(--qt19-text-muted)",
+            ),
+            rx.text(
+                f"Candles loaded: {AppState.trading_panel_candles.length()}",
+                font_size="0.75rem",
+                color="var(--qt19-text-muted)",
+            ),
+            rx.cond(
+                AppState.trading_panel_notice != "",
+                rx.badge(
+                    AppState.trading_panel_notice,
+                    color_scheme="orange",
+                    variant="soft",
+                ),
+            ),
+            spacing="3",
+            align_items="center",
+            wrap="wrap",
+        ),
+        style=GLASS_CARD_3XL_STYLE,
+        class_name=HOVER_GLOW_CLASS,
+        width="100%",
+        padding="0.7rem 1.1rem",
+    )
+
+
+def _chart_card() -> rx.Component:
+    return rx.box(
+        rx.box(
+            trading_panel_chart(),
+            on_double_click=AppState.reset_trading_panel_view,
+            width="100%",
+        ),
+        style=GLASS_CARD_3XL_STYLE,
+        class_name=HOVER_GLOW_CLASS,
+        width="100%",
+        padding="0.9rem",
+    )
+
+
+def trading_panel_page() -> rx.Component:
+    return rx.vstack(
+        _header(),
+        _display_window_controls(),
+        _chart_card(),
+        spacing="3",
+        width="100%",
+    )
+
+END FILE: ui\pages\trading_panel.py
+====================================================================================================
+

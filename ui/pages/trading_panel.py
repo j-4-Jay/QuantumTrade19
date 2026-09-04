@@ -1,12 +1,19 @@
-"""Trading Panel tab - Futures-only chart foundation.
+"""Trading Panel page - Futures-only chart foundation.
 
-PATH: ui/pages/trading_panel.py  (REPLACE ENTIRE FILE)
+PATH: ui/pages/trading_panel.py (REPLACE ENTIRE FILE)
 
-CHANGE (v0.3.9): removed the Apply button. Pressing Enter inside the
-Display Last Days input now commits the value directly (Reflex's rx.input
-automatically passes the pressed key string to on_key_down handlers).
-Clicking away (on_blur) still also commits, as before - Enter is just the
-faster path now.
+FIX v0.4.57 - removed the hover-glow effect from both Trading Panel cards
+(_header() and _chart_card()) entirely, per request - reverted from
+qt19_glow_card() back to a plain rx.box with GLASS_CARD_3XL_STYLE. The
+sidebar's glow (ui/components/sidebar.py) is untouched - this change is
+scoped only to this page.
+
+FIX v0.4.46 (carried forward): Row 2 removed; Display Last + QT19 DB days
+folded into the header row; chart card expands to fill remaining page
+height via flex="1"/min_height="0".
+
+FIX v0.4.43 (carried forward): countdown-to-candle-close text next to the
+OHLC pills, labeled "Closes in".
 """
 from __future__ import annotations
 
@@ -14,7 +21,7 @@ import reflex as rx
 
 from state.app_state import AppState, TRADING_PANEL_TF_OPTIONS
 from ui.components.trading_panel_chart import trading_panel_chart
-from ui.theme.glass import GLASS_CARD_3XL_STYLE, HOVER_GLOW_CLASS
+from ui.theme.glass import GLASS_CARD_3XL_STYLE
 
 
 def _ohlc_pill(label: str, value) -> rx.Component:
@@ -31,11 +38,7 @@ def _tf_buttons() -> rx.Component:
             rx.button(
                 tf,
                 size="1",
-                variant=rx.cond(
-                    AppState.trading_panel_chart_tf == tf,
-                    "solid",
-                    "outline",
-                ),
+                variant=rx.cond(AppState.trading_panel_chart_tf == tf, "solid", "outline"),
                 on_click=AppState.set_trading_panel_chart_tf(tf),
             )
             for tf in TRADING_PANEL_TF_OPTIONS
@@ -44,81 +47,85 @@ def _tf_buttons() -> rx.Component:
     )
 
 
-def _header() -> rx.Component:
+def _display_last_group() -> rx.Component:
     return rx.hstack(
-        rx.select(
-            AppState.trading_panel_symbol_options,
-            value=AppState.trading_panel_symbol,
-            on_change=AppState.set_trading_panel_symbol,
-            width="170px",
-        ),
-        _tf_buttons(),
-        rx.spacer(),
-        _ohlc_pill("O", AppState.trading_panel_current_open),
-        _ohlc_pill("H", AppState.trading_panel_current_high),
-        _ohlc_pill("L", AppState.trading_panel_current_low),
-        _ohlc_pill("C", AppState.trading_panel_current_close),
-        rx.badge(AppState.ws_status, variant="soft"),
-        width="100%",
-        align_items="center",
-        spacing="4",
-        wrap="wrap",
-    )
-
-
-def _display_window_controls() -> rx.Component:
-    return rx.hstack(
-        rx.text("Display Last:", font_size="0.8rem"),
+        rx.text("Display Last:", font_size="0.78rem", color="var(--qt19-text-muted)"),
         rx.input(
             value=AppState.trading_panel_display_days_draft,
             on_change=AppState.set_trading_panel_display_days_draft,
             on_blur=AppState.commit_trading_panel_display_days,
             on_key_down=AppState.handle_display_days_keydown,
-            width="70px",
+            width="60px",
             size="1",
         ),
-        rx.text("Days (applies to 1m/5m/15m for this symbol \u2022 press Enter)", font_size="0.75rem", color="var(--qt19-text-muted)"),
-        rx.divider(orientation="vertical", height="1.2rem"),
+        rx.text("Days", font_size="0.78rem", color="var(--qt19-text-muted)"),
         rx.text(
-            f"Local: {AppState.trading_panel_local_days} days",
-            font_size="0.75rem",
-            color="var(--qt19-text-muted)",
+            f"\u2022 QT19 DB: {AppState.trading_panel_local_days}d",
+            font_size="0.75rem", color="var(--qt19-text-muted)",
         ),
-        rx.text(
-            f"Broker: {AppState.trading_panel_broker_days}",
-            font_size="0.75rem",
-            color="var(--qt19-text-muted)",
-        ),
-        rx.text(
-            f"Candles loaded: {AppState.trading_panel_candles.length()}",
-            font_size="0.75rem",
-            color="var(--qt19-text-muted)",
-        ),
-        rx.cond(
-            AppState.trading_panel_notice != "",
-            rx.badge(
-                AppState.trading_panel_notice,
-                color_scheme="orange",
-                variant="soft",
-            ),
-        ),
-        spacing="3",
+        spacing="2",
         align_items="center",
-        wrap="wrap",
     )
 
 
-def trading_panel_page() -> rx.Component:
+def _header() -> rx.Component:
     return rx.box(
-        _header(),
-        _display_window_controls(),
+        rx.hstack(
+            rx.select(
+                AppState.trading_panel_symbol_options,
+                value=AppState.trading_panel_symbol,
+                on_change=AppState.set_trading_panel_symbol,
+                width="170px",
+            ),
+            _tf_buttons(),
+            _display_last_group(),
+            rx.spacer(),
+            _ohlc_pill("O", AppState.trading_panel_current_open),
+            _ohlc_pill("H", AppState.trading_panel_current_high),
+            _ohlc_pill("L", AppState.trading_panel_current_low),
+            _ohlc_pill("C", AppState.trading_panel_current_close),
+            _ohlc_pill("Closes in", AppState.trading_panel_countdown_text),
+            rx.badge(AppState.ws_status, variant="soft"),
+            width="100%",
+            align_items="center",
+            spacing="4",
+            wrap="wrap",
+        ),
+        style={**GLASS_CARD_3XL_STYLE, "padding": "0.9rem 1.1rem"},
+        width="100%",
+        flex_shrink="0",
+    )
+
+
+def _chart_card() -> rx.Component:
+    return rx.box(
         rx.box(
             trading_panel_chart(),
             on_double_click=AppState.reset_trading_panel_view,
             width="100%",
+            height="100%",
         ),
-        spacing="3",
-        style=GLASS_CARD_3XL_STYLE,
-        class_name=HOVER_GLOW_CLASS,
+        style={
+            **GLASS_CARD_3XL_STYLE,
+            "padding": "0.9rem",
+            "display": "flex",
+            "flex_direction": "column",
+            "height": "100%",
+        },
         width="100%",
+        flex="1",
+        min_height="0",
+    )
+
+
+def trading_panel_page() -> rx.Component:
+    return rx.vstack(
+        _header(),
+        _chart_card(),
+        spacing="3",
+        width="100%",
+        height="100%",
+        flex="1",
+        min_height="0",
+        overflow="hidden",
     )

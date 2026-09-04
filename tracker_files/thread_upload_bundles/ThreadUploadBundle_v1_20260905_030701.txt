@@ -1,0 +1,3733 @@
+﻿----------------------------------------------------------------------------------------------------
+QUANTUMTRADE19 - THREAD UPLOAD BUNDLE (v1)
+Created: 20260905_030701
+Project root: D:\QuantumTrade19
+Total files requested: 19
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+FILE: D:\QuantumTrade19\tracker_files\v0.4.62_TradingPanelLiveChart_UIPolish_Tracker.md
+STATUS: NOT FOUND - SKIPPED
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: app_state.py
+FULL PATH: D:\QuantumTrade19\state\app_state.py
+----------------------------------------------------------------------------------------------------
+"""Reflex State - thin UI binding layer over the Master App Engine (no business logic here).
+
+PATH: state/app_state.py (REPLACE ENTIRE FILE)
+
+Composes executable mixins from state/app_state_mixins/.
+
+FIX v0.4.59 - added trading_panel_data_version: int = 0 - a plain counter,
+incremented by exactly 1 inside trading_panel_mixin.py's
+refresh_trading_panel_chart() (the ONLY genuine full-reload path), and
+passed to KLineChart as a new data_version prop
+(ui/components/trading_panel_chart.py). This lets the chart tell apart "a
+real reload happened" from "just another harmless 0.5s OHLC poll tick" -
+the poll never touches this field. Fixes the confirmed infinite
+subscribeBar/unsubscribeBar teardown loop that kept the live price line
+permanently disconnected (see kline_chart.py's docstring for full
+root-cause explanation, confirmed via live browser console capture).
+
+FIX v0.4.41 (carried forward) - settings_active_subtab + active_tab-based
+background poller auto-start in on_load().
+
+FIX v0.4.30 (carried forward) - reconciled trading_panel_* fields against
+the real trading_panel_mixin.py source.
+"""
+from __future__ import annotations
+
+import reflex as rx
+
+from config.settings import DEFAULT_THEME_KEY
+from state.app_state_mixins.shared import SHELL_STATE_CLASS
+from state.app_state_mixins.core_shell_mixin import CoreShellMixin
+from state.app_state_mixins.auth_security_mixin import AuthSecurityMixin
+from state.app_state_mixins.market_dashboard_mixin import MarketDashboardMixin
+from state.app_state_mixins.poi_settings_mixin import PoiSettingsMixin
+from state.app_state_mixins.trading_panel_mixin import TradingPanelMixin
+from state.app_state_mixins.deep_history_card_mixin import DeepHistoryCardMixin
+
+TRADING_PANEL_TF_OPTIONS = ["1m", "5m", "15m"]
+TRADING_PANEL_DAY_PRESETS = ["1", "3", "5", "7", "14", "30", "90"]
+
+class AppState(
+    CoreShellMixin,
+    AuthSecurityMixin,
+    MarketDashboardMixin,
+    PoiSettingsMixin,
+    TradingPanelMixin,
+    DeepHistoryCardMixin,
+    rx.State,
+):
+    screen: str = SHELL_STATE_CLASS.SPLASH.value
+    active_tab: str = "Dashboard"
+    settings_active_subtab: str = "appearance"
+    theme_key: str = DEFAULT_THEME_KEY
+    paper_mode: bool = True
+    is_locked: bool = False
+    sound_muted: bool = False
+    sidebar_collapsed: bool = False
+
+    totp_required: bool = False
+
+    reg_username: str = ""
+    reg_password: str = ""
+    reg_confirm_password: str = ""
+    reg_enable_totp: bool = False
+    reg_error: str = ""
+    reg_stage: str = "form"
+    reg_qr_data_uri: str = ""
+    reg_totp_code: str = ""
+    show_reg_password: bool = False
+    show_reg_confirm_password: bool = False
+
+    login_username: str = ""
+    login_password: str = ""
+    login_totp: str = ""
+    login_error: str = ""
+    show_login_password: bool = False
+    show_lock_password: bool = False
+    login_credentials_match: bool = False
+    login_error_seq: int = 0
+    login_remember_device: bool = False
+
+    manage_username: str = ""
+    manage_password: str = ""
+    manage_error: str = ""
+    manage_stage: str = "verify"
+    manage_totp_qr: str = ""
+    manage_totp_code: str = ""
+    show_manage_password: bool = False
+    tg_bot_token: str = ""
+    tg_chat_id: str = ""
+    tg_enabled: bool = False
+    tg_configured: bool = False
+    tg_message: str = ""
+    dc_webhook_url: str = ""
+    dc_enabled: bool = False
+    dc_configured: bool = False
+    dc_message: str = ""
+
+    forgot_stage: str = "choose"
+    forgot_selected_method: str = ""
+    forgot_code: str = ""
+    forgot_otp_sent: bool = False
+    forgot_verified: bool = False
+    forgot_new_password: str = ""
+    forgot_confirm_password: str = ""
+    forgot_error: str = ""
+    show_forgot_new_password: bool = False
+    show_forgot_confirm_password: bool = False
+    forgot_available_methods: list[str] = []
+    forgot_has_any_method: bool = False
+
+    show_logout_dialog: bool = False
+    logout_stage: str = "confirm"
+
+    detail_popup_open: bool = False
+    detail_popup_symbol: str = ""
+    ws_status: str = "connected"
+    pinned_prices: dict[str, str] = {}
+    symbol_rows: list[dict] = []
+    deep_history_symbol: str = "B-BTC_USDT"
+    deep_history_timeframe: str = "1m"
+    deep_history_target_days: str = ""
+    deep_history_ceiling_days: str = "Not checked yet"
+    deep_history_covered_days: str = "0"
+    deep_history_is_downloading: bool = False
+    deep_history_status_message: str = ""
+
+    # --- Deep Historical Data Settings card (per-symbol) ---
+    _card_duration_value: dict[str, str] = {}
+    _card_duration_unit: dict[str, str] = {}
+    _card_confirm_open: dict[str, bool] = {}
+    _card_confirm_message: dict[str, str] = {}
+    _card_pending_requested_days: dict[str, int] = {}
+    _deep_history_cards_poll_running: bool = False
+    _deep_history_cards_poll_tick: int = 0
+
+    poi_settings_loaded: bool = False
+    poi_display_enabled: dict[str, bool] = {}
+    poi_strategy_enabled: dict[str, bool] = {}
+    poi_zone_source_tf_enabled: dict[str, bool] = {}
+    poi_show_labels: bool = True
+    poi_show_tooltips: bool = True
+    poi_line_transparency: int = 100
+    poi_zone_opacity: int = 30
+    poi_show_source_tf_badge: bool = True
+    poi_show_logical_id: bool = False
+    poi_reduced_motion: bool = False
+    poi_backend_busy: bool = False
+
+    transition_effects_enabled: list[str] = ["dissolve", "zoom-in", "slide-up", "flip-x", "blur-in"]
+    transition_mode: str = "shuffle"
+    transition_active_effect: str = "dissolve"
+    _transition_sequence_index: int = 0
+
+    tab_transition_effects_enabled: list[str] = ["slide-left"]
+    tab_transition_mode: str = "single"
+    tab_transition_active_effect: str = "slide-left"
+    _tab_transition_sequence_index: int = 0
+
+    _splash_task_running: bool = False
+    _ws_poll_running: bool = False
+    _price_poll_running: bool = False
+    _deep_history_poll_running: bool = False
+    _poi_monitor_starting: bool = False
+
+    # --- Trading Panel chart state (react-klinecharts) ---
+    trading_panel_symbol: str = "B-BTC_USDT"
+    trading_panel_chart_tf: str = "5m"
+    trading_panel_display_days_input: str = "5"
+    trading_panel_display_days_draft: str = "5"
+    trading_panel_chart_theme: str = "night"
+    trading_panel_grid_enabled: bool = False
+    trading_panel_candles: list[dict] = []
+    trading_panel_data_version: int = 0
+    trading_panel_current_open: str = "--"
+    trading_panel_current_high: str = "--"
+    trading_panel_current_low: str = "--"
+    trading_panel_current_close: str = "--"
+    trading_panel_local_days: str = "0"
+    trading_panel_broker_days: str = "Not checked yet"
+    trading_panel_notice: str = ""
+    trading_panel_follow_live: bool = False
+
+    trading_panel_tf_progress: dict[str, dict] = {}
+
+    trading_panel_safe_mode_active: bool = False
+    trading_panel_safe_mode_message: str = ""
+
+    trading_panel_poll_running: bool = False
+    trading_panel_last_candle_ts: float = 0.0
+
+    # --- Custom right-click chart menu (v0.3.8) ---
+    trading_panel_menu_open: bool = False
+    trading_panel_menu_x: int = 0
+    trading_panel_menu_y: int = 0
+
+----------------------------------------------------------------------------------------------------
+END FILE: app_state.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: shared.py
+FULL PATH: D:\QuantumTrade19\state\app_state_mixins\shared.py
+----------------------------------------------------------------------------------------------------
+"""Shared imports and constants for executable AppState mixins.
+
+PATH: state/app_state_mixins/shared.py
+REPLACE THE ENTIRE FILE.
+
+FIX v0.4.22 - app would still not start after v0.4.21:
+
+Different mixin files in this project use two DIFFERENT import names for
+the same shared engine instance:
+    - trading_panel_mixin.py does:  from state.app_state_mixins.shared import engine, ...
+    - core_shell_mixin.py does:     from state.app_state_mixins.shared import _engine, ...
+
+v0.4.21 only defined `engine`, which fixed trading_panel_mixin.py but then
+broke core_shell_mixin.py (ImportError: cannot import name '_engine').
+
+Fix: both names are now defined here, pointing to the exact SAME
+MasterAppEngine() instance, so every mixin file works regardless of which
+name it was written to import. There is still only ONE engine object
+constructed - `_engine` is just an alias, not a second instance.
+"""
+from __future__ import annotations
+
+from engines.masters.master_app_engine import MasterAppEngine, ShellScreen
+from config.settings import (
+    DEFAULT_THEME_KEY,
+    SIDEBAR_TABS,
+    SPLASH_DURATION_SECONDS,
+    SPLASH_HOLD_SECONDS,
+    THEMES,
+    THEME_LABELS,
+    THEME_ORDER,
+    TRANSITION_EFFECTS,
+)
+
+
+engine = MasterAppEngine()
+_engine = engine  # alias - some mixin files import the underscore-prefixed name
+
+
+PINNED_SYMBOL_MAP = {
+    "BTCUSD": "B-BTC_USDT",
+    "ETHUSD": "B-ETH_USDT",
+    "Gold": "B-XAU_USDT",
+}
+
+
+POI_LINE_TF_ORDER = ["1m", "5m", "15m", "1H", "4H", "1D", "1W", "1M"]
+POI_LINE_TF_LABELS = {
+    "1m": "1 Minute", "5m": "5 Minute", "15m": "15 Minute", "1H": "1 Hour",
+    "4H": "4 Hour", "1D": "Daily", "1W": "Weekly", "1M": "Monthly",
+}
+POI_LINE_TYPE_MAP = {
+    "1m": ("P1M_HIGH", "P1M_LOW"), "5m": ("P5M_HIGH", "P5M_LOW"), "15m": ("P15M_HIGH", "P15M_LOW"),
+    "1H": ("P1H_HIGH", "P1H_LOW"), "4H": ("4H_HIGH", "4H_LOW"), "1D": ("PDH", "PDL"),
+    "1W": ("1W_HIGH", "1W_LOW"), "1M": ("1M_HIGH", "1M_LOW"),
+}
+POI_ZONE_TYPES = [
+    ("RESISTANCE_FLIP", "Resistance Flip"),
+    ("SUPPORT_FLIP", "Support Flip"),
+    ("FVG", "Fair Value Gap"),
+    ("INVERSE_FVG", "Inverse FVG"),
+    ("ORDER_BLOCK", "Order Block"),
+]
+POI_DEFAULT_STRATEGY_TYPES = {"4H_HIGH", "4H_LOW", "PDH", "PDL"}
+
+
+TRADING_PANEL_TF_OPTIONS = ["1m", "5m", "15m"]
+TRADING_PANEL_DAY_PRESETS = ["1", "3", "5", "7", "14", "30", "90"]
+TRADING_PANEL_PERIOD_MAP = {
+    "1m": {"type": "minute", "span": 1},
+    "5m": {"type": "minute", "span": 5},
+    "15m": {"type": "minute", "span": 15},
+}
+
+
+# Stable DOM id for the KLineChart instance. Must match the id used by
+# ui/components/trading_panel_chart.py and the window.QT19_CHARTS registry
+# key set in ui/components/kline_chart.py's onReady handler.
+TRADING_PANEL_CHART_ID = "qt19-trading-panel-kline"
+
+
+SHELL_STATE_CLASS = ShellScreen
+
+----------------------------------------------------------------------------------------------------
+END FILE: shared.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: core_shell_mixin.py
+FULL PATH: D:\QuantumTrade19\state\app_state_mixins\core_shell_mixin.py
+----------------------------------------------------------------------------------------------------
+"""Executable AppState mixin: core shell, splash, transitions, tabs, and sounds.
+
+PATH: state/app_state_mixins/core_shell_mixin.py  (REPLACE ENTIRE FILE)
+
+FIX v0.4.41 - "live chart only updates on tab switch" root cause found:
+now that active_tab correctly persists (v0.4.36), a restart/reload that
+lands directly on "Trading Panel" or "Settings" NEVER started their
+background pollers - that only ever happened inside set_active_tab(),
+which on_load() does not call (it restores active_tab directly). Fixed by
+having on_load() perform the SAME chart-refresh + poller-start steps
+set_active_tab() does, for whichever tab was actually restored.
+
+FIX v0.4.41 - Settings sub-tab (Appearance/Data & Connection/Security/
+Trading Defaults) was never persisted at all - added
+settings_active_subtab, restored in on_load() and saved in the new
+set_settings_active_subtab().
+
+FIX v0.4.36 (carried forward) - active_tab itself now round-trips through
+persistence.save()/on_load() exactly like every other shell setting.
+"""
+from __future__ import annotations
+
+import asyncio
+
+import reflex as rx
+
+from config.settings import TRADING_PANEL_DEFAULT_DISPLAY_DAYS
+from state.app_state_mixins.shared import (
+    _engine,
+    SHELL_STATE_CLASS,
+    SIDEBAR_TABS,
+    SPLASH_DURATION_SECONDS,
+    SPLASH_HOLD_SECONDS,
+    THEMES,
+    THEME_LABELS,
+    THEME_ORDER,
+    TRANSITION_EFFECTS,
+)
+
+
+class CoreShellMixin(rx.State, mixin=True):
+    async def on_load(self) -> None:
+        self.theme_key = _engine.ui.theme.get_active_key()
+        self.paper_mode = _engine.paper_mode
+        self.sound_muted = not _engine.ui.sound.is_master_on()
+        settings = _engine.security.persistence.load()
+
+        self.active_tab = settings.get("active_tab", self.active_tab)
+        self.settings_active_subtab = settings.get("settings_active_subtab", self.settings_active_subtab)
+        self.transition_effects_enabled = settings.get("transition_effects_enabled", self.transition_effects_enabled)
+        self.transition_mode = settings.get("transition_mode", self.transition_mode)
+        self.tab_transition_effects_enabled = settings.get("tab_transition_effects_enabled", self.tab_transition_effects_enabled)
+        self.tab_transition_mode = settings.get("tab_transition_mode", self.tab_transition_mode)
+        self.trading_panel_chart_theme = settings.get("trading_panel_chart_theme", self.trading_panel_chart_theme)
+        self.trading_panel_symbol = settings.get("trading_panel_symbol", self.trading_panel_symbol)
+        self.trading_panel_chart_tf = settings.get("trading_panel_chart_tf", self.trading_panel_chart_tf)
+        self.sidebar_collapsed = bool(settings.get("sidebar_collapsed", False))
+
+        saved_days = settings.get(f"chart_display_days::{self.trading_panel_symbol}", TRADING_PANEL_DEFAULT_DISPLAY_DAYS)
+        self.trading_panel_display_days_input = str(saved_days)
+        self.trading_panel_display_days_draft = str(saved_days)
+
+        _engine.ensure_market_data_started()
+        self.refresh_symbol_rows()
+
+        background_tasks = [type(self).start_poi_monitor_background, type(self).poll_deep_history_cards]
+        if self.active_tab == "Trading Panel":
+            self.refresh_trading_panel_chart()
+            background_tasks.append(type(self).poll_trading_panel_chart)
+        return background_tasks
+
+    @rx.event(background=True)
+    async def start_poi_monitor_background(self):
+        async with self:
+            if self._poi_monitor_starting:
+                return
+            self._poi_monitor_starting = True
+        try:
+            await asyncio.to_thread(_engine.ensure_poi_monitor_started)
+            async with self:
+                self.load_poi_settings()
+        finally:
+            async with self:
+                self._poi_monitor_starting = False
+
+    async def run_splash_sequence(self):
+        if self._splash_task_running:
+            return
+        self._splash_task_running = True
+        try:
+            duration_ms = int(SPLASH_DURATION_SECONDS * 1000)
+            yield rx.call_script(
+                f"""
+                (function() {{
+                    const fill = document.getElementById('qt19-splash-bar-fill');
+                    const pct = document.getElementById('qt19-splash-pct');
+                    if (fill) {{
+                        fill.style.transition = 'none';
+                        fill.style.transform = 'scaleX(0)';
+                        void fill.offsetWidth;
+                        fill.style.transition = 'transform {SPLASH_DURATION_SECONDS}s linear';
+                        requestAnimationFrame(function() {{ fill.style.transform = 'scaleX(1)'; }});
+                    }}
+                    if (pct) {{ pct.textContent = '0%'; }}
+                    const start = Date.now();
+                    const durationMs = {duration_ms};
+                    const interval = setInterval(function() {{
+                        const elapsed = Date.now() - start;
+                        const percent = Math.min(100, Math.round((elapsed / durationMs) * 100));
+                        if (pct) {{ pct.textContent = percent + '%'; }}
+                        if (elapsed >= durationMs) {{ clearInterval(interval); }}
+                    }}, 100);
+                }})();
+                """
+            )
+            await asyncio.sleep(SPLASH_DURATION_SECONDS)
+            await asyncio.sleep(SPLASH_HOLD_SECONDS)
+            self.totp_required = _engine.security.is_totp_enabled() and not _engine.security.is_device_trusted()
+            self.transition_active_effect = "dissolve"
+            self.screen = _engine.finish_splash().value
+        finally:
+            self._splash_task_running = False
+
+    def _pick_transition_effect(self) -> None:
+        effect, next_index = _engine.ui.transitions.pick(
+            self.transition_effects_enabled, self.transition_mode, self._transition_sequence_index
+        )
+        self.transition_active_effect = effect
+        self._transition_sequence_index = next_index
+
+    def _pick_tab_transition_effect(self) -> None:
+        effect, next_index = _engine.ui.transitions.pick(
+            self.tab_transition_effects_enabled, self.tab_transition_mode, self._tab_transition_sequence_index
+        )
+        self.tab_transition_active_effect = effect
+        self._tab_transition_sequence_index = next_index
+
+    def set_active_tab(self, tab: str) -> None:
+        self.active_tab = tab
+        _engine.security.persistence.save({"active_tab": tab})
+        self.detail_popup_open = False
+        self._pick_tab_transition_effect()
+        if tab == "Trading Panel":
+            self.refresh_trading_panel_chart()
+            return [self.play_sound("tab-slide"), type(self).poll_trading_panel_chart]
+        if tab == "Settings":
+            return [self.play_sound("tab-slide"), type(self).poll_deep_history_cards]
+        return self.play_sound("tab-slide")
+
+    def set_settings_active_subtab(self, subtab: str) -> None:
+        """Persists which Settings sub-tab (Appearance / Data & Connection /
+        Security & Notifications / Trading Defaults) was last open, so it
+        is restored on the next app restart - same pattern as active_tab."""
+        self.settings_active_subtab = subtab
+        _engine.security.persistence.save({"settings_active_subtab": subtab})
+
+    def set_theme(self, key: str) -> None:
+        if _engine.ui.theme.set_active_key(key):
+            self.theme_key = key
+
+    def toggle_sound(self) -> None:
+        is_on = _engine.ui.sound.toggle_master()
+        self.sound_muted = not is_on
+
+    def toggle_sidebar_collapsed(self) -> None:
+        self.sidebar_collapsed = not self.sidebar_collapsed
+        _engine.security.persistence.save({"sidebar_collapsed": self.sidebar_collapsed})
+
+    def play_sound(self, event_name: str):
+        url = _engine.ui.play_sound(event_name)
+        if not url:
+            return
+        return rx.call_script(
+            f"(function(){{ try {{ new Audio('{url}').play().catch(function(){{}}); }} "
+            f"catch(e) {{}} }})();"
+        )
+
+    def toggle_transition_effect(self, effect: str, checked: bool) -> None:
+        current = list(self.transition_effects_enabled)
+        if checked and effect not in current:
+            current.append(effect)
+        elif not checked and effect in current:
+            current.remove(effect)
+        if not current:
+            current = [effect]
+        self.transition_effects_enabled = current
+        _engine.security.persistence.save({"transition_effects_enabled": current})
+
+    def set_transition_mode(self, mode: str) -> None:
+        self.transition_mode = mode
+        _engine.security.persistence.save({"transition_mode": mode})
+
+    def toggle_tab_transition_effect(self, effect: str, checked: bool) -> None:
+        current = list(self.tab_transition_effects_enabled)
+        if checked and effect not in current:
+            current.append(effect)
+        elif not checked and effect in current:
+            current.remove(effect)
+        if not current:
+            current = [effect]
+        self.tab_transition_effects_enabled = current
+        _engine.security.persistence.save({"tab_transition_effects_enabled": current})
+
+    def set_tab_transition_mode(self, mode: str) -> None:
+        self.tab_transition_mode = mode
+        _engine.security.persistence.save({"tab_transition_mode": mode})
+
+    @rx.var
+    def theme_vars(self) -> dict[str, str]:
+        t = THEMES[self.theme_key]
+        return {
+            "accent": t.accent,
+            "accent_glow": t.accent_glow,
+            "bg_from": t.bg_from,
+            "bg_to": t.bg_to,
+            "glass_bg": t.glass_bg,
+            "glass_border": t.glass_border,
+            "text_primary": t.text_primary,
+            "text_muted": t.text_muted,
+        }
+
+    @rx.var
+    def sidebar_tabs(self) -> list[str]:
+        return SIDEBAR_TABS
+
+    @rx.var
+    def theme_options(self) -> list[dict[str, str]]:
+        return [{"key": k, "label": THEME_LABELS[k]} for k in THEME_ORDER]
+
+    @rx.var
+    def transition_effect_options(self) -> list[dict[str, str]]:
+        return [{"key": k, "label": v} for k, v in TRANSITION_EFFECTS.items()]
+
+----------------------------------------------------------------------------------------------------
+END FILE: core_shell_mixin.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: trading_panel_mixin.py
+FULL PATH: D:\QuantumTrade19\state\app_state_mixins\trading_panel_mixin.py
+----------------------------------------------------------------------------------------------------
+"""Executable AppState mixin: Trading Panel chart state and methods (react-klinecharts).
+
+TARGET PATH: D:\QuantumTrade19\state\app_state_mixins\trading_panel_mixin.py
+REPLACE THE ENTIRE FILE.
+
+FIX v0.4.62 - every poll tick now calls window.QT19_ensureLiveCallback
+(installed by kline_chart.py) BEFORE attempting to use the live push
+callback - self-heals the registration if React StrictMode's remount
+cycle ever leaves it empty (confirmed via console: the final mounted
+chart instance's own cleanup fired with no later re-subscribe,
+permanently emptying the registry). See kline_chart.py's v0.4.62
+docstring for the full explanation.
+
+FIX v0.4.60 (carried forward) - throttled success/failure console logging
+on the push side (first 5 calls only).
+
+FIX v0.4.59 (carried forward) - trading_panel_data_version, incremented
+only inside refresh_trading_panel_chart() (a genuine full reload), never
+inside build_live_ohlc_update() (the 0.5s poll).
+
+FIX v0.4.54 (carried forward) - klinecharts v10.0.2 removed updateData()/
+applyNewData(); live ticks go through the callback stored in
+window.QT19_LIVE_CALLBACKS via subscribeBar().
+"""
+from __future__ import annotations
+
+import asyncio
+import datetime
+import json
+import time
+
+import reflex as rx
+
+from state.app_state_mixins.shared import (
+    engine,
+    TRADING_PANEL_CHART_ID,
+    TRADING_PANEL_PERIOD_MAP,
+    TRADING_PANEL_TF_OPTIONS,
+    TRADING_PANEL_DAY_PRESETS,
+)
+
+_TF_DURATION_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000}
+
+
+def _today_str() -> str:
+    return datetime.date.today().isoformat()
+
+
+def _normalize_timestamp_ms(value) -> int:
+    numeric = int(value)
+    if numeric < 10_000_000_000:
+        return numeric * 1000
+    return numeric
+
+
+def _format_eta(seconds) -> str:
+    if seconds is None:
+        return ""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"~{seconds}s remaining"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"~{minutes}m remaining"
+    hours = minutes // 60
+    return f"~{hours}h {minutes % 60}m remaining"
+
+
+class TradingPanelMixin(rx.State, mixin=True):
+
+    def _symbol_display_days_key(self, symbol: str) -> str:
+        return f"chart_display_days_{symbol}"
+
+    def _coverage_cache_key(self, symbol: str, tf: str) -> str:
+        return f"chart_coverage_cache_{symbol}_{tf}"
+
+    def load_trading_panel_display_days(self) -> None:
+        saved = engine.security.persistence.load().get(self._symbol_display_days_key(self.trading_panel_symbol))
+        value = str(saved) if saved else "5"
+        self.trading_panel_display_days_input = value
+        self.trading_panel_display_days_draft = value
+
+    def _update_tf_progress(self, symbol: str, tf: str) -> dict:
+        progress = engine.market_data.get_deep_history_progress(symbol, tf)
+        entry = {
+            "percent": int(progress.get("percent", 0)),
+            "state": progress.get("state", "idle"),
+            "eta_seconds": progress.get("eta_seconds"),
+            "present_candles": int(progress.get("present_candles", 0)),
+            "required_candles": int(progress.get("required_candles", 0)),
+            "missing_candles": int(progress.get("missing_candles", 0)),
+            "broker_ceiling_reached": bool(progress.get("broker_ceiling_reached", False)),
+            "error": progress.get("error"),
+        }
+        current = dict(self.trading_panel_tf_progress)
+        current[tf] = entry
+        self.trading_panel_tf_progress = current
+        return progress
+
+    def get_coverage(self, symbol: str, tf: str, force: bool = False) -> tuple[int, str]:
+        progress = self._update_tf_progress(symbol, tf)
+
+        settings = engine.security.persistence.load()
+        cache_key = self._coverage_cache_key(symbol, tf)
+        cached = settings.get(cache_key)
+        if not force and cached and cached.get("date") == _today_str():
+            return int(cached.get("local_days", 0)), str(cached.get("broker_days", "Not checked yet"))
+
+        local_days = int(progress.get("covered_days", 0))
+        ceiling = engine.market_data.get_ceiling_days(symbol, tf)
+        broker_label = f"{ceiling} days" if ceiling is not None else "Not checked yet"
+        engine.security.persistence.save(
+            {cache_key: {"date": _today_str(), "local_days": local_days, "broker_days": broker_label}}
+        )
+        return local_days, broker_label
+
+    def _set_coverage_pending(self, symbol: str, tf: str, pending: bool) -> None:
+        engine.security.persistence.save({f"chart_coverage_pending_{symbol}_{tf}": pending})
+
+    def _is_coverage_pending(self, symbol: str, tf: str) -> bool:
+        return bool(engine.security.persistence.load().get(f"chart_coverage_pending_{symbol}_{tf}", False))
+
+    def set_trading_panel_symbol(self, value: str) -> None:
+        self.trading_panel_symbol = value
+        engine.security.persistence.save({"trading_panel_symbol": value})
+        self.load_trading_panel_display_days()
+        self.refresh_trading_panel_chart()
+
+    def set_trading_panel_chart_tf(self, value: str) -> None:
+        self.trading_panel_chart_tf = value
+        engine.security.persistence.save({"trading_panel_chart_tf": value})
+        self.refresh_trading_panel_chart()
+
+    def set_trading_panel_display_days_draft(self, value: str) -> None:
+        self.trading_panel_display_days_draft = value
+
+    def handle_display_days_keydown(self, key: str) -> None:
+        if key == "Enter":
+            self.commit_trading_panel_display_days()
+
+    def commit_trading_panel_display_days(self) -> None:
+        self.set_trading_panel_display_days(self.trading_panel_display_days_draft)
+
+    def set_trading_panel_display_days(self, value: str) -> None:
+        self.trading_panel_display_days_input = value
+        self.trading_panel_display_days_draft = value
+        try:
+            requested_days = int(value)
+            if requested_days <= 0:
+                self.trading_panel_notice = "Enter a positive whole number of days."
+                return
+        except ValueError:
+            self.trading_panel_notice = "Enter a positive whole number of days."
+            return
+
+        symbol = self.trading_panel_symbol
+        engine.security.persistence.save({self._symbol_display_days_key(symbol): requested_days})
+
+        for tf in TRADING_PANEL_TF_OPTIONS:
+            local_days, _ = self.get_coverage(symbol, tf, force=True)
+            if local_days < requested_days:
+                engine.market_data.start_deep_history(symbol, tf, requested_days)
+                self._set_coverage_pending(symbol, tf, True)
+            else:
+                self._set_coverage_pending(symbol, tf, False)
+
+        self.refresh_trading_panel_chart()
+
+    def set_trading_panel_chart_theme(self, value: str) -> None:
+        self.trading_panel_chart_theme = value
+        engine.security.persistence.save({"trading_panel_chart_theme": value})
+
+    def toggle_trading_panel_grid(self) -> None:
+        self.trading_panel_grid_enabled = not self.trading_panel_grid_enabled
+        engine.security.persistence.save({"trading_panel_grid_enabled": self.trading_panel_grid_enabled})
+
+    def toggle_trading_panel_follow_live(self) -> None:
+        self.trading_panel_follow_live = not self.trading_panel_follow_live
+        engine.security.persistence.save({"trading_panel_follow_live": self.trading_panel_follow_live})
+
+    def reset_trading_panel_view(self):
+        return rx.call_script(
+            f"""(function() {{
+                var chart = window.QT19_CHARTS && window.QT19_CHARTS['{TRADING_PANEL_CHART_ID}'];
+                if (chart && typeof chart.setBarSpace === 'function') chart.setBarSpace(6);
+            }})()"""
+        )
+
+    def go_live_trading_panel(self):
+        return rx.call_script(
+            f"""(function() {{
+                var chart = window.QT19_CHARTS && window.QT19_CHARTS['{TRADING_PANEL_CHART_ID}'];
+                if (chart && typeof chart.scrollToRealTime === 'function') chart.scrollToRealTime();
+            }})()"""
+        )
+
+    def open_trading_panel_menu(self, x: int, y: int) -> None:
+        self.trading_panel_menu_x = int(x)
+        self.trading_panel_menu_y = int(y)
+        self.trading_panel_menu_open = True
+
+    def close_trading_panel_menu(self) -> None:
+        self.trading_panel_menu_open = False
+
+    def refresh_trading_panel_chart(self) -> None:
+        symbol = self.trading_panel_symbol
+        tf = self.trading_panel_chart_tf
+        try:
+            requested_days = int(self.trading_panel_display_days_input)
+        except ValueError:
+            requested_days = 5
+
+        force = self._is_coverage_pending(symbol, tf)
+        local_days, broker_label = self.get_coverage(symbol, tf, force=force)
+        self.trading_panel_local_days = str(local_days)
+        self.trading_panel_broker_days = broker_label
+
+        if local_days >= requested_days and force:
+            self._set_coverage_pending(symbol, tf, False)
+
+        effective_days = min(requested_days, local_days) if local_days else requested_days
+        if local_days and requested_days > local_days:
+            self.trading_panel_notice = (
+                f"{requested_days} days requested \u2014 {local_days} days available locally \u2014 downloading the rest\u2026"
+            )
+        elif not local_days:
+            self.trading_panel_notice = "No local historical coverage yet for this symbol/timeframe \u2014 downloading\u2026"
+        else:
+            self.trading_panel_notice = ""
+
+        candles = engine.market_data.get_chart_candles(symbol, tf, effective_days)
+        rows = [
+            {
+                "timestamp": _normalize_timestamp_ms(c.open_time),
+                "open": float(c.open), "high": float(c.high),
+                "low": float(c.low), "close": float(c.close),
+                "volume": float(c.volume),
+            }
+            for c in candles
+        ]
+        self.trading_panel_candles = rows
+        self.trading_panel_data_version += 1
+
+        current = candles[-1] if candles else None
+        if current:
+            self.trading_panel_current_open = f"{current.open:.2f}"
+            self.trading_panel_current_high = f"{current.high:.2f}"
+            self.trading_panel_current_low = f"{current.low:.2f}"
+            self.trading_panel_current_close = f"{current.close:.2f}"
+            self.trading_panel_last_candle_ts = float(_normalize_timestamp_ms(current.open_time))
+        else:
+            self.trading_panel_current_open = "--"
+            self.trading_panel_current_high = "--"
+            self.trading_panel_current_low = "--"
+            self.trading_panel_current_close = "--"
+            self.trading_panel_last_candle_ts = 0.0
+
+    def build_live_ohlc_update(self):
+        symbol = self.trading_panel_symbol
+        tf = self.trading_panel_chart_tf
+
+        if self._is_coverage_pending(symbol, tf):
+            try:
+                requested_days = int(self.trading_panel_display_days_input)
+            except ValueError:
+                requested_days = 5
+            local_days, broker_label = self.get_coverage(symbol, tf, force=True)
+            self.trading_panel_local_days = str(local_days)
+            self.trading_panel_broker_days = broker_label
+            if local_days >= requested_days:
+                self._set_coverage_pending(symbol, tf, False)
+                self.trading_panel_notice = ""
+                self.refresh_trading_panel_chart()
+        else:
+            self._update_tf_progress(symbol, tf)
+
+        live = engine.market_data.get_live_candle(symbol, tf)
+        if not live:
+            return None, False
+
+        self.trading_panel_current_open = f"{live.open:.2f}"
+        self.trading_panel_current_high = f"{live.high:.2f}"
+        self.trading_panel_current_low = f"{live.low:.2f}"
+        self.trading_panel_current_close = f"{live.close:.2f}"
+
+        live_ts = _normalize_timestamp_ms(live.open_time)
+        live_row = {
+            "timestamp": live_ts, "open": float(live.open), "high": float(live.high),
+            "low": float(live.low), "close": float(live.close),
+            "volume": float(getattr(live, "volume", 0.0) or 0.0),
+        }
+        candle_closed = (
+            self.trading_panel_last_candle_ts != 0.0
+            and float(live_ts) != self.trading_panel_last_candle_ts
+        )
+        self.trading_panel_last_candle_ts = float(live_ts)
+        return live_row, candle_closed
+
+    @rx.event(background=True)
+    async def poll_trading_panel_chart(self):
+        async with self:
+            if self.trading_panel_poll_running:
+                return
+            self.trading_panel_poll_running = True
+        try:
+            while True:
+                live_row = None
+                should_snap = False
+                async with self:
+                    live_row, candle_closed = self.build_live_ohlc_update()
+                    if candle_closed and self.trading_panel_follow_live:
+                        should_snap = True
+
+                if live_row is not None:
+                    bar_json = json.dumps(live_row)
+                    snap_call = (
+                        f"if (chart.scrollToRealTime) chart.scrollToRealTime();"
+                        if should_snap else ""
+                    )
+                    # v0.4.62: self-heal FIRST, every tick, before attempting
+                    # to use the live callback - defends against StrictMode
+                    # (or any future remount) leaving the registry empty
+                    # with no later re-subscribe.
+                    yield rx.call_script(
+                        f"""(function() {{
+                            var chart = window.QT19_CHARTS && window.QT19_CHARTS['{TRADING_PANEL_CHART_ID}'];
+                            if (window.QT19_ensureLiveCallback && window.QT19_ensureLiveCallback['{TRADING_PANEL_CHART_ID}']) {{
+                                window.QT19_ensureLiveCallback['{TRADING_PANEL_CHART_ID}']();
+                            }}
+                            var pushLive = window.QT19_LIVE_CALLBACKS && window.QT19_LIVE_CALLBACKS['{TRADING_PANEL_CHART_ID}'];
+                            window.QT19_PUSH_COUNT = (window.QT19_PUSH_COUNT || 0) + 1;
+                            if (pushLive) {{
+                                pushLive({bar_json});
+                                if (window.QT19_PUSH_COUNT <= 5) {{
+                                    console.log('QT19: pushLive() SUCCEEDED, call #' + window.QT19_PUSH_COUNT + ', bar:', {bar_json});
+                                }}
+                            }} else {{
+                                if (window.QT19_PUSH_COUNT <= 5) {{
+                                    console.warn('QT19: no live callback registered for {TRADING_PANEL_CHART_ID} on call #' + window.QT19_PUSH_COUNT + '. Bar that could not be pushed:', {bar_json});
+                                }}
+                            }}
+                            if (chart) {{
+                                {snap_call}
+                            }}
+                        }})()"""
+                    )
+                await asyncio.sleep(0.5)
+        finally:
+            async with self:
+                self.trading_panel_poll_running = False
+
+    @rx.var
+    def trading_panel_backfill_active(self) -> bool:
+        return self._is_coverage_pending(self.trading_panel_symbol, self.trading_panel_chart_tf)
+
+    @rx.var
+    def trading_panel_backfill_percent(self) -> int:
+        entry = self.trading_panel_tf_progress.get(self.trading_panel_chart_tf)
+        if not entry:
+            return 0
+        return max(0, min(100, int(entry.get("percent", 0))))
+
+    @rx.var
+    def trading_panel_eta_text(self) -> str:
+        entry = self.trading_panel_tf_progress.get(self.trading_panel_chart_tf)
+        if not entry:
+            return ""
+        if entry.get("error"):
+            return f"Error: {entry['error']}"
+        if entry.get("broker_ceiling_reached"):
+            return "Broker has no more history for this range (real exchange data limit)."
+        if entry.get("state") == "complete":
+            return "Complete"
+        eta_text = _format_eta(entry.get("eta_seconds"))
+        if eta_text:
+            return eta_text
+        if entry.get("state") in ("downloading", "queued"):
+            return "Estimating\u2026"
+        return ""
+
+    @rx.var
+    def trading_panel_combined_percent(self) -> int:
+        values = [
+            int(self.trading_panel_tf_progress.get(tf, {}).get("percent", 0))
+            for tf in TRADING_PANEL_TF_OPTIONS
+        ]
+        if not values:
+            return 0
+        return int(round(sum(values) / len(values)))
+
+    @rx.var
+    def trading_panel_combined_active(self) -> bool:
+        return any(
+            self.trading_panel_tf_progress.get(tf, {}).get("state") in ("downloading", "queued")
+            for tf in TRADING_PANEL_TF_OPTIONS
+        )
+
+    @rx.var
+    def trading_panel_countdown_text(self) -> str:
+        duration_ms = _TF_DURATION_MS.get(self.trading_panel_chart_tf, 60_000)
+        if self.trading_panel_last_candle_ts <= 0:
+            return "--:--"
+        close_at_ms = self.trading_panel_last_candle_ts + duration_ms
+        now_ms = time.time() * 1000
+        remaining_s = max(0, int((close_at_ms - now_ms) / 1000))
+        minutes, seconds = divmod(remaining_s, 60)
+        return f"{minutes:02d}:{seconds:02d}"
+
+    @rx.var
+    def trading_panel_symbol_options(self) -> list[str]:
+        return engine.market_data.symbol_registry.get_symbols_sorted(active_only=True)
+
+    @rx.var
+    def trading_panel_symbol_info(self) -> dict:
+        registry = engine.market_data.symbol_registry
+        info = registry.get_symbol_info(self.trading_panel_symbol)
+        if info is None or not info.tick_size:
+            return {"ticker": self.trading_panel_symbol, "precision": 2}
+        tick = info.tick_size
+        precision = 0
+        while round(tick, precision) != tick and precision < 8:
+            precision += 1
+        return {"ticker": self.trading_panel_symbol, "precision": precision}
+
+    @rx.var
+    def trading_panel_period(self) -> dict:
+        return TRADING_PANEL_PERIOD_MAP.get(self.trading_panel_chart_tf, TRADING_PANEL_PERIOD_MAP["5m"])
+
+    @rx.var
+    def trading_panel_styles(self) -> dict:
+        day = self.trading_panel_chart_theme == "day"
+        grid_show = self.trading_panel_grid_enabled
+        foreground = "#152238" if day else "#dce8f7"
+        grid_color = "rgba(56,78,108,.14)" if day else "rgba(151,176,207,.15)"
+        return {
+            "grid": {
+                "show": grid_show,
+                "horizontal": {"show": grid_show, "color": grid_color},
+                "vertical": {"show": grid_show, "color": grid_color},
+            },
+            "candle": {"bar": {"upColor": "#16c784", "downColor": "#ea3943", "noChangeColor": "#8b98aa"}},
+            "xAxis": {"axisLine": {"color": grid_color}, "tickLine": {"color": grid_color}, "tickText": {"color": foreground}},
+            "yAxis": {"axisLine": {"color": grid_color}, "tickLine": {"color": grid_color}, "tickText": {"color": foreground}},
+        }
+
+    @rx.var
+    def trading_panel_menu_style(self) -> dict:
+        day = self.trading_panel_chart_theme == "day"
+        background = "#f4f7fb" if day else "#141d29"
+        border_color = "rgba(20,30,50,0.18)" if day else "rgba(147,173,205,0.28)"
+        text_color = "#152238" if day else "#dce8f7"
+        return {
+            "background": background,
+            "border": f"1px solid {border_color}",
+            "borderRadius": "0.9rem",
+            "boxShadow": "0 10px 30px rgba(0,0,0,0.28)",
+            "color": text_color,
+            "left": f"{self.trading_panel_menu_x}px",
+            "top": f"{self.trading_panel_menu_y}px",
+        }
+
+----------------------------------------------------------------------------------------------------
+END FILE: trading_panel_mixin.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: deep_history_card_mixin.py
+FULL PATH: D:\QuantumTrade19\state\app_state_mixins\deep_history_card_mixin.py
+----------------------------------------------------------------------------------------------------
+"""Executable AppState mixin: Deep Historical Data Settings card.
+
+PATH: state/app_state_mixins/deep_history_card_mixin.py (NEW FILE)
+
+FIX v0.4.45 - card shows "0.003 days" right after startup despite tons of
+real data already downloaded, while the "smaller duration" confirm dialog
+correctly shows the real large number moments later. Root cause: both
+paths read get_deep_history_progress()'s "covered_days" field, which
+measures ONLY the newest UNBROKEN chunk of candles (CandleStoreWorker's
+"contiguous_days") - a real, honest metric, but the wrong one for "how
+much history do I actually have". If there is ever a tiny gap right at
+the live edge (very common immediately after a restart, before the
+background gap-healer's next pass), that metric collapses toward zero
+even though a much larger separate archive sits just behind that one
+small gap. The confirm dialog "looked correct" only because a few seconds
+had passed and the auto-healer had already closed that edge gap by then -
+both were reading the same fragile metric, just at different moments.
+
+Fix: this card now sums ALL physically stored ranges
+(candle_store.get_physical_ranges(symbol, tf)) instead of using the
+newest-contiguous-chunk-only metric, for both the mini-bar "days in
+database" label AND the confirm-dialog's "already has X days" check -
+both numbers are now guaranteed to be in sync and reflect the true total
+archive size regardless of a small live-edge gap.
+
+NOTE: this assumes CandleStoreWorker exposes get_physical_ranges(symbol,
+timeframe) -> list[tuple[int, int]] (confirmed present in an earlier
+version of that file). If your current candle_store_worker.py has since
+renamed or removed this method, this card will raise an AttributeError -
+if that happens, paste that file's real current content and I will adapt
+this in one pass.
+
+FIX v0.4.39 (carried forward) - poll_deep_history_cards runs every 10s and
+self-stops when leaving the Settings tab.
+"""
+from __future__ import annotations
+
+import asyncio
+from typing import List, TypedDict
+
+import reflex as rx
+
+from state.app_state_mixins.shared import _engine, TRADING_PANEL_TF_OPTIONS
+
+_DURATION_UNIT_TO_DAYS = {"Days": 1, "Months": 30, "Years": 365}
+_BUSY_STATES = {"downloading", "queued"}
+_POLL_INTERVAL_SECONDS = 10.0
+_DAY_MS = 86_400_000
+
+
+class GapMarker(TypedDict):
+    left_pct: float
+    width_pct: float
+
+
+class TfRow(TypedDict):
+    tf: str
+    state: str
+    green_pct: int
+    db_label: str
+    present_range_label: str
+    broker_label: str
+    has_gap: bool
+    gap_labels: List[str]
+    gaps: List[GapMarker]
+    is_busy: bool
+    eta_label: str
+    broker_probed: bool
+
+
+class CardRow(TypedDict):
+    symbol: str
+    duration_value: str
+    duration_unit: str
+    confirm_open: bool
+    confirm_message: str
+    combined_active: bool
+    combined_percent: int
+    tfs: List[TfRow]
+
+
+def _format_eta(seconds) -> str:
+    if seconds is None:
+        return ""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"~{seconds}s remaining"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"~{minutes}m remaining"
+    hours = minutes // 60
+    return f"~{hours}h {minutes % 60}m remaining"
+
+
+def _total_stored_days(symbol: str, tf: str) -> float:
+    """Sums ALL physically stored candle ranges for this symbol/timeframe -
+    not just the newest unbroken chunk. This is the single source of truth
+    for "how much history do I actually have", used consistently by both
+    the mini-bar label and the confirm-dialog check below."""
+    ranges = _engine.market_data.candle_store.get_physical_ranges(symbol, tf)
+    total_ms = sum(end - start for start, end in ranges)
+    return round(total_ms / _DAY_MS, 3)
+
+
+class DeepHistoryCardMixin(rx.State, mixin=True):
+    def set_card_duration_value(self, symbol: str, value: str) -> None:
+        current = dict(self._card_duration_value)
+        current[symbol] = value
+        self._card_duration_value = current
+
+    def set_card_duration_unit(self, symbol: str, value: str) -> None:
+        current = dict(self._card_duration_unit)
+        current[symbol] = value
+        self._card_duration_unit = current
+
+    def _requested_days_for(self, symbol: str) -> int:
+        raw = self._card_duration_value.get(symbol, "5")
+        unit = self._card_duration_unit.get(symbol, "Days")
+        try:
+            amount = max(1, int(raw))
+        except ValueError:
+            amount = 5
+        return amount * _DURATION_UNIT_TO_DAYS.get(unit, 1)
+
+    def _start_symbol_download(self, symbol: str, requested_days: int) -> None:
+        for tf in TRADING_PANEL_TF_OPTIONS:
+            _engine.market_data.start_deep_history(symbol, tf, requested_days)
+        _engine.market_data.start_ceiling_probe(symbol, TRADING_PANEL_TF_OPTIONS[0])
+
+    def handle_duration_keydown(self, symbol: str, key: str) -> None:
+        """Pressing Enter inside a card's duration input starts the download
+        directly - no separate Download button. If the requested duration is
+        SMALLER than what is already stored locally for at least one of this
+        symbol's timeframes, opens a confirmation dialog instead (nothing is
+        ever deleted or reduced by proceeding - it simply won't try to
+        backfill further back than the number just entered). Uses
+        _total_stored_days() (sum of ALL ranges) - same metric the mini-bar
+        label uses, so this check and what the card displays never
+        disagree."""
+        if key != "Enter":
+            return
+        requested_days = self._requested_days_for(symbol)
+        max_local_days = 0.0
+        for tf in TRADING_PANEL_TF_OPTIONS:
+            max_local_days = max(max_local_days, _total_stored_days(symbol, tf))
+
+        if max_local_days > requested_days:
+            confirm_open = dict(self._card_confirm_open)
+            confirm_message = dict(self._card_confirm_message)
+            pending = dict(self._card_pending_requested_days)
+            confirm_open[symbol] = True
+            confirm_message[symbol] = (
+                f"{symbol} already has {max_local_days:g} days stored locally for at "
+                f"least one timeframe - more than the {requested_days} days you just "
+                f"entered.\n\nProceeding is safe: nothing is ever deleted or reduced. "
+                f"It simply won't download further back than what you typed. Cancel "
+                f"instead if you meant to enter a larger number."
+            )
+            pending[symbol] = requested_days
+            self._card_confirm_open = confirm_open
+            self._card_confirm_message = confirm_message
+            self._card_pending_requested_days = pending
+            return
+
+        self._start_symbol_download(symbol, requested_days)
+
+    def cancel_download_confirm(self, symbol: str) -> None:
+        confirm_open = dict(self._card_confirm_open)
+        confirm_open[symbol] = False
+        self._card_confirm_open = confirm_open
+
+    def confirm_download_proceed(self, symbol: str) -> None:
+        confirm_open = dict(self._card_confirm_open)
+        confirm_open[symbol] = False
+        self._card_confirm_open = confirm_open
+        requested_days = self._card_pending_requested_days.get(symbol, 5)
+        self._start_symbol_download(symbol, requested_days)
+
+    def cancel_symbol_downloads(self, symbol: str) -> None:
+        for tf in TRADING_PANEL_TF_OPTIONS:
+            _engine.market_data.cancel_deep_history(symbol, tf)
+
+    def delete_symbol_history(self, symbol: str) -> None:
+        for tf in TRADING_PANEL_TF_OPTIONS:
+            _engine.market_data.delete_deep_history(symbol, tf)
+
+    @rx.event(background=True)
+    async def poll_deep_history_cards(self):
+        """Started from core_shell_mixin.py's on_load() and again every
+        time the Settings tab is opened. Self-stops once the user leaves
+        the Settings tab (checked every tick)."""
+        async with self:
+            if self._deep_history_cards_poll_running:
+                return
+            self._deep_history_cards_poll_running = True
+        try:
+            while True:
+                async with self:
+                    if self.active_tab != "Settings":
+                        break
+                    self._deep_history_cards_poll_tick += 1
+                await asyncio.sleep(_POLL_INTERVAL_SECONDS)
+        finally:
+            async with self:
+                self._deep_history_cards_poll_running = False
+
+    @rx.var
+    def deep_history_symbol_cards(self) -> List[CardRow]:
+        """Builds one card per active symbol from live MasterAppEngine
+        interfaces only. "days in database" now uses _total_stored_days()
+        (sum of every physically stored range) instead of the fragile
+        newest-contiguous-chunk-only metric - see module docstring."""
+        _ = self._deep_history_cards_poll_tick
+
+        cards: List[CardRow] = []
+        symbols = _engine.market_data.symbol_registry.get_symbols_sorted(active_only=True)
+
+        for symbol in symbols:
+            tf_rows: List[TfRow] = []
+            combined_present = 0
+            combined_required = 0
+            any_busy = False
+
+            for tf in TRADING_PANEL_TF_OPTIONS:
+                progress = _engine.market_data.get_deep_history_progress(symbol, tf)
+                present = int(progress.get("present_candles", 0))
+                required = int(progress.get("required_candles", 0))
+                total_days = _total_stored_days(symbol, tf)
+                state = str(progress.get("state", "idle"))
+                is_busy = state in _BUSY_STATES
+                broker_ceiling_reached = bool(progress.get("broker_ceiling_reached", False))
+                error = progress.get("error")
+
+                ceiling = _engine.market_data.get_ceiling_days(symbol, tf)
+                broker_probed = ceiling is not None
+                broker_label = f"{ceiling} days" if ceiling is not None else "Not checked yet"
+
+                if is_busy:
+                    green_pct = int(progress.get("percent", 0))
+                elif ceiling and ceiling > 0:
+                    green_pct = int(round(min(100.0, (total_days / ceiling) * 100)))
+                else:
+                    green_pct = 100 if total_days > 0 else 0
+                green_pct = max(0, min(100, green_pct))
+
+                if error:
+                    eta_label = f"Error: {error}"
+                elif broker_ceiling_reached:
+                    eta_label = "Broker has no more history for this range (real exchange data limit)."
+                elif state == "complete":
+                    eta_label = "Complete"
+                else:
+                    eta_label = _format_eta(progress.get("eta_seconds")) or ("Estimating..." if is_busy else "")
+
+                tf_rows.append({
+                    "tf": tf,
+                    "state": state,
+                    "green_pct": green_pct,
+                    "db_label": f"{total_days:g} days in QT19 database",
+                    "present_range_label": f"{present:,} candles present",
+                    "broker_label": broker_label,
+                    "has_gap": False,
+                    "gap_labels": [],
+                    "gaps": [],
+                    "is_busy": is_busy,
+                    "eta_label": eta_label,
+                    "broker_probed": broker_probed,
+                })
+
+                combined_present += present
+                combined_required += required
+                if is_busy:
+                    any_busy = True
+
+            combined_percent = int(round((combined_present / combined_required) * 100)) if combined_required else 0
+
+            cards.append({
+                "symbol": symbol,
+                "duration_value": self._card_duration_value.get(symbol, "5"),
+                "duration_unit": self._card_duration_unit.get(symbol, "Days"),
+                "confirm_open": self._card_confirm_open.get(symbol, False),
+                "confirm_message": self._card_confirm_message.get(symbol, ""),
+                "combined_active": any_busy,
+                "combined_percent": max(0, min(100, combined_percent)),
+                "tfs": tf_rows,
+            })
+
+        return cards
+
+----------------------------------------------------------------------------------------------------
+END FILE: deep_history_card_mixin.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: kline_chart.py
+FULL PATH: D:\QuantumTrade19\ui\components\kline_chart.py
+----------------------------------------------------------------------------------------------------
+"""Interactive React KLineCharts wrapper for Reflex.
+
+PATH: ui/components/kline_chart.py  (REPLACE ENTIRE FILE)
+
+FIX v0.4.62 - REAL final root cause, confirmed via exact console capture:
+React StrictMode's mount->unmount->remount cycle affects BOTH the effect
+AND its cleanup being invoked twice, and in this component's case, mount
+#2 (the "final" one that stays on screen) ALSO gets torn down and its
+cleanup runs (removing its own valid registration) - with NO third mount
+ever happening afterward to re-subscribe. Net result: after StrictMode's
+double-invoke settles, window.QT19_LIVE_CALLBACKS ends up completely empty
+- confirmed directly: `typeof window.QT19_LIVE_CALLBACKS[chartId]` printed
+"undefined", and manually invoking it threw "is not a function".
+
+v0.4.61's identity-check fix was CORRECT for stopping a stale instance
+from deleting a newer instance's registration - but it does nothing to
+protect against the CURRENTLY-mounted instance's own cleanup firing (which
+is exactly what StrictMode's double-invoke does to every effect, not just
+foreign ones) with nothing left afterward to re-subscribe.
+
+Real fix: stop relying on the subscribe/unsubscribe LIFECYCLE TIMING
+entirely for a persistent global registry. Instead, every single
+poll_trading_panel_chart tick (already running every 0.5s from Python) is
+now defended on the JS side too: before using
+window.QT19_LIVE_CALLBACKS[chartId], we self-heal it if missing by calling
+chart.setDataLoader(...) AGAIN with the same loader object, forcing
+klinecharts to re-run getBars/subscribeBar and refill the registry entry -
+completely independent of whatever cleanup/remount chaos React's
+StrictMode (or any other future remount scenario) puts the component
+through. This makes the live-push path self-repairing rather than
+depending on a fragile one-time subscription surviving forever.
+"""
+from __future__ import annotations
+
+import reflex as rx
+from reflex.utils.imports import ImportVar
+
+
+class KLineChart(rx.Component):
+    """Registry-backed wrapper around react-klinecharts' <KLineChart>."""
+
+    tag = "QT19KLineChart"
+
+    data: rx.Var[list[dict]]
+    data_version: rx.Var[int] = 0
+    symbol: rx.Var[dict]
+    period: rx.Var[dict]
+    styles: rx.Var[dict]
+    zoom_enabled: rx.Var[bool] = True
+    scroll_enabled: rx.Var[bool] = True
+    chart_id: rx.Var[str]
+
+    def add_imports(self) -> dict[str, list[ImportVar]]:
+        return {
+            "react": [ImportVar(tag="useEffect"), ImportVar(tag="useRef")],
+            "react-klinecharts": [ImportVar(tag="KLineChart", alias="RKLineChart")],
+        }
+
+    def get_event_triggers(self) -> dict:
+        return {
+            **super().get_event_triggers(),
+            "on_context_menu": lambda e: [e.clientX, e.clientY],
+        }
+
+    def add_custom_code(self) -> list[str]:
+        return [
+            r"""
+function QT19KLineChart(props) {
+  const { chartId, data, dataVersion, symbol, period, styles, zoomEnabled, scrollEnabled, onContextMenu, ...rest } = props;
+  const chartRef = useRef(null);
+  const dataRef = useRef(data);
+  const loaderReadyRef = useRef(false);
+  const lastVersionRef = useRef(null);
+
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
+
+  useEffect(() => {
+    if (lastVersionRef.current === null) {
+      lastVersionRef.current = dataVersion;
+      return;
+    }
+    if (dataVersion !== lastVersionRef.current) {
+      lastVersionRef.current = dataVersion;
+      if (loaderReadyRef.current && chartRef.current && typeof chartRef.current.resetData === "function") {
+        console.log("QT19KLineChart: dataVersion changed to", dataVersion, "- calling resetData() for", chartId);
+        chartRef.current.resetData();
+      }
+    }
+  }, [dataVersion]);
+
+  const installLoader = (chart) => {
+    chart.setDataLoader({
+      getBars: ({ type, callback }) => {
+        if (type === "init") {
+          callback(dataRef.current || [], false);
+        } else {
+          callback([], false);
+        }
+      },
+      subscribeBar: ({ callback }) => {
+        loaderReadyRef.current = true;
+        if (typeof window !== "undefined") {
+          window.QT19_LIVE_CALLBACKS = window.QT19_LIVE_CALLBACKS || {};
+          window.QT19_LIVE_CALLBACKS[chartId] = callback;
+        }
+      },
+      unsubscribeBar: () => {
+        // v0.4.62: deliberately does NOT delete the registry entry
+        // anymore. React StrictMode's double-invoke cycle calls this on
+        // the FINAL, currently-displayed chart instance too (not just
+        // stale ones), with no guaranteed later re-subscribe - so this
+        // callback firing is no longer treated as proof the registration
+        // should be removed. window.QT19_ensureLiveCallback() (called on
+        // every poll tick from Python, see below) is the real, ongoing
+        // source of truth and will self-heal the registry if it is ever
+        // actually stale.
+      },
+    });
+  };
+
+  const handleReady = (chart) => {
+    chartRef.current = chart;
+    if (typeof window !== "undefined") {
+      window.QT19_CHARTS = window.QT19_CHARTS || {};
+      window.QT19_CHARTS[chartId] = chart;
+
+      // v0.4.62: self-healing hook, called every poll tick from Python
+      // BEFORE it tries to use the live callback. If the registry entry
+      // is missing (e.g. StrictMode tore down the subscription with no
+      // later re-subscribe), this forces klinecharts to re-run its
+      // getBars/subscribeBar cycle against our loader, refilling the
+      // registry - independent of any remount/cleanup timing.
+      window.QT19_ensureLiveCallback = window.QT19_ensureLiveCallback || {};
+      window.QT19_ensureLiveCallback[chartId] = () => {
+        if (!window.QT19_LIVE_CALLBACKS || !window.QT19_LIVE_CALLBACKS[chartId]) {
+          console.log("QT19KLineChart: self-healing missing live callback for", chartId);
+          try {
+            if (typeof chart.setSymbol === "function" && symbol) chart.setSymbol(symbol);
+            if (typeof chart.setPeriod === "function" && period) chart.setPeriod(period);
+          } catch (err) {
+            console.error("QT19KLineChart: self-heal setSymbol/setPeriod failed:", err);
+          }
+        }
+      };
+    }
+
+    if (typeof chart.setDataLoader !== "function") {
+      console.error(
+        "QT19KLineChart: this klinecharts version has no setDataLoader() - cannot wire up data at all. Chart instance:", chart
+      );
+      return;
+    }
+
+    installLoader(chart);
+
+    try {
+      if (typeof chart.setSymbol === "function" && symbol) {
+        chart.setSymbol(symbol);
+      }
+      if (typeof chart.setPeriod === "function" && period) {
+        chart.setPeriod(period);
+      }
+    } catch (err) {
+      console.error("QT19KLineChart: setSymbol/setPeriod force-trigger failed:", err);
+    }
+  };
+
+  const handleContextMenu = (e) => {
+    e.preventDefault();
+    if (typeof onContextMenu === "function") {
+      onContextMenu(e);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (typeof window !== "undefined") {
+        if (window.QT19_CHARTS && window.QT19_CHARTS[chartId] === chartRef.current) {
+          delete window.QT19_CHARTS[chartId];
+        }
+        if (window.QT19_ensureLiveCallback) {
+          delete window.QT19_ensureLiveCallback[chartId];
+        }
+      }
+    };
+  }, [chartId]);
+
+  return (
+    <div
+      onContextMenu={handleContextMenu}
+      style={{ width: "100%", height: "100%" }}
+    >
+      <RKLineChart
+        data={data}
+        symbol={symbol}
+        period={period}
+        styles={styles}
+        zoomEnabled={zoomEnabled}
+        scrollEnabled={scrollEnabled}
+        onReady={handleReady}
+        {...rest}
+      />
+    </div>
+  );
+}
+"""
+        ]
+
+
+kline_chart = KLineChart.create
+
+----------------------------------------------------------------------------------------------------
+END FILE: kline_chart.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: trading_panel_chart.py
+FULL PATH: D:\QuantumTrade19\ui\components\trading_panel_chart.py
+----------------------------------------------------------------------------------------------------
+"""Trading Panel interactive candlestick chart component.
+
+PATH: ui/components/trading_panel_chart.py  (REPLACE ENTIRE FILE)
+
+FIX v0.4.59 - passes AppState.trading_panel_data_version through to
+KLineChart's new data_version prop (see ui/components/kline_chart.py's
+docstring for the full explanation) - this is what lets the chart tell
+apart "a real full reload happened" from "just another harmless 0.5s
+OHLC poll tick", fixing the infinite subscribeBar/unsubscribeBar teardown
+loop that kept the live price line permanently disconnected.
+
+CHANGE (v0.3.8, carried forward): passes on_context_menu through to the
+real Reflex event trigger declared on KLineChart.
+"""
+from __future__ import annotations
+
+import reflex as rx
+
+from state.app_state import AppState
+from state.app_state_mixins.shared import TRADING_PANEL_CHART_ID
+from ui.components.kline_chart import kline_chart
+
+
+def trading_panel_chart() -> rx.Component:
+    """Render the interactive KLineCharts surface."""
+    return rx.box(
+        kline_chart(
+            data=AppState.trading_panel_candles,
+            data_version=AppState.trading_panel_data_version,
+            symbol=AppState.trading_panel_symbol_info,
+            period=AppState.trading_panel_period,
+            styles=AppState.trading_panel_styles,
+            chart_id=TRADING_PANEL_CHART_ID,
+            id=TRADING_PANEL_CHART_ID,
+            on_context_menu=AppState.open_trading_panel_menu,
+            style={
+                "width": "100%",
+                "height": "100%",
+                "min_height": "0",
+                "border_radius": "14px",
+                "border": "1px solid rgba(147, 173, 205, 0.18)",
+                "background": rx.cond(
+                    AppState.trading_panel_chart_theme == "day",
+                    "#f7f9fc",
+                    "#101722",
+                ),
+            },
+        ),
+        width="100%",
+        height="100%",
+        min_height="0",
+        flex="1",
+    )
+
+----------------------------------------------------------------------------------------------------
+END FILE: trading_panel_chart.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: deep_historical_data_card.py
+FULL PATH: D:\QuantumTrade19\ui\components\deep_historical_data_card.py
+----------------------------------------------------------------------------------------------------
+"""
+FULL PATH: ui/components/deep_historical_data_card.py  (REPLACE ENTIRE FILE)
+
+FIX v0.4.40 - "confirm dialog renders BEHIND the Gold card" (a real CSS
+stacking-context bug, not a z-index number problem): the confirm dialog
+was a plain rx.box with position="fixed" and z_index="9999". That normally
+puts it on top of everything - EXCEPT when an ancestor element establishes
+its own new CSS stacking context (which glassmorphism cards typically do,
+via backdrop-filter/transform in GLASS_CARD_STYLE). Once that happens, a
+descendant's position:fixed + z-index is only compared against siblings
+INSIDE that same stacking context - it can no longer out-rank a sibling
+card that sits in a later, separate stacking context on the page, no
+matter how high its z-index number is.
+
+Fixed by converting _confirm_dialog into a real, CONTROLLED
+rx.alert_dialog.root(open=..., on_open_change=...) - exactly like the
+already-correct Delete confirmation dialog on this same page. Radix's
+alert_dialog renders its content in a React portal attached directly to
+<body>, completely outside any card's stacking context, so it always
+renders above everything regardless of what any ancestor card's CSS does.
+No trigger button is needed since it's a controlled dialog - it opens
+automatically from AppState.handle_duration_keydown() setting
+confirm_open=True (see deep_history_card_mixin.py), exactly as before.
+
+CHANGE v0.4.17 (unchanged): Enter key inside the duration input starts the
+download directly; Delete requires an explicit confirm dialog.
+
+CHANGE v0.4.16 (unchanged): all hover-card color values remain hardcoded -
+Radix portals do not inherit CSS custom properties scoped elsewhere in the
+DOM.
+"""
+from __future__ import annotations
+
+import reflex as rx
+
+from state.app_state import AppState
+from ui.theme.glass import GLASS_CARD_STYLE
+
+
+_STATE_FILL_COLOR = {
+    "downloading": "#1E8FFF",
+    "queued": "#6B7280",
+    "paused": "#FF8C00",
+    "complete": "#16C784",
+    "broker_ceiling": "#16C784",
+    "incomplete": "#16C784",
+    "error": "#EA3943",
+    "idle": "#16C784",
+}
+
+
+_CARD_BG = "#0E1712"
+_CARD_BORDER = "rgba(120, 200, 150, 0.35)"
+_TEXT_PRIMARY = "#E8F5EC"
+_TEXT_MUTED = "#93A9A0"
+_GREEN = "#16C784"
+_BLUE = "#1E8FFF"
+_RED = "#EA3943"
+
+
+
+def _gap_marker(gap: dict) -> rx.Component:
+    return rx.box(
+        position="absolute",
+        left=f"{gap['left_pct']}%",
+        width=f"{gap['width_pct']}%",
+        top="0",
+        height="100%",
+        background=_RED,
+        opacity="0.9",
+    )
+
+
+
+def _gap_line(label: str) -> rx.Component:
+    return rx.text(label, font_size="0.72rem", color=_TEXT_PRIMARY, padding_y="0.1rem")
+
+
+
+def _hover_card_content(item: dict, symbol: str) -> rx.Component:
+    return rx.vstack(
+        rx.text(f"{symbol} - {item['tf']}", font_weight="800", font_size="0.85rem", color=_TEXT_PRIMARY),
+        rx.divider(),
+        rx.text("PRESENT DATA", font_size="0.65rem", font_weight="700", color=_GREEN, letter_spacing="0.05em"),
+        rx.text(item["present_range_label"], font_size="0.75rem", color=_TEXT_PRIMARY),
+        rx.text(f"Total: {item['db_label']}", font_size="0.72rem", color=_TEXT_MUTED),
+        rx.divider(),
+        rx.text("BROKER CEILING", font_size="0.65rem", font_weight="700", color=_BLUE, letter_spacing="0.05em"),
+        rx.text(item["broker_label"], font_size="0.75rem", color=_TEXT_PRIMARY),
+        rx.divider(),
+        rx.text("GAP DATA", font_size="0.65rem", font_weight="700", color=_RED, letter_spacing="0.05em"),
+        rx.cond(
+            item["has_gap"],
+            rx.vstack(
+                rx.foreach(item["gap_labels"], _gap_line),
+                spacing="0", width="100%",
+            ),
+            rx.text("No gaps detected", font_size="0.72rem", color=_TEXT_MUTED),
+        ),
+        rx.cond(
+            item["is_busy"],
+            rx.box(
+                rx.divider(),
+                rx.hstack(
+                    rx.spinner(size="1"),
+                    rx.text(item["eta_label"], font_size="0.72rem", font_weight="700", color=_BLUE),
+                    spacing="2", align_items="center",
+                ),
+                width="100%",
+            ),
+        ),
+        spacing="1",
+        width="260px",
+        max_height="240px",
+        overflow_y="auto",
+        padding="0.75rem",
+        align_items="stretch",
+        background=_CARD_BG,
+    )
+
+
+
+def _mini_bar(item: dict, symbol: str) -> rx.Component:
+    fill_color = rx.match(
+        item["state"],
+        ("downloading", _STATE_FILL_COLOR["downloading"]),
+        ("queued", _STATE_FILL_COLOR["queued"]),
+        ("paused", _STATE_FILL_COLOR["paused"]),
+        ("error", _STATE_FILL_COLOR["error"]),
+        _STATE_FILL_COLOR["idle"],
+    )
+    bar = rx.box(
+        rx.box(
+            width=f"{item['green_pct']}%",
+            height="100%",
+            background=fill_color,
+            transition="width 0.6s ease, background 0.3s ease",
+        ),
+        rx.foreach(item["gaps"], _gap_marker),
+        rx.cond(
+            item["broker_probed"],
+            rx.box(
+                position="absolute", right="0", top="0", height="100%", width="2px",
+                background="rgba(255,255,255,0.75)",
+            ),
+        ),
+        position="relative",
+        width="100%",
+        height="14px",
+        background="rgba(120,140,170,0.16)",
+        border_radius="4px",
+        overflow="hidden",
+    )
+    return rx.hover_card.root(
+        rx.hover_card.trigger(
+            rx.vstack(
+                rx.hstack(
+                    rx.text(item["tf"], font_size="0.65rem", font_weight="700", color="var(--qt19-text-muted)"),
+                    rx.cond(
+                        item["has_gap"],
+                        rx.box(width="6px", height="6px", border_radius="9999px", background="#EA3943"),
+                    ),
+                    spacing="1", align_items="center",
+                ),
+                bar,
+                rx.text(item["db_label"], font_size="0.6rem", color="var(--qt19-text-muted)"),
+                rx.cond(
+                    item["is_busy"],
+                    rx.hstack(
+                        rx.spinner(size="1"),
+                        rx.text(item["eta_label"], font_size="0.58rem", color="var(--qt19-accent)", font_weight="700"),
+                        spacing="1", align_items="center",
+                    ),
+                ),
+                spacing="1",
+                width="100%",
+                align_items="stretch",
+            ),
+        ),
+        rx.hover_card.content(
+            _hover_card_content(item, symbol),
+            style={
+                "background": _CARD_BG,
+                "border": f"1px solid {_CARD_BORDER}",
+                "border-radius": "0.7rem",
+                "box-shadow": "0 10px 30px rgba(0,0,0,0.5)",
+            },
+        ),
+    )
+
+
+
+def _duration_control(row: dict) -> rx.Component:
+    return rx.hstack(
+        rx.input(
+            value=row["duration_value"],
+            on_change=lambda v: AppState.set_card_duration_value(row["symbol"], v),
+            on_key_down=lambda key: AppState.handle_duration_keydown(row["symbol"], key),
+            width="60px",
+            size="1",
+        ),
+        rx.select(
+            ["Days", "Months", "Years"],
+            value=row["duration_unit"],
+            on_change=lambda v: AppState.set_card_duration_unit(row["symbol"], v),
+            size="1",
+            width="90px",
+        ),
+        rx.text("(press Enter)", font_size="0.62rem", color="var(--qt19-text-muted)"),
+        spacing="1", align_items="center",
+    )
+
+
+
+def _confirm_dialog(row: dict) -> rx.Component:
+    """Real, controlled, portaled dialog - fixes v0.4.40's stacking-context
+    bug. Opens automatically when row["confirm_open"] is True (set by
+    AppState.handle_duration_keydown) - no visible trigger button needed."""
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title("Confirm Download Duration"),
+            rx.alert_dialog.description(
+                row["confirm_message"],
+                white_space="pre-wrap",
+            ),
+            rx.hstack(
+                rx.alert_dialog.cancel(
+                    rx.button("Cancel", size="2", variant="outline",
+                              on_click=AppState.cancel_download_confirm(row["symbol"])),
+                ),
+                rx.alert_dialog.action(
+                    rx.button("Proceed Anyway", size="2", variant="solid",
+                              on_click=AppState.confirm_download_proceed(row["symbol"])),
+                ),
+                spacing="3", justify="end", margin_top="0.75rem", width="100%",
+            ),
+            style={"background": _CARD_BG, "border": f"1px solid {_CARD_BORDER}", "color": _TEXT_PRIMARY},
+        ),
+        open=row["confirm_open"],
+        on_open_change=lambda is_open: AppState.cancel_download_confirm(row["symbol"]),
+    )
+
+
+
+def _delete_confirm_button(symbol: str) -> rx.Component:
+    return rx.alert_dialog.root(
+        rx.alert_dialog.trigger(
+            rx.button("Delete", size="1", variant="outline", color_scheme="red"),
+        ),
+        rx.alert_dialog.content(
+            rx.alert_dialog.title(f"Delete all local data for {symbol}?"),
+            rx.alert_dialog.description(
+                "This permanently removes every downloaded 1m/5m/15m candle for this symbol "
+                "from the local database. This cannot be undone. Other symbols are not affected."
+            ),
+            rx.hstack(
+                rx.alert_dialog.cancel(rx.button("Cancel", variant="outline")),
+                rx.alert_dialog.action(
+                    rx.button("Delete Permanently", color_scheme="red",
+                              on_click=AppState.delete_symbol_history(symbol)),
+                ),
+                spacing="3", justify="end", margin_top="0.75rem",
+            ),
+            style={"background": _CARD_BG, "border": f"1px solid {_CARD_BORDER}", "color": _TEXT_PRIMARY},
+        ),
+    )
+
+
+
+def _combined_progress(row: dict) -> rx.Component:
+    return rx.cond(
+        row["combined_active"],
+        rx.hstack(
+            rx.spinner(size="1"),
+            rx.progress(value=row["combined_percent"], max=100, width="100%", height="6px"),
+            rx.text(f"{row['combined_percent']}%", font_size="0.65rem", color="var(--qt19-accent)", font_weight="700"),
+            spacing="2", align_items="center", width="100%",
+        ),
+    )
+
+
+
+def _symbol_card(row: dict) -> rx.Component:
+    return rx.box(
+        rx.vstack(
+            rx.hstack(
+                rx.text(row["symbol"], font_weight="700", font_size="0.95rem", color="var(--qt19-text-primary)"),
+                rx.spacer(),
+                _duration_control(row),
+                rx.button("Cancel", size="1", variant="outline",
+                          on_click=AppState.cancel_symbol_downloads(row["symbol"])),
+                _delete_confirm_button(row["symbol"]),
+                width="100%",
+                align_items="center",
+                spacing="2",
+                wrap="wrap",
+            ),
+            _combined_progress(row),
+            rx.hstack(
+                rx.foreach(row["tfs"], lambda item: _mini_bar(item, row["symbol"])),
+                width="100%",
+                spacing="3",
+                align_items="stretch",
+            ),
+            _confirm_dialog(row),
+            spacing="3",
+            width="100%",
+        ),
+        style=GLASS_CARD_STYLE,
+        width="100%",
+        padding="0.9rem 1.1rem",
+    )
+
+
+
+def deep_historical_data_card() -> rx.Component:
+    return rx.vstack(
+        rx.text("Deep Historical Data", font_weight="700", font_size="1.1rem", color="var(--qt19-text-primary)"),
+        rx.text(
+            "Type a duration and press Enter to download 1m/5m/15m together for that symbol only "
+            "- other symbols are never affected. If your entry is smaller than data already "
+            "present, you'll get a clear confirmation first (nothing is ever deleted by entering a "
+            "smaller number). Bars show % of the broker ceiling present locally (white tick = "
+            "ceiling reference, refreshed automatically every 30 minutes). Gaps heal automatically "
+            "in the background - a spinner and ETA appear whenever a timeframe is active. Hover a "
+            "bar for a full scrollable breakdown. Delete requires explicit confirmation.",
+            font_size="0.78rem", color="var(--qt19-text-muted)",
+        ),
+        rx.grid(
+            rx.foreach(AppState.deep_history_symbol_cards, _symbol_card),
+            columns=rx.breakpoints(initial="1", md="2"),
+            spacing="3",
+            width="100%",
+            margin_top="0.5rem",
+        ),
+        style=GLASS_CARD_STYLE, width="100%", spacing="3", padding="1.25rem",
+    )
+
+----------------------------------------------------------------------------------------------------
+END FILE: deep_historical_data_card.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: sidebar.py
+FULL PATH: D:\QuantumTrade19\ui\components\sidebar.py
+----------------------------------------------------------------------------------------------------
+"""Collapsible sidebar navigation card.
+
+PATH: ui/components/sidebar.py  (REPLACE ENTIRE FILE)
+
+FIX v0.4.55 - switched from class_name=HOVER_GLOW_CLASS (box-shadow based,
+could be blocked by CSS specificity) to the new bulletproof
+qt19_glow_card() wrapper (ui/components/glow_card.py) - a structurally
+separate glow layer that cannot be blocked by anything on the card's own
+style. See ui/theme/global_css.py's docstring for the full explanation.
+
+FIX v0.4.49 (carried forward): sidebar only glows on mouse hover, no
+tooltips on nav links, floating glass-card look with margin on all sides.
+"""
+from __future__ import annotations
+import reflex as rx
+from state.app_state import AppState
+from ui.theme.glass import GLASS_CARD_STYLE
+from ui.components.glow_card import qt19_glow_card
+
+
+def _icon_for_tab(tab_name):
+    return rx.match(tab_name, ("Dashboard", "layout-dashboard"), ("Trading Panel", "candlestick-chart"),
+        ("Journal & Reports", "book-text"), ("Alerts", "bell"), ("Settings", "settings"), "circle")
+
+
+def _tab_button(tab_name):
+    is_active = AppState.active_tab == tab_name
+    label = rx.cond(AppState.sidebar_collapsed, rx.fragment(), rx.text(tab_name, font_size="0.85rem", font_weight="600"))
+    return rx.button(
+        rx.hstack(rx.icon(_icon_for_tab(tab_name), size=18), label, spacing="3"),
+        on_click=AppState.set_active_tab(tab_name),
+        width="100%",
+        justify_content=rx.cond(AppState.sidebar_collapsed, "center", "start"),
+        style=rx.cond(
+            is_active,
+            {"background": "var(--qt19-accent)", "color": "white", "box_shadow": "0 0 16px 2px var(--qt19-accent-glow)", "border_radius": "9999px"},
+            {"background": "transparent", "color": "var(--qt19-text-muted)", "border_radius": "9999px"},
+        ),
+    )
+
+
+def _collapse_toggle_button() -> rx.Component:
+    """Real, visible control for AppState.toggle_sidebar_collapsed()."""
+    return rx.button(
+        rx.icon(
+            rx.cond(AppState.sidebar_collapsed, "chevron-right", "chevron-left"),
+            size=18,
+        ),
+        on_click=AppState.toggle_sidebar_collapsed,
+        width="100%",
+        justify_content="center",
+        variant="ghost",
+        style={
+            "background": "transparent",
+            "color": "var(--qt19-text-muted)",
+            "border_radius": "9999px",
+            "border": "1px solid var(--qt19-glass-border)",
+        },
+    )
+
+
+def qt19_sidebar():
+    return qt19_glow_card(
+        rx.vstack(
+            rx.foreach(AppState.sidebar_tabs, _tab_button),
+            rx.spacer(),
+            _collapse_toggle_button(),
+            height="100%",
+            padding="1rem",
+            spacing="2",
+        ),
+        card_style={
+            **GLASS_CARD_STYLE,
+            "width": rx.cond(AppState.sidebar_collapsed, "64px", "230px"),
+            "min_width": rx.cond(AppState.sidebar_collapsed, "64px", "230px"),
+            "transition": "width 0.28s cubic-bezier(0.22,1,0.36,1), min-width 0.28s cubic-bezier(0.22,1,0.36,1)",
+        },
+        height="calc(100% - 1.5rem)",
+        margin="0.75rem 0 0.75rem 0.75rem",
+    )
+
+----------------------------------------------------------------------------------------------------
+END FILE: sidebar.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: trading_panel.py
+FULL PATH: D:\QuantumTrade19\ui\pages\trading_panel.py
+----------------------------------------------------------------------------------------------------
+"""Trading Panel page - Futures-only chart foundation.
+
+PATH: ui/pages/trading_panel.py (REPLACE ENTIRE FILE)
+
+FIX v0.4.57 - removed the hover-glow effect from both Trading Panel cards
+(_header() and _chart_card()) entirely, per request - reverted from
+qt19_glow_card() back to a plain rx.box with GLASS_CARD_3XL_STYLE. The
+sidebar's glow (ui/components/sidebar.py) is untouched - this change is
+scoped only to this page.
+
+FIX v0.4.46 (carried forward): Row 2 removed; Display Last + QT19 DB days
+folded into the header row; chart card expands to fill remaining page
+height via flex="1"/min_height="0".
+
+FIX v0.4.43 (carried forward): countdown-to-candle-close text next to the
+OHLC pills, labeled "Closes in".
+"""
+from __future__ import annotations
+
+import reflex as rx
+
+from state.app_state import AppState, TRADING_PANEL_TF_OPTIONS
+from ui.components.trading_panel_chart import trading_panel_chart
+from ui.theme.glass import GLASS_CARD_3XL_STYLE
+
+
+def _ohlc_pill(label: str, value) -> rx.Component:
+    return rx.hstack(
+        rx.text(label, font_size="0.7rem", color="var(--qt19-text-muted)"),
+        rx.text(value, font_size="0.82rem", font_weight="700"),
+        spacing="1",
+    )
+
+
+def _tf_buttons() -> rx.Component:
+    return rx.hstack(
+        *[
+            rx.button(
+                tf,
+                size="1",
+                variant=rx.cond(AppState.trading_panel_chart_tf == tf, "solid", "outline"),
+                on_click=AppState.set_trading_panel_chart_tf(tf),
+            )
+            for tf in TRADING_PANEL_TF_OPTIONS
+        ],
+        spacing="1",
+    )
+
+
+def _display_last_group() -> rx.Component:
+    return rx.hstack(
+        rx.text("Display Last:", font_size="0.78rem", color="var(--qt19-text-muted)"),
+        rx.input(
+            value=AppState.trading_panel_display_days_draft,
+            on_change=AppState.set_trading_panel_display_days_draft,
+            on_blur=AppState.commit_trading_panel_display_days,
+            on_key_down=AppState.handle_display_days_keydown,
+            width="60px",
+            size="1",
+        ),
+        rx.text("Days", font_size="0.78rem", color="var(--qt19-text-muted)"),
+        rx.text(
+            f"\u2022 QT19 DB: {AppState.trading_panel_local_days}d",
+            font_size="0.75rem", color="var(--qt19-text-muted)",
+        ),
+        spacing="2",
+        align_items="center",
+    )
+
+
+def _header() -> rx.Component:
+    return rx.box(
+        rx.hstack(
+            rx.select(
+                AppState.trading_panel_symbol_options,
+                value=AppState.trading_panel_symbol,
+                on_change=AppState.set_trading_panel_symbol,
+                width="170px",
+            ),
+            _tf_buttons(),
+            _display_last_group(),
+            rx.spacer(),
+            _ohlc_pill("O", AppState.trading_panel_current_open),
+            _ohlc_pill("H", AppState.trading_panel_current_high),
+            _ohlc_pill("L", AppState.trading_panel_current_low),
+            _ohlc_pill("C", AppState.trading_panel_current_close),
+            _ohlc_pill("Closes in", AppState.trading_panel_countdown_text),
+            rx.badge(AppState.ws_status, variant="soft"),
+            width="100%",
+            align_items="center",
+            spacing="4",
+            wrap="wrap",
+        ),
+        style={**GLASS_CARD_3XL_STYLE, "padding": "0.9rem 1.1rem"},
+        width="100%",
+        flex_shrink="0",
+    )
+
+
+def _chart_card() -> rx.Component:
+    return rx.box(
+        rx.box(
+            trading_panel_chart(),
+            on_double_click=AppState.reset_trading_panel_view,
+            width="100%",
+            height="100%",
+        ),
+        style={
+            **GLASS_CARD_3XL_STYLE,
+            "padding": "0.9rem",
+            "display": "flex",
+            "flex_direction": "column",
+            "height": "100%",
+        },
+        width="100%",
+        flex="1",
+        min_height="0",
+    )
+
+
+def trading_panel_page() -> rx.Component:
+    return rx.vstack(
+        _header(),
+        _chart_card(),
+        spacing="3",
+        width="100%",
+        height="100%",
+        flex="1",
+        min_height="0",
+        overflow="hidden",
+    )
+
+----------------------------------------------------------------------------------------------------
+END FILE: trading_panel.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: settings.py
+FULL PATH: D:\QuantumTrade19\ui\pages\settings.py
+----------------------------------------------------------------------------------------------------
+"""Settings tab - App-Shell placeholder page, now tab-segregated + grid-arranged.
+
+PATH: ui/pages/settings.py (REPLACE ENTIRE FILE)
+
+FIX v0.4.42 - Settings sub-tab (Appearance/Data & Connection/Security/
+Trading Defaults) now persists: rx.tabs.root switched from an uncontrolled
+default_value to a controlled value=AppState.settings_active_subtab +
+on_change=AppState.set_settings_active_subtab (see core_shell_mixin.py).
+
+FIX v0.4.37 - light theme: tab labels and headings totally invisible.
+rx.heading(...) and rx.tabs.trigger(...) had no explicit color set, so they
+fell back to Radix Themes' own built-in text color (governed by Radix's
+internal light/dark "appearance", which is a SEPARATE system from QT19's
+own custom --qt19-* theme variables). Fixed by explicitly setting
+color="var(--qt19-text-primary)" on every heading and every tabs.trigger.
+
+CHANGE (File 03.1 Scope E): the "POI Timeframes" coming-soon placeholder in
+the Trading Defaults tab is now the real POI Engine & Chart Visibility card.
+
+CHANGE (unchanged from before): cards are grouped into logical rx.tabs
+matching the categories named in the locked mockup (Appearance, Data &
+Connection, and placeholders for categories not yet built), and arranged in
+a responsive multi-column grid instead of one full-width vstack.
+"""
+from __future__ import annotations
+import reflex as rx
+from state.app_state import AppState
+from ui.theme.glass import GLASS_CARD_3XL_STYLE
+from ui.components.deep_historical_data_card import deep_historical_data_card
+from ui.components.poi_engine_settings_card import poi_engine_settings_card
+
+
+def _effect_checkbox(opt: dict[str, str]) -> rx.Component:
+    return rx.hstack(
+        rx.checkbox(
+            checked=AppState.transition_effects_enabled.contains(opt["key"]),
+            on_change=lambda checked: AppState.toggle_transition_effect(opt["key"], checked),
+        ),
+        rx.text(opt["label"], font_size="0.82rem", color="var(--qt19-text-primary)"),
+        spacing="2", align_items="center", width="100%",
+    )
+
+
+def _tab_effect_checkbox(opt: dict[str, str]) -> rx.Component:
+    return rx.hstack(
+        rx.checkbox(
+            checked=AppState.tab_transition_effects_enabled.contains(opt["key"]),
+            on_change=lambda checked: AppState.toggle_tab_transition_effect(opt["key"], checked),
+        ),
+        rx.text(opt["label"], font_size="0.82rem", color="var(--qt19-text-primary)"),
+        spacing="2", align_items="center", width="100%",
+    )
+
+
+def _transition_effects_card() -> rx.Component:
+    return rx.vstack(
+        rx.heading("Login \u2192 Dashboard Transition", size="4", color="var(--qt19-text-primary)"),
+        rx.text("Pick which entrance animations are allowed, and how they're chosen each time you log in.",
+                font_size="0.8rem", color="var(--qt19-text-muted)"),
+        rx.hstack(
+            rx.text("Mode:", font_size="0.82rem", font_weight="600", color="var(--qt19-text-primary)"),
+            rx.select(
+                ["single", "sequential", "shuffle"],
+                value=AppState.transition_mode,
+                on_change=AppState.set_transition_mode,
+                width="180px",
+            ),
+            spacing="3", align_items="center",
+        ),
+        rx.grid(
+            rx.foreach(AppState.transition_effect_options, _effect_checkbox),
+            columns="2", spacing="2", width="100%", margin_top="0.5rem",
+        ),
+        spacing="3", width="100%", style=GLASS_CARD_3XL_STYLE,
+    )
+
+
+def _tab_transition_card() -> rx.Component:
+    return rx.vstack(
+        rx.heading("Tab Switch Animation", size="4", color="var(--qt19-text-primary)"),
+        rx.text("Controls the effect used when switching between Dashboard, Trading Panel, "
+                "Journal & Reports, Alerts, and Settings.",
+                font_size="0.8rem", color="var(--qt19-text-muted)"),
+        rx.hstack(
+            rx.text("Mode:", font_size="0.82rem", font_weight="600", color="var(--qt19-text-primary)"),
+            rx.select(
+                ["single", "sequential", "shuffle"],
+                value=AppState.tab_transition_mode,
+                on_change=AppState.set_tab_transition_mode,
+                width="180px",
+            ),
+            spacing="3", align_items="center",
+        ),
+        rx.grid(
+            rx.foreach(AppState.transition_effect_options, _tab_effect_checkbox),
+            columns="2", spacing="2", width="100%", margin_top="0.5rem",
+        ),
+        spacing="3", width="100%", style=GLASS_CARD_3XL_STYLE,
+    )
+
+
+def _coming_soon_card(title: str, note: str) -> rx.Component:
+    return rx.vstack(
+        rx.heading(title, size="4", color="var(--qt19-text-primary)"),
+        rx.text(note, font_size="0.8rem", color="var(--qt19-text-muted)"),
+        rx.badge("Coming in a later module", variant="soft", margin_top="0.5rem"),
+        spacing="2", width="100%", style=GLASS_CARD_3XL_STYLE,
+    )
+
+
+def _appearance_tab() -> rx.Component:
+    return rx.grid(
+        _transition_effects_card(),
+        _tab_transition_card(),
+        _coming_soon_card("Theme", "6 selectable themes (Yellow/Saffron/Blue x Day/Night)."),
+        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="3"),
+        spacing="4", width="100%", margin_top="1rem",
+    )
+
+
+def _data_connection_tab() -> rx.Component:
+    return rx.grid(
+        deep_historical_data_card(),
+        _coming_soon_card("Symbols & Rows", "Choose which symbols appear on the Dashboard."),
+        _coming_soon_card("Tick Bands & Alerts", "Per-symbol tick-size and alert-band configuration."),
+        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="2"),
+        spacing="4", width="100%", margin_top="1rem",
+    )
+
+
+def _security_tab() -> rx.Component:
+    return rx.grid(
+        _coming_soon_card("Login & 2FA", "Manage password and TOTP authenticator settings."),
+        _coming_soon_card("Notification Channels", "Telegram / Discord multi-recipient setup."),
+        _coming_soon_card("Startup & Tray", "Run-on-startup and system tray behavior."),
+        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="3"),
+        spacing="4", width="100%", margin_top="1rem",
+    )
+
+
+def _trading_tab() -> rx.Component:
+    return rx.grid(
+        poi_engine_settings_card(),
+        _coming_soon_card("Signal Bias Filter", "Market-aware auto-disable rules for filters."),
+        _coming_soon_card("Paper Trading", "Paper/Live toggle defaults and simulator settings."),
+        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="2"),
+        spacing="4", width="100%", margin_top="1rem",
+    )
+
+
+def settings_page() -> rx.Component:
+    return rx.vstack(
+        rx.heading("Settings", size="6", color="var(--qt19-text-primary)"),
+        rx.tabs.root(
+            rx.tabs.list(
+                rx.tabs.trigger("Appearance", value="appearance", color="var(--qt19-text-primary)"),
+                rx.tabs.trigger("Data & Connection", value="data", color="var(--qt19-text-primary)"),
+                rx.tabs.trigger("Security & Notifications", value="security", color="var(--qt19-text-primary)"),
+                rx.tabs.trigger("Trading Defaults", value="trading", color="var(--qt19-text-primary)"),
+            ),
+            rx.tabs.content(_appearance_tab(), value="appearance"),
+            rx.tabs.content(_data_connection_tab(), value="data"),
+            rx.tabs.content(_security_tab(), value="security"),
+            rx.tabs.content(_trading_tab(), value="trading"),
+            value=AppState.settings_active_subtab,
+            on_change=AppState.set_settings_active_subtab,
+            width="100%",
+        ),
+        width="100%", spacing="3",
+    )
+
+----------------------------------------------------------------------------------------------------
+END FILE: settings.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: glass.py
+FULL PATH: D:\QuantumTrade19\ui\theme\glass.py
+----------------------------------------------------------------------------------------------------
+"""Shared glassmorphism style primitives.
+
+PATH: ui/theme/glass.py  (REPLACE ENTIRE FILE)
+
+FIX v0.4.50:
+  - Reduced side (left/right) padding by 50%: GLASS_CARD_STYLE's padding
+    was a single uniform "1.25rem" on all four sides. Split into vertical
+    vs horizontal so only the SIDE spacing shrinks (1.25rem -> 0.625rem),
+    vertical padding is unchanged. GLASS_CARD_3XL_STYLE inherits this
+    automatically since it spreads GLASS_CARD_STYLE.
+  - Added explicit "overflow": "visible" to GLASS_CARD_STYLE. This style
+    itself was never clipping anything, but making it explicit here rules
+    this file out entirely as a cause and prevents any future accidental
+    overflow:hidden regression on this shared style from silently clipping
+    every card's own box-shadow (a shadow renders OUTSIDE the border box,
+    so overflow:hidden on the same element always clips its own glow).
+
+NOTE: the actual mouse-hover glow effect itself (.qt19-hover-glow, used via
+HOVER_GLOW_CLASS below) is defined in ui/theme/global_css.py, not here. If
+the glow still looks clipped/thin after this change, that CSS class
+definition is almost certainly where the real remaining issue is - I don't
+have that file's source yet.
+
+CHANGE (v0.3.7, unchanged): HOVER_GLOW_CLASS constant - pass this as
+class_name on any card-style component to get the soft, theme-contrast
+hover glow defined in ui/theme/global_css.py (.qt19-hover-glow).
+"""
+from __future__ import annotations
+
+
+_THEME_CROSSFADE = "background 0.9s ease, border-color 0.9s ease, box-shadow 0.9s ease, color 0.9s ease"
+
+
+HOVER_GLOW_CLASS: str = "qt19-hover-glow"
+
+
+GLASS_CARD_STYLE: dict = {
+    "background": "var(--qt19-glass-bg)",
+    "backdrop_filter": "blur(18px)",
+    "border": "1px solid var(--qt19-glass-border)",
+    "border_radius": "1.5rem",
+    "box_shadow": "0 8px 32px rgba(0,0,0,0.18)",
+    "padding": "1.25rem 0.625rem",
+    "overflow": "visible",
+    "transition": _THEME_CROSSFADE,
+}
+
+
+GLASS_CARD_3XL_STYLE: dict = {**GLASS_CARD_STYLE, "border_radius": "1.75rem"}
+
+
+PILL_BUTTON_STYLE: dict = {
+    "border_radius": "9999px",
+    "padding_x": "1.25rem",
+    "padding_y": "0.55rem",
+    "background": "var(--qt19-accent)",
+    "color": "white",
+    "box_shadow": "0 0 16px 2px var(--qt19-accent-glow)",
+    "border": "none",
+    "cursor": "pointer",
+    "font_weight": "600",
+    "transition": f"transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), {_THEME_CROSSFADE}",
+    "_hover": {"transform": "scale(1.05)"},
+}
+
+
+GLOW_RING_STYLE: dict = {
+    "border": "2px solid var(--qt19-accent)",
+    "box_shadow": "0 0 12px 3px var(--qt19-accent-glow)",
+    "border_radius": "9999px",
+    "transition": _THEME_CROSSFADE,
+}
+
+
+PAGE_BG_STYLE: dict = {
+    "background": "linear-gradient(160deg, var(--qt19-bg-from), var(--qt19-bg-to))",
+    "min_height": "100vh",
+    "color": "var(--qt19-text-primary)",
+    "transition": _THEME_CROSSFADE,
+    "cursor": "auto",
+}
+
+
+AUTH_BG_STYLE: dict = {
+    "background": (
+        "radial-gradient(circle at 30% 28%, rgba(30,143,255,0.22) 0%, transparent 38%),"
+        "radial-gradient(circle at 70% 28%, rgba(147,51,234,0.16) 0%, transparent 34%),"
+        "radial-gradient(circle at 50% 85%, rgba(30,143,255,0.10) 0%, transparent 42%),"
+        "linear-gradient(160deg, #00060f 0%, #000208 100%)"
+    ),
+    "background_attachment": "fixed",
+    "min_height": "100vh",
+    "width": "100%",
+    "color": "#EAF4FF",
+    "display": "flex",
+    "align_items": "center",
+    "justify_content": "center",
+    "cursor": "auto",
+}
+
+
+def heartbeat_pill_style(pulse_color) -> dict:
+    """Return a pill-button *style dict* with a CSS custom property set for the heartbeat
+    glow color. Pass this to `style=`; separately pass `class_name="qt19-heartbeat"` on the
+    same button so the @keyframes qt19-heartbeat animation (defined once in global_css.py)
+    picks up `--qt19-pulse-color` and animates it."""
+    return {
+        "border_radius": "9999px",
+        "padding_x": "1.75rem",
+        "padding_y": "0.65rem",
+        "background": "rgba(20,20,25,0.85)",
+        "border": "1px solid rgba(255,255,255,0.15)",
+        "color": "white",
+        "font_weight": "700",
+        "cursor": "pointer",
+        "--qt19-pulse-color": pulse_color,
+    }
+
+----------------------------------------------------------------------------------------------------
+END FILE: glass.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: global_css.py
+FULL PATH: D:\QuantumTrade19\ui\theme\global_css.py
+----------------------------------------------------------------------------------------------------
+"""Global CSS keyframes + forced cursor override + autofill detection.
+
+PATH: ui/theme/global_css.py  (REPLACE ENTIRE FILE)
+
+FIX v0.4.55 - completely rebuilt the hover-glow technique after TWO
+targeted CSS specificity fixes (!important, style unification) produced
+zero visible change. Rather than keep fighting box-shadow precedence
+rules on the card element itself, this uses a structurally different,
+bulletproof technique: a SEPARATE glow layer element, positioned behind
+and slightly larger than the card, that only changes OPACITY on hover.
+Since this glow layer is not the same DOM element as the card and never
+touches box-shadow at all, there is no possible CSS specificity conflict
+with any inline style the card itself has - the glow can never be blocked
+by anything on the card, structurally guaranteed regardless of the card's
+own background/border/box-shadow/overflow.
+
+New classes:
+  .qt19-glow-wrap   - put on the OUTER wrapper (position: relative)
+  .qt19-glow-layer  - the actual glow element, a child of the wrapper,
+                      absolutely positioned slightly larger than the
+                      wrapper, blurred, transparent at rest, becomes
+                      visible only via opacity on :hover of the wrapper
+  .qt19-glow-content - put on the actual card/content box (the translucent
+                      glass card itself), sits ABOVE the glow layer via
+                      z-index so the card's own background naturally
+                      masks the center of the glow, leaving only a soft
+                      ring visible around the edges - the correct "glow
+                      bleeding out from behind a glass card" look.
+
+See ui/components/glow_card.py for the ready-made component that wires
+these three classes together correctly - use qt19_glow_card(...) instead
+of manually combining GLASS_CARD_STYLE + HOVER_GLOW_CLASS from now on.
+
+CHANGE (v0.4.51-v0.4.52, superseded): the [data-radius="full"] exclusion
+and !important box-shadow attempts are no longer needed for the glow
+specifically (kept below only because [data-radius="full"] may still
+protect something else unrelated I cannot see from this file), since the
+new glow layer never has box-shadow or the "full" radius data attribute.
+"""
+from __future__ import annotations
+import reflex as rx
+
+
+_CSS = """
+* { cursor: auto !important; }
+button, a, [role="button"], input[type="checkbox"], input[type="radio"] { cursor: pointer !important; }
+
+
+[data-radius="full"]:not(.qt19-hover-glow):not(.qt19-glow-wrap):not(.qt19-glow-content) { overflow: hidden !important; }
+
+
+@keyframes qt19-autofill-detect { from {} to {} }
+input:-webkit-autofill { animation-name: qt19-autofill-detect; animation-duration: 0.001s; }
+
+
+:root {
+  --qt19-pulse-blur-min: 2px;
+  --qt19-pulse-blur-max: 6px;
+  --qt19-pulse-spread-min: 0px;
+  --qt19-pulse-spread-max: 1px;
+}
+
+
+@keyframes qt19-heartbeat {
+  0%   { box-shadow: 0 0 var(--qt19-pulse-blur-min) var(--qt19-pulse-spread-min) var(--qt19-pulse-color, #DC143C); }
+  10%  { box-shadow: 0 0 var(--qt19-pulse-blur-max) var(--qt19-pulse-spread-max) var(--qt19-pulse-color, #DC143C); }
+  20%  { box-shadow: 0 0 var(--qt19-pulse-blur-min) var(--qt19-pulse-spread-min) var(--qt19-pulse-color, #DC143C); }
+  30%  { box-shadow: 0 0 var(--qt19-pulse-blur-max) var(--qt19-pulse-spread-max) var(--qt19-pulse-color, #DC143C); }
+  45%  { box-shadow: 0 0 var(--qt19-pulse-blur-min) var(--qt19-pulse-spread-min) var(--qt19-pulse-color, #DC143C); }
+  100% { box-shadow: 0 0 var(--qt19-pulse-blur-min) var(--qt19-pulse-spread-min) var(--qt19-pulse-color, #DC143C); }
+}
+.qt19-heartbeat { animation: qt19-heartbeat 1.6s ease-in-out infinite; transition: background 0.35s ease; }
+
+
+@keyframes qt19-shake {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-8px); }
+  30% { transform: translateX(7px); }
+  45% { transform: translateX(-6px); }
+  60% { transform: translateX(5px); }
+  75% { transform: translateX(-3px); }
+  90% { transform: translateX(2px); }
+}
+.qt19-shake { animation: qt19-shake 0.4s ease; }
+
+
+@keyframes qt19-tab-switch {
+  from { opacity: 0; transform: translateX(12px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.qt19-tab-switch { animation: qt19-tab-switch 0.35s cubic-bezier(0.22,1,0.36,1) both; }
+
+
+@keyframes qt19-border-chase-move {
+  from { offset-distance: 0%; }
+  to   { offset-distance: 100%; }
+}
+
+
+@keyframes qt19-anim-dissolve { from { opacity: 0; } to { opacity: 1; } }
+@keyframes qt19-anim-zoom-in { from { opacity: 0; transform: scale(0.85); } to { opacity: 1; transform: scale(1); } }
+@keyframes qt19-anim-zoom-out { from { opacity: 0; transform: scale(1.15); } to { opacity: 1; transform: scale(1); } }
+@keyframes qt19-anim-slide-up { from { opacity: 0; transform: translateY(40px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes qt19-anim-slide-down { from { opacity: 0; transform: translateY(-40px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes qt19-anim-slide-left { from { opacity: 0; transform: translateX(60px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes qt19-anim-slide-right { from { opacity: 0; transform: translateX(-60px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes qt19-anim-flip-x { from { opacity: 0; transform: perspective(800px) rotateX(35deg); } to { opacity: 1; transform: perspective(800px) rotateX(0deg); } }
+@keyframes qt19-anim-flip-y { from { opacity: 0; transform: perspective(800px) rotateY(35deg); } to { opacity: 1; transform: perspective(800px) rotateY(0deg); } }
+@keyframes qt19-anim-blur-in { from { opacity: 0; filter: blur(10px); } to { opacity: 1; filter: blur(0); } }
+
+
+.qt19-transition-dissolve { animation: qt19-anim-dissolve 1.0s ease both; }
+.qt19-transition-zoom-in { animation: qt19-anim-zoom-in 0.9s cubic-bezier(0.34,1.56,0.64,1) both; }
+.qt19-transition-zoom-out { animation: qt19-anim-zoom-out 0.9s cubic-bezier(0.34,1.56,0.64,1) both; }
+.qt19-transition-slide-up { animation: qt19-anim-slide-up 0.9s cubic-bezier(0.22,1,0.36,1) both; }
+.qt19-transition-slide-down { animation: qt19-anim-slide-down 0.9s cubic-bezier(0.22,1,0.36,1) both; }
+.qt19-transition-slide-left { animation: qt19-anim-slide-left 0.9s cubic-bezier(0.22,1,0.36,1) both; }
+.qt19-transition-slide-right { animation: qt19-anim-slide-right 0.9s cubic-bezier(0.22,1,0.36,1) both; }
+.qt19-transition-flip-x { animation: qt19-anim-flip-x 1.0s ease both; }
+.qt19-transition-flip-y { animation: qt19-anim-flip-y 1.0s ease both; }
+.qt19-transition-blur-in { animation: qt19-anim-blur-in 1.0s ease both; }
+
+
+/* ---- v0.4.55 bulletproof glow: separate layer, never fights box-shadow ---- */
+.qt19-glow-wrap {
+  position: relative !important;
+}
+.qt19-glow-layer {
+  position: absolute !important;
+  inset: -14px !important;
+  border-radius: inherit;
+  background: radial-gradient(circle, var(--qt19-accent-glow) 0%, transparent 68%);
+  opacity: 0;
+  filter: blur(18px);
+  transition: opacity 0.35s ease;
+  pointer-events: none !important;
+  z-index: 0 !important;
+}
+.qt19-glow-wrap:hover .qt19-glow-layer {
+  opacity: 0.7;
+}
+.qt19-glow-content {
+  position: relative !important;
+  z-index: 1 !important;
+}
+
+
+@keyframes qt19-sidebar-collapse {
+  from { width: 230px; }
+  to   { width: 64px; }
+}
+@keyframes qt19-sidebar-expand {
+  from { width: 64px; }
+  to   { width: 230px; }
+}
+.qt19-sidebar-collapsing { animation: qt19-sidebar-collapse 0.28s cubic-bezier(0.22,1,0.36,1) both; }
+.qt19-sidebar-expanding { animation: qt19-sidebar-expand 0.28s cubic-bezier(0.22,1,0.36,1) both; }
+"""
+
+
+def qt19_global_css() -> rx.Component:
+    """Render the single shared <style> block. Include this exactly once, at the app root."""
+    return rx.html(f"<style>{_CSS}</style>")
+
+----------------------------------------------------------------------------------------------------
+END FILE: global_css.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: quantumtrade19.py
+FULL PATH: D:\QuantumTrade19\quantumtrade19\quantumtrade19.py
+----------------------------------------------------------------------------------------------------
+"""QuantumTrade19 - Reflex application entrypoint.
+
+PATH: quantumtrade19/quantumtrade19.py  (REPLACE ENTIRE FILE)
+
+FIX v0.4.48 - "Trading Panel chart card stops at row-1 height instead of
+filling the page" - found ANOTHER broken link in the height chain (in
+addition to the ui/pages/trading_panel.py and trading_panel_chart.py
+flex/height fixes already applied): _shell_body()'s per-tab content
+wrapper (the rx.box wrapping all five pages) had width="100%" but NO
+height at all, so it always sized itself to content height regardless of
+what any child page tried to declare - every child's own height="100%"
+was resolving against this height-less parent, collapsing to "auto"
+every time. Added height="100%", flex="1", min_height="0", display=flex/
+flex_direction=column, and overflow_y="auto" (so Dashboard/Journal/Alerts/
+Settings, which are naturally content-height and may exceed the viewport,
+can still scroll internally exactly as before - only Trading Panel, which
+already declares its own overflow="hidden" internally, actually uses the
+new fill-height behavior).
+
+NOTE: this is very likely still not the FULL fix - qt19_page_shell()
+(ui/components/page_shell.py) sits between this file's outer
+height="100vh" box and this wrapper, and I don't have that file's source
+yet. If the chart still doesn't fill the page after this change, that
+file is almost certainly the remaining missing link in the chain.
+
+CHANGE (v0.3.8.2, unchanged): trading_panel_context_menu() stays mounted
+as a direct sibling of the main transformed screen box, at the true top
+level of index()'s returned fragment - NOT nested inside it, so its
+position:fixed coordinates are measured from the real viewport instead of
+the screen box's own CSS transform context.
+"""
+from __future__ import annotations
+
+from config.logging_config import configure_logging
+
+# Must run before importing app state/components, which may construct service
+# singletons or schedule background work during import/on_load.
+configure_logging()
+
+import reflex as rx
+
+from state.app_state import AppState
+from ui.theme.global_css import qt19_global_css
+from ui.components.keyboard_shortcuts import qt19_keyboard_shortcuts
+from ui.components.autofill_sync import qt19_autofill_sync
+from ui.components.trading_panel_context_menu import trading_panel_context_menu
+from ui.pages.splash import splash_screen
+from ui.pages.register import register_screen
+from ui.pages.login import login_screen
+from ui.pages.forgot_password import forgot_password_screen
+from ui.pages.manage_security import manage_security_screen
+from ui.pages.app_lock import app_lock_screen
+from ui.pages.dashboard import dashboard_page
+from ui.pages.trading_panel import trading_panel_page
+from ui.pages.journal import journal_page
+from ui.pages.alerts import alerts_page
+from ui.pages.settings import settings_page
+from ui.components.page_shell import qt19_page_shell
+from ui.components.symbol_detail_popup import symbol_detail_popup
+
+
+def _shell_body() -> rx.Component:
+    return rx.fragment(
+        rx.box(
+            rx.cond(AppState.active_tab == "Dashboard", dashboard_page()),
+            rx.cond(AppState.active_tab == "Trading Panel", trading_panel_page()),
+            rx.cond(AppState.active_tab == "Journal & Reports", journal_page()),
+            rx.cond(AppState.active_tab == "Alerts", alerts_page()),
+            rx.cond(AppState.active_tab == "Settings", settings_page()),
+            key=AppState.active_tab,
+            class_name="qt19-transition-" + AppState.tab_transition_active_effect,
+            width="100%",
+            height="100%",
+            flex="1",
+            min_height="0",
+            display="flex",
+            flex_direction="column",
+            overflow_y="auto",
+        ),
+        symbol_detail_popup(),
+    )
+
+
+def _current_screen() -> rx.Component:
+    return rx.cond(
+        AppState.screen == "splash",
+        splash_screen(),
+        rx.cond(
+            AppState.screen == "register",
+            register_screen(),
+            rx.cond(
+                AppState.screen == "login",
+                login_screen(),
+                rx.cond(
+                    AppState.screen == "manage_security",
+                    manage_security_screen(),
+                    rx.cond(
+                        AppState.screen == "forgot_password",
+                        forgot_password_screen(),
+                        rx.cond(
+                            AppState.screen == "locked",
+                            app_lock_screen(),
+                            qt19_page_shell(_shell_body()),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
+def index() -> rx.Component:
+    return rx.fragment(
+        qt19_global_css(),
+        qt19_keyboard_shortcuts(),
+        qt19_autofill_sync(),
+        rx.box(
+            _current_screen(),
+            class_name="qt19-transition-" + AppState.transition_active_effect,
+            key=AppState.screen,
+            style={
+                "--qt19-accent": AppState.theme_vars["accent"],
+                "--qt19-accent-glow": AppState.theme_vars["accent_glow"],
+                "--qt19-bg-from": AppState.theme_vars["bg_from"],
+                "--qt19-bg-to": AppState.theme_vars["bg_to"],
+                "--qt19-glass-bg": AppState.theme_vars["glass_bg"],
+                "--qt19-glass-border": AppState.theme_vars["glass_border"],
+                "--qt19-text-primary": AppState.theme_vars["text_primary"],
+                "--qt19-text-muted": AppState.theme_vars["text_muted"],
+            },
+            width="100%",
+            height="100vh",
+        ),
+        trading_panel_context_menu(),
+    )
+
+
+app = rx.App()
+app.add_page(index, route="/", on_load=AppState.on_load, title="QuantumTrade19")
+
+----------------------------------------------------------------------------------------------------
+END FILE: quantumtrade19.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: broker_symbol_map.py
+FULL PATH: D:\QuantumTrade19\engines\workers\market_data\broker_symbol_map.py
+----------------------------------------------------------------------------------------------------
+"""Broker-specific symbol name translation for historical candle requests.
+
+PATH: engines/workers/market_data/broker_symbol_map.py (NEW FILE)
+
+FIX v0.4.38 - "Gold never downloads" root cause, confirmed via direct
+broker testing (Diagnose_Gold_v2.py):
+
+    B-XAU_USDT   -> broker candles endpoint returns [] (empty) always
+    B-XAUT_USDT  -> broker candles endpoint returns real gold-price data
+
+CoinDCX's public historical-candles REST endpoint uses a DIFFERENT symbol
+string for Gold than the live WebSocket ticker feed does. B-XAU_USDT is
+correct and must stay unchanged everywhere else in the app (SQLite storage
+key, symbol registry, UI labels, WS subscription) - only the outgoing HTTP
+request to the broker's /market_data/candles/ endpoint needs the
+translated name.
+
+This tiny module is the single source of truth for that translation, so
+every worker that calls the candles endpoint (deep_history_downloader_worker.py,
+history_depth_prober_worker.py, and historical_data_loader_worker.py if it
+also calls this same endpoint directly) uses the exact same mapping and
+never drifts out of sync with each other.
+"""
+from __future__ import annotations
+
+# Internal QT19 symbol -> real broker symbol used ONLY for the
+# /market_data/candles/ REST endpoint's "pair" parameter.
+CANDLES_SYMBOL_OVERRIDES: dict[str, str] = {
+    "B-XAU_USDT": "B-XAUT_USDT",
+}
+
+
+def to_broker_candles_symbol(symbol: str) -> str:
+    """Translates an internal QT19 symbol into whatever string the broker's
+    candles REST endpoint actually expects. Falls back to the symbol
+    unchanged for every pair that doesn't need translation (BTC, ETH, etc.)."""
+    return CANDLES_SYMBOL_OVERRIDES.get(symbol, symbol)
+
+----------------------------------------------------------------------------------------------------
+END FILE: broker_symbol_map.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: deep_history_downloader_worker.py
+FULL PATH: D:\QuantumTrade19\engines\workers\market_data\deep_history_downloader_worker.py
+----------------------------------------------------------------------------------------------------
+"""Verified SQLite-backed deep-history downloader.
+
+TARGET PATH: D:\QuantumTrade19\engines\workers\market_data\deep_history_downloader_worker.py
+REPLACE THE ENTIRE FILE.
+
+FIX v0.4.38 - Gold never downloads (confirmed via direct broker test):
+the broker's candles REST endpoint uses "B-XAUT_USDT" for Gold historical
+data, not "B-XAU_USDT" (which the WS ticker feed correctly uses). Every
+outgoing candles request now passes the symbol through
+to_broker_candles_symbol() (engines/workers/market_data/broker_symbol_map.py)
+before building the "pair" request parameter. The internal symbol
+(B-XAU_USDT) is completely unchanged everywhere else - SQLite storage
+key, manifest key, status dict key, on_chunk/on_progress callbacks all
+still use the ORIGINAL internal symbol string. Only the literal HTTP
+request differs.
+
+FIX v0.4.35 (carried forward) - added reset_status(symbol, timeframe):
+clears this worker's own cached status dict for one symbol+timeframe.
+market_data_monitor.py's delete_deep_history() calls this immediately
+after clearing the manifest and SQLite rows, so a stale "complete/100%"
+status can never survive a Delete Data click.
+
+FIX v0.4.19 (carried forward) - CRITICAL INFINITE LOOP FIX: detects when a
+gap-fill attempt makes ZERO backward progress and treats it exactly like
+an empty response - stopping that gap-fill session cleanly instead of
+retrying the same unreachable historical range forever.
+
+v0.4.8 (unchanged): Missing ranges are calculated from physical SQLite
+rows. Every remote batch is persisted first, then local coverage is
+rechecked. Manifest entries are written only after the storage callback
+succeeds.
+
+v0.4.15 (unchanged): real ETA tracking based on observed download rate.
+"""
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from typing import Callable, Optional
+
+import requests
+
+from engines.workers.market_data.broker_symbol_map import to_broker_candles_symbol
+from engines.workers.market_data.candle_builder_worker import Candle
+from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
+
+logger = logging.getLogger("market_data.deep_history_downloader")
+
+CANDLES_URL = "https://public.coindcx.com/market_data/candles/"
+MAX_LIMIT_PER_CALL = 1000
+CHUNK_PACING_S = 0.35
+_TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000}
+EARLY_START_MS = 1420070400000
+_DAY_MS = 86_400_000
+
+
+def covered_days(manifest: HistoryManifestWorker, symbol: str, timeframe: str) -> float:
+    ranges = manifest.get_covered_ranges(symbol, timeframe)
+    return round(sum(end - start for start, end in ranges) / _DAY_MS, 1)
+
+
+def is_fully_downloaded(manifest: HistoryManifestWorker, symbol: str, timeframe: str) -> bool:
+    return any(start <= EARLY_START_MS + 1 for start, _ in manifest.get_covered_ranges(symbol, timeframe))
+
+
+def earliest_covered_ms(manifest: HistoryManifestWorker, symbol: str, timeframe: str) -> Optional[int]:
+    ranges = manifest.get_covered_ranges(symbol, timeframe)
+    return min((start for start, _ in ranges), default=None)
+
+
+class DeepHistoryDownloaderWorker:
+    def __init__(
+        self,
+        manifest: HistoryManifestWorker,
+        http_get=None,
+        on_chunk: Optional[Callable[[str, str, list[Candle]], None]] = None,
+        on_progress: Optional[Callable[[str, str, dict], None]] = None,
+        get_missing_ranges: Optional[Callable[[str, str, int, int], list[tuple[int, int]]]] = None,
+        get_coverage: Optional[Callable[[str, str, int, int], dict]] = None,
+    ) -> None:
+        self._manifest = manifest
+        self._http_get = http_get or requests.get
+        self._on_chunk = on_chunk
+        self._on_progress = on_progress
+        self._get_missing_ranges = get_missing_ranges
+        self._get_coverage = get_coverage
+        self._active: dict[tuple[str, str], threading.Event] = {}
+        self._status: dict[tuple[str, str], dict] = {}
+        self._rate_tracker: dict[tuple[str, str], tuple[float, int]] = {}
+        self._lock = threading.RLock()
+
+    def _set_status(self, symbol: str, timeframe: str, **values) -> None:
+        with self._lock:
+            current = dict(self._status.get((symbol, timeframe), {}))
+            current.update(values)
+            self._status[(symbol, timeframe)] = current
+
+    def get_status(self, symbol: str, timeframe: str) -> dict:
+        with self._lock:
+            status = dict(self._status.get((symbol, timeframe), {}))
+        return {
+            "state": status.get("state", "idle"),
+            "error": status.get("error"),
+            "requested_days": status.get("requested_days", 0),
+            "requested_start_ms": status.get("requested_start_ms"),
+            "requested_end_ms": status.get("requested_end_ms"),
+            "present_candles": status.get("present_candles", 0),
+            "required_candles": status.get("required_candles", 0),
+            "missing_candles": status.get("missing_candles", 0),
+            "percent": status.get("percent", 0),
+            "broker_ceiling_reached": status.get("broker_ceiling_reached", False),
+            "eta_seconds": status.get("eta_seconds"),
+        }
+
+    def reset_status(self, symbol: str, timeframe: str) -> None:
+        """Clears this worker's cached status for one symbol+timeframe back
+        to a clean idle state. Called by market_data_monitor.delete_deep_history()
+        right after the manifest and physical SQLite rows are cleared."""
+        with self._lock:
+            self._status.pop((symbol, timeframe), None)
+            self._rate_tracker.pop((symbol, timeframe), None)
+
+    def start_download(self, symbol: str, timeframe: str, target_days: Optional[int] = None) -> None:
+        key = (symbol, timeframe)
+        with self._lock:
+            if key in self._active:
+                return
+            stop_event = threading.Event()
+            self._active[key] = stop_event
+        with self._lock:
+            self._rate_tracker.pop(key, None)
+        self._set_status(symbol, timeframe, state="queued", error=None, broker_ceiling_reached=False, eta_seconds=None)
+        threading.Thread(
+            target=self._download_loop,
+            args=(symbol, timeframe, target_days, stop_event),
+            daemon=True,
+            name=f"QT19History-{symbol}-{timeframe}",
+        ).start()
+
+    def cancel_download(self, symbol: str, timeframe: str) -> None:
+        with self._lock:
+            stop_event = self._active.get((symbol, timeframe))
+        if stop_event:
+            stop_event.set()
+        self._set_status(symbol, timeframe, state="paused", error=None, eta_seconds=None)
+
+    def is_downloading(self, symbol: str, timeframe: str) -> bool:
+        with self._lock:
+            return (symbol, timeframe) in self._active
+
+    def _estimate_eta_seconds(self, symbol: str, timeframe: str, present: int, missing: int) -> Optional[float]:
+        key = (symbol, timeframe)
+        now = time.time()
+        with self._lock:
+            previous = self._rate_tracker.get(key)
+            self._rate_tracker[key] = (now, present)
+        if previous is None or missing <= 0:
+            return None
+        prev_ts, prev_present = previous
+        elapsed = now - prev_ts
+        gained = present - prev_present
+        if elapsed <= 0.05 or gained <= 0:
+            return None
+        rate_per_second = gained / elapsed
+        if rate_per_second <= 0:
+            return None
+        return round(missing / rate_per_second, 1)
+
+    def _emit_progress(self, symbol: str, timeframe: str, start_ms: int, end_ms: int, requested_days: int) -> dict:
+        if self._get_coverage:
+            coverage = dict(self._get_coverage(symbol, timeframe, start_ms, end_ms))
+            required = int(coverage.get("requested_candles", 0))
+            present = int(coverage.get("present_candles", 0))
+            missing = int(coverage.get("missing_candles", max(0, required - present)))
+            complete = bool(coverage.get("requested_range_complete", False))
+        else:
+            percent_manifest = self._manifest.coverage_percent(symbol, timeframe, start_ms, end_ms)
+            required = present = missing = 0
+            complete = percent_manifest >= 100.0
+            coverage = {"percent": percent_manifest}
+        percent = 100 if complete else (int(round((present / required) * 100)) if required else 0)
+        eta_seconds = None if complete else self._estimate_eta_seconds(symbol, timeframe, present, missing)
+        payload = {
+            "state": "complete" if complete else "downloading",
+            "requested_days": requested_days,
+            "requested_start_ms": start_ms,
+            "requested_end_ms": end_ms,
+            "present_candles": present,
+            "required_candles": required,
+            "missing_candles": missing,
+            "percent": max(0, min(100, percent)),
+            "is_complete": complete,
+            "eta_seconds": eta_seconds,
+        }
+        self._set_status(symbol, timeframe, error=None, **payload)
+        if self._on_progress:
+            self._on_progress(symbol, timeframe, dict(payload))
+        return payload
+
+    def _persist_batch(self, symbol: str, timeframe: str, candles: list[Candle]) -> None:
+        if not candles:
+            return
+        if self._on_chunk is None:
+            raise RuntimeError("Deep history downloader has no SQLite persistence callback.")
+        self._on_chunk(symbol, timeframe, candles)
+        batch_start = min(candle.open_time for candle in candles)
+        batch_end = max(candle.open_time for candle in candles) + _TF_MS[timeframe]
+        self._manifest.mark_covered(symbol, timeframe, batch_start, batch_end)
+
+    def _fill_one_gap(self, symbol: str, timeframe: str, gap_start: int, gap_end: int, stop_event: threading.Event) -> tuple[bool, bool]:
+        """Attempts to fill ONE gap, walking backward from gap_end toward
+        gap_start. Returns (received_any, made_progress). The HTTP request
+        uses to_broker_candles_symbol(symbol) for the "pair" parameter -
+        everything else (candles built, persisted, and returned) still
+        uses the original internal `symbol` string."""
+        cursor_end = gap_end
+        received_any = False
+        made_progress = False
+        broker_symbol = to_broker_candles_symbol(symbol)
+        while not stop_event.is_set() and cursor_end > gap_start:
+            response = self._http_get(
+                CANDLES_URL,
+                params={
+                    "pair": broker_symbol,
+                    "interval": timeframe,
+                    "startTime": gap_start,
+                    "endTime": cursor_end,
+                    "limit": MAX_LIMIT_PER_CALL,
+                },
+                timeout=15,
+            )
+            response.raise_for_status()
+            rows = response.json() or []
+            if not rows:
+                self._set_status(symbol, timeframe, broker_ceiling_reached=True, eta_seconds=None)
+                break
+            candles = [
+                Candle(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    open_time=int(row["time"]),
+                    close_time=int(row["time"]) + _TF_MS[timeframe] - 1,
+                    open=float(row["open"]),
+                    high=float(row["high"]),
+                    low=float(row["low"]),
+                    close=float(row["close"]),
+                    volume=float(row.get("volume", 0.0) or 0.0),
+                    is_closed=True,
+                )
+                for row in rows
+                if "time" in row
+            ]
+            if not candles:
+                self._set_status(symbol, timeframe, broker_ceiling_reached=True, eta_seconds=None)
+                break
+
+            attempt_started_at = cursor_end
+            self._persist_batch(symbol, timeframe, candles)
+            received_any = True
+
+            batch_oldest = min(candle.open_time for candle in candles)
+            if batch_oldest >= attempt_started_at:
+                self._set_status(symbol, timeframe, broker_ceiling_reached=True, eta_seconds=None)
+                made_progress = False
+                break
+            made_progress = True
+            if batch_oldest <= gap_start:
+                break
+            cursor_end = batch_oldest - 1
+            time.sleep(CHUNK_PACING_S)
+        return received_any, made_progress
+
+    def _download_loop(self, symbol: str, timeframe: str, target_days: Optional[int], stop_event: threading.Event) -> None:
+        if timeframe not in _TF_MS:
+            self._set_status(symbol, timeframe, state="error", error=f"Unsupported timeframe: {timeframe}")
+            with self._lock:
+                self._active.pop((symbol, timeframe), None)
+            return
+        now_ms = int(time.time() * 1000)
+        requested_days = max(1, int(target_days or 1))
+        start_ms = max(EARLY_START_MS, now_ms - requested_days * _DAY_MS)
+        end_ms = now_ms
+        self._set_status(
+            symbol, timeframe, state="downloading", error=None,
+            requested_days=requested_days, requested_start_ms=start_ms, requested_end_ms=end_ms,
+        )
+        try:
+            while not stop_event.is_set():
+                progress = self._emit_progress(symbol, timeframe, start_ms, end_ms, requested_days)
+                if progress["is_complete"]:
+                    break
+                if self._get_missing_ranges is None:
+                    gaps = self._manifest.find_gaps(symbol, timeframe, start_ms, end_ms)
+                else:
+                    gaps = self._get_missing_ranges(symbol, timeframe, start_ms, end_ms)
+                if not gaps:
+                    self._set_status(symbol, timeframe, state="complete", error=None, percent=100, eta_seconds=None)
+                    break
+
+                gap_start, gap_end = gaps[-1]
+                received_any, made_progress = self._fill_one_gap(symbol, timeframe, gap_start, gap_end, stop_event)
+
+                if not received_any:
+                    break
+                if not made_progress:
+                    break
+                if self._emit_progress(symbol, timeframe, start_ms, end_ms, requested_days)["is_complete"]:
+                    break
+            if stop_event.is_set():
+                self._set_status(symbol, timeframe, state="paused", error=None, eta_seconds=None)
+            else:
+                final = self._emit_progress(symbol, timeframe, start_ms, end_ms, requested_days)
+                if final["is_complete"]:
+                    self._set_status(symbol, timeframe, state="complete", error=None, percent=100, eta_seconds=None)
+                elif self.get_status(symbol, timeframe)["broker_ceiling_reached"]:
+                    self._set_status(symbol, timeframe, state="broker_ceiling", error=None, eta_seconds=None)
+                else:
+                    self._set_status(symbol, timeframe, state="incomplete", error="SQLite range remains incomplete", eta_seconds=None)
+        except Exception as exc:
+            logger.exception("deep_history_download_failed symbol=%s timeframe=%s", symbol, timeframe)
+            self._set_status(symbol, timeframe, state="error", error=str(exc), eta_seconds=None)
+        finally:
+            with self._lock:
+                self._active.pop((symbol, timeframe), None)
+                self._rate_tracker.pop((symbol, timeframe), None)
+
+----------------------------------------------------------------------------------------------------
+END FILE: deep_history_downloader_worker.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: history_depth_prober_worker.py
+FULL PATH: D:\QuantumTrade19\engines\workers\market_data\history_depth_prober_worker.py
+----------------------------------------------------------------------------------------------------
+"""Broker-only historical depth probe.
+
+TARGET PATH: D:\QuantumTrade19\engines\workers\market_data\history_depth_prober_worker.py
+REPLACE THE ENTIRE FILE.
+
+FIX v0.4.38 - Gold broker-ceiling probe also uses the wrong symbol name
+for the same reason the downloader did: the broker's candles REST endpoint
+needs "B-XAUT_USDT" for Gold, not "B-XAU_USDT". Applied the same
+to_broker_candles_symbol() translation (engines/workers/market_data/
+broker_symbol_map.py) to the probe's outgoing HTTP request only - the
+internal symbol key used for results/caching is completely unchanged.
+
+FIX v0.4.20 (carried forward) - probe timeouts found via real running-app
+error logs: increased HTTP timeout from 10s to 20s and added up to 2
+retries with backoff, since the probe was failing under real network load
+(competing with WS feed, REST fallback, and download threads) even though
+the broker itself was reachable and responsive.
+"""
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from typing import Callable, Optional
+
+import requests
+
+from engines.workers.market_data.broker_symbol_map import to_broker_candles_symbol
+
+logger = logging.getLogger("market_data.history_depth_prober")
+
+CANDLES_URL = "https://public.coindcx.com/market_data/candles/"
+MAX_LIMIT_PER_CALL = 1000
+PROBE_PACING_S = 0.30
+PROBE_TIMEOUT_S = 20
+PROBE_MAX_RETRIES = 2
+PROBE_RETRY_BACKOFF_S = 2.0
+EARLY_START_MS = 1420070400000
+
+
+class HistoryDepthProberWorker:
+    def __init__(
+        self,
+        manifest=None,
+        http_get=None,
+        on_progress: Optional[Callable[[str, str, dict], None]] = None,
+    ) -> None:
+        # manifest remains an accepted optional argument for constructor compatibility.
+        # It is intentionally unused: a broker probe must never mutate local metadata.
+        self._http_get = http_get or requests.get
+        self._on_progress = on_progress
+        self._active: dict[tuple[str, str], threading.Event] = {}
+        self._results: dict[tuple[str, str], dict] = {}
+        self._lock = threading.RLock()
+
+    def start_probe(self, symbol: str, timeframe: str) -> None:
+        key = (symbol, timeframe)
+        with self._lock:
+            if key in self._active:
+                return
+            stop_event = threading.Event()
+            self._active[key] = stop_event
+        threading.Thread(
+            target=self._probe_loop,
+            args=(symbol, timeframe, stop_event),
+            daemon=True,
+            name=f"QT19DepthProbe-{symbol}-{timeframe}",
+        ).start()
+
+    def is_probing(self, symbol: str, timeframe: str) -> bool:
+        with self._lock:
+            return (symbol, timeframe) in self._active
+
+    def get_ceiling_days(self, symbol: str, timeframe: str) -> Optional[float]:
+        with self._lock:
+            result = self._results.get((symbol, timeframe))
+        return None if result is None else result.get("span_days")
+
+    def get_result(self, symbol: str, timeframe: str) -> dict:
+        with self._lock:
+            return dict(self._results.get((symbol, timeframe), {}))
+
+    def _emit(self, symbol: str, timeframe: str, payload: dict) -> None:
+        if self._on_progress:
+            try:
+                self._on_progress(symbol, timeframe, payload)
+            except Exception:
+                logger.exception("history_depth_probe_progress_callback_failed")
+
+    def _request_with_retries(self, symbol: str, timeframe: str, cursor_end: int):
+        """Makes one probe HTTP request (using the real broker candles
+        symbol via to_broker_candles_symbol()), retrying up to
+        PROBE_MAX_RETRIES times on a timeout/connection error before
+        giving up."""
+        broker_symbol = to_broker_candles_symbol(symbol)
+        last_exc: Exception | None = None
+        for attempt in range(PROBE_MAX_RETRIES + 1):
+            try:
+                return self._http_get(
+                    CANDLES_URL,
+                    params={
+                        "pair": broker_symbol,
+                        "interval": timeframe,
+                        "startTime": EARLY_START_MS,
+                        "endTime": cursor_end,
+                        "limit": MAX_LIMIT_PER_CALL,
+                    },
+                    timeout=PROBE_TIMEOUT_S,
+                )
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+                last_exc = exc
+                if attempt < PROBE_MAX_RETRIES:
+                    logger.warning(
+                        "history_depth_probe_retry symbol=%s timeframe=%s attempt=%d error=%s",
+                        symbol, timeframe, attempt + 1, exc,
+                    )
+                    time.sleep(PROBE_RETRY_BACKOFF_S)
+                    continue
+                raise
+        if last_exc:
+            raise last_exc
+        return None
+
+    def _probe_loop(self, symbol: str, timeframe: str, stop_event: threading.Event) -> None:
+        started_end = int(time.time() * 1000)
+        cursor_end = started_end
+        oldest_ms: int | None = None
+        newest_ms: int | None = None
+        error: str | None = None
+
+        try:
+            while not stop_event.is_set() and cursor_end > EARLY_START_MS:
+                response = self._request_with_retries(symbol, timeframe, cursor_end)
+                response.raise_for_status()
+                rows = response.json() or []
+                if not rows:
+                    break
+
+                batch_times = [int(row["time"]) for row in rows if "time" in row]
+                if not batch_times:
+                    break
+                batch_oldest = min(batch_times)
+                batch_newest = max(batch_times)
+                oldest_ms = batch_oldest if oldest_ms is None else min(oldest_ms, batch_oldest)
+                newest_ms = batch_newest if newest_ms is None else max(newest_ms, batch_newest)
+                span_days = round((newest_ms - oldest_ms) / 86_400_000, 1)
+                self._emit(symbol, timeframe, {"probing": True, "span_days_so_far": span_days})
+
+                if batch_oldest >= cursor_end:
+                    break
+                cursor_end = batch_oldest - 1
+                time.sleep(PROBE_PACING_S)
+        except Exception as exc:
+            error = str(exc)
+            logger.exception("history_depth_probe_failed symbol=%s timeframe=%s", symbol, timeframe)
+        finally:
+            span_days = round((newest_ms - oldest_ms) / 86_400_000, 1) if oldest_ms is not None and newest_ms is not None else 0.0
+            result = {
+                "span_days": span_days,
+                "oldest_open_time": oldest_ms,
+                "newest_open_time": newest_ms,
+                "error": error,
+                "cancelled": stop_event.is_set(),
+                "probed_at_ms": int(time.time() * 1000),
+            }
+            with self._lock:
+                self._results[(symbol, timeframe)] = result
+                self._active.pop((symbol, timeframe), None)
+            self._emit(symbol, timeframe, {"probing": False, "ceiling_days": span_days, "error": error})
+
+----------------------------------------------------------------------------------------------------
+END FILE: history_depth_prober_worker.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: market_data_monitor.py
+FULL PATH: D:\QuantumTrade19\engines\monitors\market_data_monitor.py
+----------------------------------------------------------------------------------------------------
+"""Market Data Monitor (Tier 2 Assembly).
+
+TARGET PATH: D:\QuantumTrade19\engines\monitors\market_data_monitor.py
+REPLACE THE ENTIRE FILE.
+
+FIX v0.4.35 - Deep Historical Data card progress bar stays green/100%
+forever after clicking Delete:
+
+delete_deep_history() cleared the manifest and the physical SQLite rows,
+but never reset DeepHistoryDownloaderWorker's own in-memory status cache
+(percent, state, present/required/missing candles) for that symbol+
+timeframe. get_deep_history_progress() reads percent/state directly from
+that cached status dict (self.deep_history_downloader.get_status()) - it
+is NOT recomputed from physical rows on every call. So after a delete, the
+UI kept displaying the last cached "complete/100%" value even though the
+database was empty, because nothing ever told the downloader its own
+cached status was now stale.
+
+Fix: delete_deep_history() now also calls
+self.deep_history_downloader.reset_status(symbol, timeframe) (new method,
+added to deep_history_downloader_worker.py in this same patch) immediately
+after clearing the manifest and SQLite rows. The next
+get_deep_history_progress() call for that symbol/timeframe now correctly
+reports state="idle", percent=0, until a new download is started.
+
+NOTE (not a bug - explained, not "fixed"): the Trading Panel chart still
+showing some candles immediately after Delete Data is BY DESIGN. Delete
+Data only clears the persistent SQLite deep-history archive - it
+deliberately does NOT touch CandleBuilderWorker's separate in-memory
+baseline window (the always-on minimum-5-day rolling window), per the
+project's own Deep Historical Data spec ("Delete Data removes the deep
+archive only, 5-day minimum re-downloads automatically if needed").
+get_chart_candles() merges both sources on purpose.
+
+FIX v0.4.21 (carried forward, unchanged) - DeepHistoryDownloaderWorker is
+wired with get_missing_ranges=self.candle_store.get_missing_ranges and
+get_coverage=self.sqlite_coverage_payload (both backed by real SQLite
+rows). get_deep_history_progress() returns the full real-time status from
+DeepHistoryDownloaderWorker.get_status() - percent, present_candles,
+required_candles, missing_candles, eta_seconds, broker_ceiling_reached -
+plus physical SQLite coverage.
+
+Everything else - WS/REST/health-report logic, get_historical_candles(),
+chart candle merging - is unchanged from v0.3.9.
+"""
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from typing import Dict, List, Optional
+
+from engines.workers.market_data.symbol_registry_worker import SymbolRegistryWorker
+from engines.workers.market_data.ws_feed_worker import WSFeedWorker, SocketTransport
+from engines.workers.market_data.rest_poll_fallback_worker import RestPollFallbackWorker
+from engines.workers.market_data.historical_data_loader_worker import HistoricalDataLoaderWorker
+from engines.workers.market_data.tick_normalizer_worker import TickNormalizerWorker
+from engines.workers.market_data.candle_builder_worker import (
+    CandleBuilderWorker,
+    Candle,
+    TRADING_TFS,
+    POI_TFS,
+)
+from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
+from engines.workers.market_data.deep_history_downloader_worker import DeepHistoryDownloaderWorker
+from engines.workers.market_data.history_depth_prober_worker import HistoryDepthProberWorker
+from engines.workers.market_data.candle_store_worker import CandleStoreWorker
+
+logger = logging.getLogger("market_data.monitor")
+
+DAY_MS = 86_400_000
+
+
+class MarketDataMonitor:
+    def __init__(self, transport: SocketTransport) -> None:
+        self._lock = threading.RLock()
+
+        self.symbol_registry = SymbolRegistryWorker()
+        self.candle_builder = CandleBuilderWorker(on_candle_closed=self._publish_candle_closed)
+        self.historical_loader = HistoricalDataLoaderWorker()
+        self.rest_fallback = RestPollFallbackWorker(on_tick=self._handle_rest_tick)
+        self.ws_feed = WSFeedWorker(
+            transport=transport,
+            on_tick=self._handle_ws_tick,
+            on_drop=self._handle_ws_drop,
+            on_restore=self._handle_ws_restore,
+        )
+
+        self.history_manifest = HistoryManifestWorker()
+        self.candle_store = CandleStoreWorker()
+        self.deep_history_downloader = DeepHistoryDownloaderWorker(
+            manifest=self.history_manifest,
+            on_chunk=self._handle_deep_history_chunk,
+            get_missing_ranges=self.candle_store.get_missing_ranges,
+            get_coverage=self.sqlite_coverage_payload,
+        )
+        self.depth_prober = HistoryDepthProberWorker(manifest=self.history_manifest)
+
+        self._subscribed: set[str] = set()
+        self._degraded: set[str] = set()
+        self._last_health: Dict[str, str] = {}
+        logger.info("market_data_monitor_created")
+
+    # ================= public interface =================
+
+    def start(self) -> None:
+        active_symbols = self.symbol_registry.get_active_symbols()
+        logger.info("market_data_monitor_start active_symbols=%s", active_symbols)
+        self.ws_feed.start()
+        for symbol in active_symbols:
+            self.subscribe(symbol)
+
+    def stop(self) -> None:
+        logger.info("market_data_monitor_stop subscribed_count=%d", len(self._subscribed))
+        with self._lock:
+            symbols = list(self._subscribed)
+        for symbol in symbols:
+            self.unsubscribe(symbol)
+        self.ws_feed.stop()
+
+    def subscribe(self, symbol: str) -> None:
+        with self._lock:
+            if symbol in self._subscribed:
+                logger.debug("market_data_subscribe_ignored_already_subscribed symbol=%s", symbol)
+                return
+            self._subscribed.add(symbol)
+        logger.info("market_data_subscribe_started symbol=%s", symbol)
+        try:
+            self._seed_baseline_history(symbol)
+            self.ws_feed.subscribe(symbol)
+            logger.info("market_data_subscribe_complete symbol=%s", symbol)
+        except Exception:
+            with self._lock:
+                self._subscribed.discard(symbol)
+            logger.exception("market_data_subscribe_failed symbol=%s", symbol)
+            raise
+
+    def unsubscribe(self, symbol: str) -> None:
+        with self._lock:
+            was_subscribed = symbol in self._subscribed
+            self._subscribed.discard(symbol)
+            self._degraded.discard(symbol)
+            self._last_health.pop(symbol, None)
+        self.ws_feed.unsubscribe(symbol)
+        self.rest_fallback.disengage(symbol)
+        if was_subscribed:
+            logger.info("market_data_unsubscribed symbol=%s", symbol)
+
+    def get_live_candle(self, symbol: str, timeframe: str) -> Optional[Candle]:
+        return self.candle_builder.get_live_candle(symbol, timeframe)
+
+    def get_historical_candles(self, symbol: str, timeframe: str, days: int) -> List[Candle]:
+        """Explicit broker-history read. Not permitted for Trading Panel
+        rendering or chart polling. Use get_chart_candles() for chart data."""
+        end_ms = self._now_ms()
+        start_ms = end_ms - days * 24 * 60 * 60 * 1000
+        candles = self.historical_loader.fetch_range(symbol, timeframe, start_ms, end_ms)
+        logger.debug(
+            "market_data_historical_fetch symbol=%s timeframe=%s days=%d candles=%d",
+            symbol, timeframe, days, len(candles),
+        )
+        return candles
+
+    def get_chart_candles(self, symbol: str, timeframe: str, days: int) -> List[Candle]:
+        """Return local-only chart candles, oldest to newest. Merges
+        CandleStoreWorker (persistent SQLite) with CandleBuilderWorker's
+        in-memory RAM series - RAM wins on any timestamp collision (it
+        always has the current forming candle). Deliberately continues to
+        include the RAM baseline window even after a deep-history Delete -
+        see module docstring."""
+        if days <= 0:
+            return []
+
+        cutoff_ms = self._now_ms() - days * 24 * 60 * 60 * 1000
+        now_ms = self._now_ms()
+
+        merged: Dict[int, Candle] = {}
+
+        persisted = self.candle_store.get_candles(symbol, timeframe, cutoff_ms, now_ms)
+        for candle in persisted:
+            merged[candle.open_time] = candle
+
+        series = self.candle_builder.get_series(symbol, timeframe)
+        for candle in series:
+            if candle.open_time >= cutoff_ms:
+                merged[candle.open_time] = candle
+
+        result = [merged[open_time] for open_time in sorted(merged)]
+
+        logger.debug(
+            "market_data_chart_local_read symbol=%s timeframe=%s requested_days=%d persisted=%d ram=%d merged=%d",
+            symbol, timeframe, days, len(persisted), len(series), len(result),
+        )
+        return result
+
+    def get_recent_window(
+        self, symbol: str, timeframe: str, end_ms: Optional[int] = None,
+        visible_days: int = 1, older_buffer_days: int = 2,
+    ) -> dict:
+        if end_ms is None:
+            end_ms = self._now_ms()
+        return self.candle_store.get_recent_window(
+            symbol, timeframe, int(end_ms), visible_days=visible_days, older_buffer_days=older_buffer_days,
+        )
+
+    def get_local_coverage(self, symbol: str, timeframe: str, requested_days: Optional[int] = None) -> dict:
+        coverage = self.candle_store.get_local_coverage(symbol, timeframe, requested_days, self._now_ms())
+        return coverage.to_dict()
+
+    def sqlite_coverage_payload(self, symbol: str, timeframe: str, start_ms: int, end_ms: int) -> dict:
+        """Real-time coverage callback wired into DeepHistoryDownloaderWorker.
+        Computes required/present/missing candle counts directly from
+        physical SQLite rows for the exact window the downloader is
+        currently working on - this is what makes the progress bar and
+        ETA in the UI genuinely truthful instead of a guess."""
+        requested_days = max(1, int((end_ms - start_ms) / DAY_MS))
+        return self.candle_store.get_local_coverage(symbol, timeframe, requested_days, end_ms).to_dict()
+
+    def get_chart_coverage_days(self, symbol: str, timeframe: str) -> float:
+        return self.candle_store.get_chart_coverage_days(symbol, timeframe)
+
+    def get_health(self) -> Dict[str, str]:
+        report: Dict[str, str] = {}
+        with self._lock:
+            symbols = list(self._subscribed)
+        for symbol in symbols:
+            if self.ws_feed.is_healthy(symbol):
+                health = "OK"
+            elif self.rest_fallback.is_engaged(symbol):
+                health = "DEGRADED"
+            else:
+                health = "DOWN"
+            report[symbol] = health
+            self._log_health_transition(symbol, health)
+        return report
+
+    # ================= deep history / ceiling interface =================
+
+    def start_deep_history(self, symbol: str, timeframe: str, target_days: Optional[int] = None) -> None:
+        logger.info("deep_history_started symbol=%s timeframe=%s target_days=%s", symbol, timeframe, target_days)
+        self.deep_history_downloader.start_download(symbol, timeframe, target_days)
+
+    def cancel_deep_history(self, symbol: str, timeframe: str) -> None:
+        logger.info("deep_history_cancel_requested symbol=%s timeframe=%s", symbol, timeframe)
+        self.deep_history_downloader.cancel_download(symbol, timeframe)
+
+    def get_deep_history_progress(self, symbol: str, timeframe: str) -> dict:
+        """Full real-time download progress, sourced directly from
+        DeepHistoryDownloaderWorker.get_status() (percent, present/
+        required/missing candle counts, eta_seconds, broker ceiling flag)
+        plus physical SQLite coverage. This is the single source of truth
+        the Trading Panel and Deep Historical Data card must bind to -
+        there is no other progress signal anywhere else in the app."""
+        status = self.deep_history_downloader.get_status(symbol, timeframe)
+        coverage = self.candle_store.get_local_coverage(symbol, timeframe)
+        return {
+            "state": status["state"],
+            "error": status["error"],
+            "percent": status["percent"],
+            "present_candles": status["present_candles"],
+            "required_candles": status["required_candles"],
+            "missing_candles": status["missing_candles"],
+            "eta_seconds": status["eta_seconds"],
+            "broker_ceiling_reached": status["broker_ceiling_reached"],
+            "covered_days": coverage.contiguous_days,
+            "is_complete": status["state"] == "complete",
+        }
+
+    def delete_deep_history(self, symbol: str, timeframe: str) -> None:
+        logger.warning("deep_history_delete_requested symbol=%s timeframe=%s", symbol, timeframe)
+        self.history_manifest.delete_symbol_manifest(symbol)
+        self.candle_store.delete_symbol_timeframe(symbol, timeframe)
+        self.deep_history_downloader.reset_status(symbol, timeframe)
+
+    def start_ceiling_probe(self, symbol: str, timeframe: str) -> None:
+        logger.info("history_ceiling_probe_started symbol=%s timeframe=%s", symbol, timeframe)
+        self.depth_prober.start_probe(symbol, timeframe)
+
+    def get_ceiling_days(self, symbol: str, timeframe: str):
+        return self.depth_prober.get_ceiling_days(symbol, timeframe)
+
+    # ================= internal wiring =================
+
+    def _seed_baseline_history(self, symbol: str) -> None:
+        started = time.monotonic()
+        logger.info("baseline_seed_started symbol=%s timeframes=%s", symbol, TRADING_TFS)
+        baseline = self.historical_loader.backfill_baseline(symbol)
+        counts: Dict[str, int] = {}
+        for timeframe, candles in baseline.items():
+            self.candle_builder.seed_historical(symbol, timeframe, candles)
+            counts[timeframe] = len(candles)
+        logger.info(
+            "baseline_seed_complete symbol=%s counts=%s duration_s=%.3f",
+            symbol, counts, time.monotonic() - started,
+        )
+
+    def _handle_ws_tick(self, symbol: str, payload: dict) -> None:
+        tick = TickNormalizerWorker.from_ws_payload(symbol, payload)
+        if TickNormalizerWorker.is_valid(tick):
+            self.candle_builder.ingest(tick, timeframes=TRADING_TFS + POI_TFS)
+        else:
+            logger.warning(
+                "ws_price_bearing_delta_rejected_by_normalizer symbol=%s keys=%s",
+                symbol, sorted(payload.keys()) if isinstance(payload, dict) else type(payload).__name__,
+            )
+
+    def _handle_rest_tick(self, symbol: str, payload: dict) -> None:
+        tick = TickNormalizerWorker.from_rest_ticker(symbol, payload)
+        if TickNormalizerWorker.is_valid(tick):
+            self.candle_builder.ingest(tick, timeframes=TRADING_TFS + POI_TFS)
+        else:
+            logger.debug("rest_tick_rejected_by_normalizer symbol=%s", symbol)
+
+    def _handle_ws_drop(self, symbol: str) -> None:
+        with self._lock:
+            already_degraded = symbol in self._degraded
+            self._degraded.add(symbol)
+        if not already_degraded:
+            logger.warning("ws_drop_rest_fallback_engaging symbol=%s", symbol)
+            self.rest_fallback.engage(symbol)
+
+    def _handle_ws_restore(self, symbol: str) -> None:
+        with self._lock:
+            was_degraded = symbol in self._degraded
+            self._degraded.discard(symbol)
+        self.rest_fallback.disengage(symbol)
+        if was_degraded:
+            logger.info("ws_restored_rest_fallback_disengaged symbol=%s", symbol)
+
+    def _handle_deep_history_chunk(self, symbol: str, timeframe: str, candles: list) -> None:
+        saved = self.candle_store.save_candles(symbol, timeframe, candles)
+        logger.debug(
+            "deep_history_chunk_persisted symbol=%s timeframe=%s rows=%d",
+            symbol, timeframe, saved,
+        )
+
+    def _publish_candle_closed(self, candle: Candle) -> None:
+        try:
+            self.candle_store.save_candles(candle.symbol, candle.timeframe, [candle])
+        except Exception:
+            logger.exception(
+                "candle_close_persist_failed symbol=%s timeframe=%s open_time=%d",
+                candle.symbol, candle.timeframe, candle.open_time,
+            )
+        logger.debug(
+            "candle_closed symbol=%s timeframe=%s open_time=%d close=%s",
+            candle.symbol, candle.timeframe, candle.open_time, candle.close,
+        )
+
+    def _log_health_transition(self, symbol: str, health: str) -> None:
+        with self._lock:
+            previous = self._last_health.get(symbol)
+            self._last_health[symbol] = health
+        if previous != health:
+            level = logging.INFO if health == "OK" else logging.WARNING
+            logger.log(
+                level, "market_data_health_transition symbol=%s previous=%s current=%s",
+                symbol, previous or "UNSET", health,
+            )
+
+    @staticmethod
+    def _now_ms() -> int:
+        return int(time.time() * 1000)
+
+----------------------------------------------------------------------------------------------------
+END FILE: market_data_monitor.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BUNDLE SUMMARY
+Files successfully added: 18
+Files skipped/failed: 1
+----------------------------------------------------------------------------------------------------
+
