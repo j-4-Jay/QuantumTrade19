@@ -4,22 +4,10 @@ PATH: state/app_state.py (REPLACE ENTIRE FILE)
 
 Composes executable mixins from state/app_state_mixins/.
 
-FIX v0.4.59 - added trading_panel_data_version: int = 0 - a plain counter,
-incremented by exactly 1 inside trading_panel_mixin.py's
-refresh_trading_panel_chart() (the ONLY genuine full-reload path), and
-passed to KLineChart as a new data_version prop
-(ui/components/trading_panel_chart.py). This lets the chart tell apart "a
-real reload happened" from "just another harmless 0.5s OHLC poll tick" -
-the poll never touches this field. Fixes the confirmed infinite
-subscribeBar/unsubscribeBar teardown loop that kept the live price line
-permanently disconnected (see kline_chart.py's docstring for full
-root-cause explanation, confirmed via live browser console capture).
-
-FIX v0.4.41 (carried forward) - settings_active_subtab + active_tab-based
-background poller auto-start in on_load().
-
-FIX v0.4.30 (carried forward) - reconciled trading_panel_* fields against
-the real trading_panel_mixin.py source.
+FIX v0.5.0-r11 - poi_custom_lines default schema changed to
+hour12/minute/meridiem/name/color (was time/color) - see
+poi_settings_mixin.py. Added trading_panel_crosshair_* fields for the
+new Crosshair settings card (color/opacity/style/thickness/on-off).
 """
 from __future__ import annotations
 
@@ -33,6 +21,7 @@ from state.app_state_mixins.market_dashboard_mixin import MarketDashboardMixin
 from state.app_state_mixins.poi_settings_mixin import PoiSettingsMixin
 from state.app_state_mixins.trading_panel_mixin import TradingPanelMixin
 from state.app_state_mixins.deep_history_card_mixin import DeepHistoryCardMixin
+from state.app_state_mixins.poi_chart_mixin import PoiChartMixin
 
 TRADING_PANEL_TF_OPTIONS = ["1m", "5m", "15m"]
 TRADING_PANEL_DAY_PRESETS = ["1", "3", "5", "7", "14", "30", "90"]
@@ -44,6 +33,7 @@ class AppState(
     PoiSettingsMixin,
     TradingPanelMixin,
     DeepHistoryCardMixin,
+    PoiChartMixin,
     rx.State,
 ):
     screen: str = SHELL_STATE_CLASS.SPLASH.value
@@ -145,6 +135,33 @@ class AppState(
     poi_show_logical_id: bool = False
     poi_reduced_motion: bool = False
     poi_backend_busy: bool = False
+
+    # --- Combined per-TF POI state (v0.5.0-r10/r11) ---
+    poi_tf_display_enabled: dict[str, bool] = {}
+    poi_tf_strategy_enabled: dict[str, bool] = {}
+    poi_tf_color: dict[str, str] = {}
+    poi_tf_vertical_enabled: dict[str, bool] = {}
+    poi_custom_lines: list[dict] = [
+        {"enabled": False, "hour12": 8, "minute": 30, "meridiem": "AM", "color": "#22C55E", "name": ""},
+        {"enabled": False, "hour12": 8, "minute": 30, "meridiem": "AM", "color": "#F97316", "name": ""},
+        {"enabled": False, "hour12": 8, "minute": 30, "meridiem": "AM", "color": "#38BDF8", "name": ""},
+    ]
+
+    # --- POI vertical start/end markers ---
+    poi_vertical_line_style: str = "dashed"
+    poi_vertical_line_opacity: int = 100
+
+    # --- POI chart overlays ---
+    poi_chart_overlays: list[dict] = []
+    poi_chart_overlays_version: int = 0
+    _poi_chart_poll_running: bool = False
+
+    # --- Chart crosshair settings (v0.5.0-r11) ---
+    trading_panel_crosshair_enabled: bool = True
+    trading_panel_crosshair_color: str = "#758696"
+    trading_panel_crosshair_opacity: int = 100
+    trading_panel_crosshair_style: str = "dashed"
+    trading_panel_crosshair_thickness: int = 1
 
     transition_effects_enabled: list[str] = ["dissolve", "zoom-in", "slide-up", "flip-x", "blur-in"]
     transition_mode: str = "shuffle"

@@ -1,15 +1,19 @@
 """Executable AppState mixin: Trading Panel chart state and methods (react-klinecharts).
 
-TARGET PATH: D:\QuantumTrade19\state\app_state_mixins\trading_panel_mixin.py
+TARGET PATH: D:\\QuantumTrade19\\state\\app_state_mixins\\trading_panel_mixin.py
 REPLACE THE ENTIRE FILE.
 
-FIX v0.4.62 - every poll tick now calls window.QT19_ensureLiveCallback
-(installed by kline_chart.py) BEFORE attempting to use the live push
+FIX v0.5.0-r11 - added trading_panel_crosshair_* settings (color, opacity,
+dashed/solid style, thickness, on/off) wired into trading_panel_styles'
+new "crosshair" key. klinecharts v10 applies chart-level styles.crosshair
+reactively through the existing `styles` prop already flowing into
+KLineChart - no new JS plumbing needed, exactly like the existing
+grid/candle-color/day-night styling that already worked this way.
+
+FIX v0.4.62 (carried forward) - every poll tick now calls
+window.QT19_ensureLiveCallback BEFORE attempting to use the live push
 callback - self-heals the registration if React StrictMode's remount
-cycle ever leaves it empty (confirmed via console: the final mounted
-chart instance's own cleanup fired with no later re-subscribe,
-permanently emptying the registry). See kline_chart.py's v0.4.62
-docstring for the full explanation.
+cycle ever leaves it empty.
 
 FIX v0.4.60 (carried forward) - throttled success/failure console logging
 on the push side (first 5 calls only).
@@ -64,6 +68,25 @@ def _format_eta(seconds) -> str:
         return f"~{minutes}m remaining"
     hours = minutes // 60
     return f"~{hours}h {minutes % 60}m remaining"
+
+
+def _hex_to_rgba(hex_color: str, opacity_pct: int) -> str:
+    """Converts a '#RRGGBB' color plus a 0-100 opacity percent into an
+    'rgba(r,g,b,a)' string klinecharts' style objects accept. Falls back
+    to the raw color unchanged if it isn't a recognizable hex string
+    (e.g. already 'rgba(...)' from an older saved setting)."""
+    color = (hex_color or "").strip()
+    if not color.startswith("#") or len(color) not in (4, 7):
+        return color
+    color = color.lstrip("#")
+    if len(color) == 3:
+        color = "".join(c * 2 for c in color)
+    try:
+        r, g, b = int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
+    except ValueError:
+        return hex_color
+    alpha = max(0.0, min(1.0, opacity_pct / 100.0))
+    return f"rgba({r},{g},{b},{alpha})"
 
 
 class TradingPanelMixin(rx.State, mixin=True):
@@ -178,6 +201,28 @@ class TradingPanelMixin(rx.State, mixin=True):
         self.trading_panel_follow_live = not self.trading_panel_follow_live
         engine.security.persistence.save({"trading_panel_follow_live": self.trading_panel_follow_live})
 
+    # --- Crosshair settings (v0.5.0-r11) ---
+    def toggle_trading_panel_crosshair(self, checked: bool) -> None:
+        self.trading_panel_crosshair_enabled = checked
+        engine.security.persistence.save({"trading_panel_crosshair_enabled": checked})
+
+    def set_trading_panel_crosshair_color(self, value: str) -> None:
+        self.trading_panel_crosshair_color = value
+        engine.security.persistence.save({"trading_panel_crosshair_color": value})
+
+    def set_trading_panel_crosshair_opacity(self, value: list[float]) -> None:
+        self.trading_panel_crosshair_opacity = int(value[0])
+        engine.security.persistence.save({"trading_panel_crosshair_opacity": self.trading_panel_crosshair_opacity})
+
+    def set_trading_panel_crosshair_style(self, value: str | list[str]) -> None:
+        resolved = value[0] if isinstance(value, list) else value
+        self.trading_panel_crosshair_style = resolved
+        engine.security.persistence.save({"trading_panel_crosshair_style": resolved})
+
+    def set_trading_panel_crosshair_thickness(self, value: list[float]) -> None:
+        self.trading_panel_crosshair_thickness = int(value[0])
+        engine.security.persistence.save({"trading_panel_crosshair_thickness": self.trading_panel_crosshair_thickness})
+
     def reset_trading_panel_view(self):
         return rx.call_script(
             f"""(function() {{
@@ -258,7 +303,6 @@ class TradingPanelMixin(rx.State, mixin=True):
     def build_live_ohlc_update(self):
         symbol = self.trading_panel_symbol
         tf = self.trading_panel_chart_tf
-
         if self._is_coverage_pending(symbol, tf):
             try:
                 requested_days = int(self.trading_panel_display_days_input)
@@ -317,10 +361,6 @@ class TradingPanelMixin(rx.State, mixin=True):
                         f"if (chart.scrollToRealTime) chart.scrollToRealTime();"
                         if should_snap else ""
                     )
-                    # v0.4.62: self-heal FIRST, every tick, before attempting
-                    # to use the live callback - defends against StrictMode
-                    # (or any future remount) leaving the registry empty
-                    # with no later re-subscribe.
                     yield rx.call_script(
                         f"""(function() {{
                             var chart = window.QT19_CHARTS && window.QT19_CHARTS['{TRADING_PANEL_CHART_ID}'];
@@ -432,6 +472,13 @@ class TradingPanelMixin(rx.State, mixin=True):
         grid_show = self.trading_panel_grid_enabled
         foreground = "#152238" if day else "#dce8f7"
         grid_color = "rgba(56,78,108,.14)" if day else "rgba(151,176,207,.15)"
+        crosshair_color = _hex_to_rgba(self.trading_panel_crosshair_color, self.trading_panel_crosshair_opacity)
+        crosshair_line = {
+            "show": self.trading_panel_crosshair_enabled,
+            "size": self.trading_panel_crosshair_thickness,
+            "color": crosshair_color,
+            "style": self.trading_panel_crosshair_style,
+        }
         return {
             "grid": {
                 "show": grid_show,
@@ -441,6 +488,11 @@ class TradingPanelMixin(rx.State, mixin=True):
             "candle": {"bar": {"upColor": "#16c784", "downColor": "#ea3943", "noChangeColor": "#8b98aa"}},
             "xAxis": {"axisLine": {"color": grid_color}, "tickLine": {"color": grid_color}, "tickText": {"color": foreground}},
             "yAxis": {"axisLine": {"color": grid_color}, "tickLine": {"color": grid_color}, "tickText": {"color": foreground}},
+            "crosshair": {
+                "show": self.trading_panel_crosshair_enabled,
+                "horizontal": {"show": self.trading_panel_crosshair_enabled, "line": crosshair_line},
+                "vertical": {"show": self.trading_panel_crosshair_enabled, "line": crosshair_line},
+            },
         }
 
     @rx.var

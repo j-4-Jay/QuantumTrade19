@@ -2,13 +2,22 @@
 
 PATH: engines/masters/master_app_engine.py (REPLACE ENTIRE FILE - fully overwrite, don't merge)
 
-CHANGE (File 03.1 Scope E): added a lazily-started POIMonitor plus passthrough
-methods for the new Settings card. Deliberately NOT constructed in __init__ -
-POIMonitor's constructor immediately probes historical candles for every
-active symbol across all 8 timeframes, which would mean every test that
-constructs MasterAppEngine(force_memory=True) would suddenly trigger real
-network calls. Uses the exact same lazy-start pattern as
-ensure_market_data_started() for this reason.
+CHANGE (v0.5.0 - POI Chart Overlay Wiring) - added get_active_pois(symbol)
+and get_poi_state(symbol, poi_id) as flat passthrough methods, exact same
+pattern as the existing get_poi_settings()/set_poi_display_enabled()
+below. These were never added before because nothing consumed POI data
+for chart rendering prior to this module. Both return a safe empty
+default (`[]` / `None`) if self.poi_monitor hasn't been lazily started
+yet (ensure_poi_monitor_started() not yet called), instead of raising -
+matching the None-guard pattern already used by get_poi_settings().
+
+CHANGE (File 03.1 Scope E, unchanged): added a lazily-started POIMonitor
+plus passthrough methods for the Settings card. Deliberately NOT
+constructed in __init__ - POIMonitor's constructor immediately probes
+historical candles for every active symbol across all 8 timeframes,
+which would mean every test that constructs MasterAppEngine(force_memory=True)
+would suddenly trigger real network calls. Uses the exact same lazy-start
+pattern as ensure_market_data_started() for this reason.
 
 CHANGE (Module 01 gap-closure item 10, unchanged): attempt_login() accepts
 remember_device - on successful login, if checked, calls
@@ -74,6 +83,19 @@ class MasterAppEngine:
     def set_poi_zone_source_tf_enabled(self, timeframe: str, enabled: bool) -> None:
         if self.poi_monitor:
             self.poi_monitor.set_zone_source_tf_enabled(timeframe, enabled)
+
+    def get_active_pois(self, symbol: str) -> list:
+        """Flat passthrough to POIMonitor.get_active_pois() - used by
+        state/app_state_mixins/poi_chart_mixin.py to render POI lines/zones
+        on the Trading Panel chart (File 03.1 Scope C). Returns an empty
+        list (never raises) if the POI monitor hasn't been lazily started
+        yet - same safety pattern as get_poi_settings() above."""
+        return self.poi_monitor.get_active_pois(symbol) if self.poi_monitor else []
+
+    def get_poi_state(self, symbol: str, poi_id: str):
+        """Flat passthrough to POIMonitor.get_poi_state() - returns None
+        (never raises) if the POI monitor hasn't been lazily started yet."""
+        return self.poi_monitor.get_poi_state(symbol, poi_id) if self.poi_monitor else None
 
     def get_market_data_health(self) -> str:
         """Collapses per-symbol health into one value for the topbar dot:

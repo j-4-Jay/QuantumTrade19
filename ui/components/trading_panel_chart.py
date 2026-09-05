@@ -2,12 +2,15 @@
 
 PATH: ui/components/trading_panel_chart.py  (REPLACE ENTIRE FILE)
 
-FIX v0.4.59 - passes AppState.trading_panel_data_version through to
-KLineChart's new data_version prop (see ui/components/kline_chart.py's
-docstring for the full explanation) - this is what lets the chart tell
-apart "a real full reload happened" from "just another harmless 0.5s
-OHLC poll tick", fixing the infinite subscribeBar/unsubscribeBar teardown
-loop that kept the live price line permanently disconnected.
+FIX v0.5.0 - passes AppState.poi_chart_overlays / poi_chart_overlays_version
+through to KLineChart's new poi_overlays / poi_overlays_version props (see
+ui/components/kline_chart.py's v0.5.0 docstring) - this is what actually
+puts POI lines/zones on the chart.
+
+FIX v0.4.59 (carried forward, unchanged) - passes AppState.trading_panel_data_version
+through to KLineChart's data_version prop - fixes the infinite
+subscribeBar/unsubscribeBar teardown loop that kept the live price line
+permanently disconnected.
 
 CHANGE (v0.3.8, carried forward): passes on_context_menu through to the
 real Reflex event trigger declared on KLineChart.
@@ -30,6 +33,8 @@ def trading_panel_chart() -> rx.Component:
             symbol=AppState.trading_panel_symbol_info,
             period=AppState.trading_panel_period,
             styles=AppState.trading_panel_styles,
+            poi_overlays=AppState.poi_chart_overlays,
+            poi_overlays_version=AppState.poi_chart_overlays_version,
             chart_id=TRADING_PANEL_CHART_ID,
             id=TRADING_PANEL_CHART_ID,
             on_context_menu=AppState.open_trading_panel_menu,

@@ -2,21 +2,16 @@
 
 PATH: state/app_state_mixins/core_shell_mixin.py  (REPLACE ENTIRE FILE)
 
-FIX v0.4.41 - "live chart only updates on tab switch" root cause found:
-now that active_tab correctly persists (v0.4.36), a restart/reload that
-lands directly on "Trading Panel" or "Settings" NEVER started their
-background pollers - that only ever happened inside set_active_tab(),
-which on_load() does not call (it restores active_tab directly). Fixed by
-having on_load() perform the SAME chart-refresh + poller-start steps
-set_active_tab() does, for whichever tab was actually restored.
+FIX v0.5.0-r11 - on_load() now also restores the 5 new
+trading_panel_crosshair_* settings from persistence, same pattern as
+every other trading_panel_* setting already restored here.
 
-FIX v0.4.41 - Settings sub-tab (Appearance/Data & Connection/Security/
-Trading Defaults) was never persisted at all - added
-settings_active_subtab, restored in on_load() and saved in the new
-set_settings_active_subtab().
+FIX v0.5.0 (carried forward) - on_load()/set_active_tab() also refresh
+and start the POI chart overlay poller whenever landing on/switching to
+Trading Panel.
 
-FIX v0.4.36 (carried forward) - active_tab itself now round-trips through
-persistence.save()/on_load() exactly like every other shell setting.
+FIX v0.4.41 (carried forward) - background poller auto-start in on_load()
+for whichever tab was actually restored, not just on manual tab clicks.
 """
 from __future__ import annotations
 
@@ -56,6 +51,12 @@ class CoreShellMixin(rx.State, mixin=True):
         self.trading_panel_chart_tf = settings.get("trading_panel_chart_tf", self.trading_panel_chart_tf)
         self.sidebar_collapsed = bool(settings.get("sidebar_collapsed", False))
 
+        self.trading_panel_crosshair_enabled = bool(settings.get("trading_panel_crosshair_enabled", True))
+        self.trading_panel_crosshair_color = settings.get("trading_panel_crosshair_color", self.trading_panel_crosshair_color)
+        self.trading_panel_crosshair_opacity = int(settings.get("trading_panel_crosshair_opacity", self.trading_panel_crosshair_opacity))
+        self.trading_panel_crosshair_style = settings.get("trading_panel_crosshair_style", self.trading_panel_crosshair_style)
+        self.trading_panel_crosshair_thickness = int(settings.get("trading_panel_crosshair_thickness", self.trading_panel_crosshair_thickness))
+
         saved_days = settings.get(f"chart_display_days::{self.trading_panel_symbol}", TRADING_PANEL_DEFAULT_DISPLAY_DAYS)
         self.trading_panel_display_days_input = str(saved_days)
         self.trading_panel_display_days_draft = str(saved_days)
@@ -66,7 +67,9 @@ class CoreShellMixin(rx.State, mixin=True):
         background_tasks = [type(self).start_poi_monitor_background, type(self).poll_deep_history_cards]
         if self.active_tab == "Trading Panel":
             self.refresh_trading_panel_chart()
+            self.refresh_poi_chart_overlays()
             background_tasks.append(type(self).poll_trading_panel_chart)
+            background_tasks.append(type(self).poll_poi_chart_overlays)
         return background_tasks
 
     @rx.event(background=True)
@@ -142,15 +145,17 @@ class CoreShellMixin(rx.State, mixin=True):
         self._pick_tab_transition_effect()
         if tab == "Trading Panel":
             self.refresh_trading_panel_chart()
-            return [self.play_sound("tab-slide"), type(self).poll_trading_panel_chart]
+            self.refresh_poi_chart_overlays()
+            return [
+                self.play_sound("tab-slide"),
+                type(self).poll_trading_panel_chart,
+                type(self).poll_poi_chart_overlays,
+            ]
         if tab == "Settings":
             return [self.play_sound("tab-slide"), type(self).poll_deep_history_cards]
         return self.play_sound("tab-slide")
 
     def set_settings_active_subtab(self, subtab: str) -> None:
-        """Persists which Settings sub-tab (Appearance / Data & Connection /
-        Security & Notifications / Trading Defaults) was last open, so it
-        is restored on the next app restart - same pattern as active_tab."""
         self.settings_active_subtab = subtab
         _engine.security.persistence.save({"settings_active_subtab": subtab})
 
