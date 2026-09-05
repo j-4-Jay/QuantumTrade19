@@ -2,14 +2,12 @@
 
 PATH: engines/masters/master_app_engine.py (REPLACE ENTIRE FILE - fully overwrite, don't merge)
 
-CHANGE (v0.5.0 - POI Chart Overlay Wiring) - added get_active_pois(symbol)
-and get_poi_state(symbol, poi_id) as flat passthrough methods, exact same
-pattern as the existing get_poi_settings()/set_poi_display_enabled()
-below. These were never added before because nothing consumed POI data
-for chart rendering prior to this module. Both return a safe empty
-default (`[]` / `None`) if self.poi_monitor hasn't been lazily started
-yet (ensure_poi_monitor_started() not yet called), instead of raising -
-matching the None-guard pattern already used by get_poi_settings().
+CHANGE (Timezone Mode toggle) - added set_poi_timezone_mode(mode) flat
+passthrough, same None-guard pattern as every other POI passthrough here.
+
+CHANGE (v0.5.0 - POI Chart Overlay Wiring, carried forward) - added
+get_active_pois(symbol) and get_poi_state(symbol, poi_id) flat
+passthrough methods.
 
 CHANGE (File 03.1 Scope E, unchanged): added a lazily-started POIMonitor
 plus passthrough methods for the Settings card. Deliberately NOT
@@ -83,6 +81,10 @@ class MasterAppEngine:
     def set_poi_zone_source_tf_enabled(self, timeframe: str, enabled: bool) -> None:
         if self.poi_monitor:
             self.poi_monitor.set_zone_source_tf_enabled(timeframe, enabled)
+
+    def set_poi_timezone_mode(self, mode: str) -> None:
+        if self.poi_monitor:
+            self.poi_monitor.set_poi_timezone_mode(mode)
 
     def get_active_pois(self, symbol: str) -> list:
         """Flat passthrough to POIMonitor.get_active_pois() - used by

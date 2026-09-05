@@ -2,18 +2,23 @@
 
 PATH: ui/components/topbar.py  (REPLACE ENTIRE FILE)
 
-CHANGE (v0.3.7): the topbar now spans the FULL width of the app, from the
-far left edge to the far right edge - it is no longer confined to the area
-to the right of the sidebar. A sidebar-collapse toggle button was added at
-the far left, in front of the brand mark. The sidebar itself now renders
-BELOW this header (see ui/components/page_shell.py), which is what makes
-the header full-width and the sidebar correspondingly shorter.
+FIX (remove redundant collapse button) - removed _sidebar_toggle_button()
+entirely. The sidebar (ui/components/sidebar.py) already has its own
+visible collapse/expand control at the bottom of the sidebar card - this
+topbar button was a duplicate control for the exact same
+AppState.toggle_sidebar_collapsed() action. The brand mark now sits at
+the far left edge with nothing in front of it.
+
+CHANGE (v0.3.7, carried forward) - the topbar spans the FULL width of
+the app; the sidebar renders below this header (see
+ui/components/page_shell.py).
 """
 from __future__ import annotations
 import reflex as rx
 from state.app_state import AppState
 from ui.components.branding import qt19_brand
 from config.settings import LIVE_GLOW_COLOR, LIVE_GLOW_SHADOW
+
 
 _STATUS_COLORS = {
     "connected": "#32CD32",     # lime green
@@ -29,20 +34,6 @@ _STATUS_LABELS = {
 }
 _PILL_WIDTH = "128px"
 _PILL_HEIGHT = "30px"
-
-
-def _sidebar_toggle_button():
-    return rx.tooltip(
-        rx.icon_button(
-            rx.icon(
-                rx.cond(AppState.sidebar_collapsed, "panel-left-open", "panel-left-close"),
-            ),
-            on_click=AppState.toggle_sidebar_collapsed,
-            variant="ghost",
-            border_radius="9999px",
-        ),
-        content=rx.cond(AppState.sidebar_collapsed, "Expand sidebar", "Collapse sidebar"),
-    )
 
 
 def _theme_menu():
@@ -103,7 +94,6 @@ def _ws_status_pill():
 
 def qt19_topbar():
     return rx.hstack(
-        _sidebar_toggle_button(),
         qt19_brand("sm"), rx.spacer(),
         _ws_status_pill(),
         _paper_live_button(), _theme_menu(), _sound_button(),

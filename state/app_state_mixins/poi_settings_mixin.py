@@ -2,10 +2,12 @@
 
 PATH: state/app_state_mixins/poi_settings_mixin.py  (REPLACE ENTIRE FILE)
 
-FIX v0.5.0-r11 - custom recurring lines restructured: each now stores
-hour12 (1-12), minute, meridiem ("AM"/"PM"), color, AND an optional name
-(shown on the chart instead of the raw time when set) - replaces the old
-single 24-hour "time" text field.
+FIX (Timezone Mode toggle) - added poi_timezone_mode ("UTC"/"NY", default
+"NY", loaded from _engine.get_poi_settings()["timezone_mode"]) and
+set_poi_timezone_mode() - persists via the engine (which now owns the
+real timezone_mode setting inside POISettings) and refreshes the Trading
+Panel chart overlays immediately so changed PDH/PDL/4H/Week/Month levels
+show up right away.
 """
 from __future__ import annotations
 
@@ -42,6 +44,7 @@ class PoiSettingsMixin(rx.State, mixin=True):
         self.poi_display_enabled = settings.get("display_enabled", {})
         self.poi_strategy_enabled = settings.get("strategy_enabled", {})
         self.poi_zone_source_tf_enabled = settings.get("zone_source_tf_enabled", {})
+        self.poi_timezone_mode = settings.get("timezone_mode", "NY")
 
         visual = _engine.security.persistence.load().get("poi_visual_settings", {})
         self.poi_show_labels = visual.get("show_labels", True)
@@ -78,6 +81,22 @@ class PoiSettingsMixin(rx.State, mixin=True):
         self.poi_settings_loaded = True
         if self.active_tab == "Trading Panel":
             self.refresh_poi_chart_overlays()
+
+    @rx.event(background=True)
+    async def set_poi_timezone_mode(self, mode: str | list[str]):
+        resolved = mode[0] if isinstance(mode, list) else mode
+        async with self:
+            self.poi_timezone_mode = resolved
+            self.poi_backend_busy = True
+            if self.active_tab == "Trading Panel":
+                self.refresh_poi_chart_overlays()
+        try:
+            await asyncio.to_thread(_engine.set_poi_timezone_mode, resolved)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+                if self.active_tab == "Trading Panel":
+                    self.refresh_poi_chart_overlays()
 
     @rx.event(background=True)
     async def toggle_poi_display(self, poi_type: str, checked: bool):
@@ -170,7 +189,6 @@ class PoiSettingsMixin(rx.State, mixin=True):
         self.poi_tf_vertical_enabled = {**self.poi_tf_vertical_enabled, tf: checked}
         self._save_poi_tf_settings()
 
-    # --- 3 custom recurring singular vertical lines ---
     def _save_custom_lines(self) -> None:
         _engine.security.persistence.save({"poi_custom_lines_v2": self.poi_custom_lines})
         if self.active_tab == "Trading Panel":
@@ -219,7 +237,6 @@ class PoiSettingsMixin(rx.State, mixin=True):
         self.poi_custom_lines = lines
         self._save_custom_lines()
 
-    # --- Visual controls ---
     def _save_poi_visual_settings(self) -> None:
         _engine.security.persistence.save({
             "poi_visual_settings": {

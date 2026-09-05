@@ -2,14 +2,19 @@
 
 PATH: ui/components/sidebar.py  (REPLACE ENTIRE FILE)
 
-FIX v0.4.55 - switched from class_name=HOVER_GLOW_CLASS (box-shadow based,
-could be blocked by CSS specificity) to the new bulletproof
-qt19_glow_card() wrapper (ui/components/glow_card.py) - a structurally
-separate glow layer that cannot be blocked by anything on the card's own
-style. See ui/theme/global_css.py's docstring for the full explanation.
+FIX (collapsed icon alignment) - when collapsed, the tab button used to
+render `rx.hstack(icon, label, spacing="3")` with `justify_content` set
+only on the OUTER button - the inner hstack still hugged its own content
+width and inherited Radix Button's default icon+text padding (asymmetric,
+meant for the icon+label case), so the icon visually sat off-center
+inside the collapsed square button. Fixed by rendering a completely
+different, simpler tree when collapsed: `rx.center(icon, width="100%")`
+with explicit zero padding and a fixed square height/width - guarantees
+true centering regardless of any button default padding, and gives every
+collapsed icon button the same premium, uniform square footprint.
 
-FIX v0.4.49 (carried forward): sidebar only glows on mouse hover, no
-tooltips on nav links, floating glass-card look with margin on all sides.
+FIX v0.4.55 (carried forward) - switched from class_name=HOVER_GLOW_CLASS
+to the bulletproof qt19_glow_card() wrapper. Untouched by this patch.
 """
 from __future__ import annotations
 import reflex as rx
@@ -25,12 +30,22 @@ def _icon_for_tab(tab_name):
 
 def _tab_button(tab_name):
     is_active = AppState.active_tab == tab_name
-    label = rx.cond(AppState.sidebar_collapsed, rx.fragment(), rx.text(tab_name, font_size="0.85rem", font_weight="600"))
+    icon_el = rx.icon(_icon_for_tab(tab_name), size=18)
+    expanded_content = rx.hstack(
+        icon_el,
+        rx.text(tab_name, font_size="0.85rem", font_weight="600"),
+        spacing="3",
+        align_items="center",
+        width="100%",
+    )
+    collapsed_content = rx.center(icon_el, width="100%", height="100%")
+
     return rx.button(
-        rx.hstack(rx.icon(_icon_for_tab(tab_name), size=18), label, spacing="3"),
+        rx.cond(AppState.sidebar_collapsed, collapsed_content, expanded_content),
         on_click=AppState.set_active_tab(tab_name),
         width="100%",
-        justify_content=rx.cond(AppState.sidebar_collapsed, "center", "start"),
+        height="44px",
+        padding=rx.cond(AppState.sidebar_collapsed, "0", "0.6rem 1rem"),
         style=rx.cond(
             is_active,
             {"background": "var(--qt19-accent)", "color": "white", "box_shadow": "0 0 16px 2px var(--qt19-accent-glow)", "border_radius": "9999px"},
@@ -42,13 +57,17 @@ def _tab_button(tab_name):
 def _collapse_toggle_button() -> rx.Component:
     """Real, visible control for AppState.toggle_sidebar_collapsed()."""
     return rx.button(
-        rx.icon(
-            rx.cond(AppState.sidebar_collapsed, "chevron-right", "chevron-left"),
-            size=18,
+        rx.center(
+            rx.icon(
+                rx.cond(AppState.sidebar_collapsed, "chevron-right", "chevron-left"),
+                size=18,
+            ),
+            width="100%", height="100%",
         ),
         on_click=AppState.toggle_sidebar_collapsed,
         width="100%",
-        justify_content="center",
+        height="44px",
+        padding="0",
         variant="ghost",
         style={
             "background": "transparent",
@@ -68,6 +87,7 @@ def qt19_sidebar():
             height="100%",
             padding="1rem",
             spacing="2",
+            align_items="center",
         ),
         card_style={
             **GLASS_CARD_STYLE,

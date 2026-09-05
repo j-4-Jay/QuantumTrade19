@@ -1,4 +1,14 @@
-"""Persistent File 03.1 POI display, strategy, and zone-source settings."""
+"""Persistent File 03.1 POI display, strategy, and zone-source settings.
+
+PATH: engines/workers/poi/poi_settings.py (REPLACE ENTIRE FILE)
+
+FIX (Timezone Mode toggle) - added timezone_mode: str = "NY" ("UTC" or
+"NY") - persisted alongside the existing display/strategy/zone-source
+settings. Default is "NY" per explicit request; existing installs with
+no saved value also default to "NY" going forward (not "UTC") - if you
+want existing users to keep seeing UTC-cut levels until they explicitly
+opt in, tell me and I'll flip this one default line.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -31,6 +41,7 @@ class POISettings:
     zone_source_tf_enabled: Dict[str, bool] = field(
         default_factory=lambda: dict(DEFAULT_ZONE_SOURCE_TF_ENABLED)
     )
+    timezone_mode: str = "NY"
 
     @classmethod
     def from_dict(cls, value: Dict[str, Any] | None) -> "POISettings":
@@ -60,17 +71,22 @@ class POISettings:
                 if tf in ZONE_SOURCE_TFS
             }
         )
+        timezone_mode = value.get("timezone_mode", "NY")
+        if timezone_mode not in ("UTC", "NY"):
+            timezone_mode = "NY"
         return cls(
             display_enabled=display,
             strategy_enabled=strategy,
             zone_source_tf_enabled=zone_tfs,
+            timezone_mode=timezone_mode,
         )
 
-    def to_dict(self) -> Dict[str, Dict[str, bool]]:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             "display_enabled": dict(self.display_enabled),
             "strategy_enabled": dict(self.strategy_enabled),
             "zone_source_tf_enabled": dict(self.zone_source_tf_enabled),
+            "timezone_mode": self.timezone_mode,
         }
 
 
@@ -106,6 +122,10 @@ class POISettingsStore:
         if timeframe not in ZONE_SOURCE_TFS:
             raise ValueError(f"Unsupported zone source timeframe: {timeframe}")
         self._settings.zone_source_tf_enabled[timeframe] = bool(enabled)
+        self.save()
+
+    def set_timezone_mode(self, mode: str) -> None:
+        self._settings.timezone_mode = mode if mode in ("UTC", "NY") else "NY"
         self.save()
 
     @staticmethod

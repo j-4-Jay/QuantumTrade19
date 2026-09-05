@@ -1,6 +1,31 @@
-"""File 03.1 previous-completed H/L and selected-source Flip POI calculator."""
+"""File 03.1 previous-completed H/L and selected-source Flip POI calculator.
+
+PATH: engines/workers/poi/poi_level_calculator_worker.py (REPLACE ENTIRE FILE)
+
+FIX (r2) - "only 4H and PDH/PDL work, Week/Month don't" root cause: the
+NY-bucketing helper required the previous NY period to be provably FULLY
+ENDED via a strict wall-clock check (`period_end <= now_ny`) before it
+would use it. That's a STRICTER requirement than the original, already-
+locked UTC path ever had - the UTC path just trusts `candles[-2]` (the
+second-to-last available candle) is "the previous one" without
+independently re-verifying wall-clock completion. For Week/Month, local
+historical depth is often just barely enough to have 2 total buckets but
+not 2 *provably complete* ones under the strict check, so it silently
+returned None. Fixed by matching the UTC path's exact trust model: sort
+all NY buckets chronologically by period start and simply take the
+second-to-last one - no separate "is it really over yet" re-check.
+
+NOTE for 1H/15m/5m/1m lines: these are NOT part of this NY-rebucketing
+logic at all (see _NY_DERIVED_TFS below) - they use the exact same code
+path in both timezone modes, unchanged. If they're not showing, that's
+because P1H/P15m/P5m/P1m default to Display=OFF (only PDH/PDL, 4H, Week,
+Month default ON per poi_types.py's DEFAULT_DISPLAY_ENABLED) - turn on
+their card's Display checkbox in Settings, that's expected behavior, not
+a bug.
+"""
 from __future__ import annotations
 
+import datetime
 import logging
 import time
 from typing import Callable, Dict, List, Optional
@@ -8,6 +33,12 @@ from typing import Callable, Dict, List, Optional
 from .candle_access import cf
 from .htf_availability import HTFAvailability, MarketDataMonitorLike, probe_htf_availability
 from .poi_types import DEFAULT_DISPLAY_ENABLED, DEFAULT_STRATEGY_ENABLED, POI, POIType, POI_SOURCE_TF, ZONE_SOURCE_TFS
+
+try:
+    from zoneinfo import ZoneInfo
+    _NY_TZ = ZoneInfo("America/New_York")
+except Exception:  # pragma: no cover
+    _NY_TZ = None
 
 logger = logging.getLogger("poi_monitor.poi_level_calculator_worker")
 
@@ -26,6 +57,13 @@ LINE_MAPPING: Dict[str, tuple[str, str]] = {
     POIType.WEEK_HIGH: ("1W", "high"), POIType.WEEK_LOW: ("1W", "low"),
     POIType.MONTH_HIGH: ("1M", "high"), POIType.MONTH_LOW: ("1M", "low"),
 }
+
+# Only these 4 timeframes actually differ between UTC mode and NY mode -
+# 1m/5m/15m/1H are mathematically identical in both (NY is always a
+# whole number of hours behind UTC, so sub-hour and hour boundaries land
+# on the same real-world instant either way).
+_NY_DERIVED_TFS = {"4H", "1D", "1W", "1M"}
+_NY_LOOKBACK_DAYS_FOR_TF: Dict[str, int] = {"4H": 6, "1D": 4, "1W": 24, "1M": 97}
 
 
 def _source_timestamp(candle) -> float:
@@ -48,10 +86,72 @@ def _is_swing_low(candles: List, index: int) -> bool:
     return all(cf(candles[index - n], "low") >= low and cf(candles[index + n], "low") >= low for n in range(1, FRACTAL_LOOKBACK + 1))
 
 
-class POILevelCalculatorWorker:
-    """Computes UTC period levels and source-timeframe selected Flip lines."""
+def _ny_period_key(tf: str, ny_dt: datetime.datetime):
+    if tf == "4H":
+        return (ny_dt.date(), ny_dt.hour // 4)
+    if tf == "1D":
+        return ny_dt.date()
+    if tf == "1W":
+        return ny_dt.date() - datetime.timedelta(days=ny_dt.weekday())  # Monday
+    if tf == "1M":
+        return (ny_dt.year, ny_dt.month)
+    raise ValueError(f"Unsupported NY-derived timeframe: {tf}")
 
-    def __init__(self, market_data_monitor: MarketDataMonitorLike, symbol: str, enabled_types: Dict[str, bool], on_poi_update: Callable[[str, List[POI]], None], *, display_enabled: Optional[Dict[str, bool]] = None, strategy_enabled: Optional[Dict[str, bool]] = None, zone_source_tf_enabled: Optional[Dict[str, bool]] = None) -> None:
+
+def _ny_period_start(tf: str, key) -> datetime.datetime:
+    if tf == "4H":
+        date_key, quadrant = key
+        return datetime.datetime.combine(date_key, datetime.time(hour=quadrant * 4), tzinfo=_NY_TZ)
+    if tf == "1D":
+        return datetime.datetime.combine(key, datetime.time(0), tzinfo=_NY_TZ)
+    if tf == "1W":
+        return datetime.datetime.combine(key, datetime.time(0), tzinfo=_NY_TZ)
+    if tf == "1M":
+        year, month = key
+        return datetime.datetime(year, month, 1, tzinfo=_NY_TZ)
+    raise ValueError(f"Unsupported NY-derived timeframe: {tf}")
+
+
+def _compute_ny_bucketed_prev_period(mdm: MarketDataMonitorLike, symbol: str, tf: str):
+    """Rebuckets the existing (already-locked, UTC-underneath) '1H' HTF
+    candle series into real America/New_York calendar periods, entirely
+    in-memory in this worker. Returns (high, low, source_ts_ms) for the
+    period immediately before the most recent one - matching the exact
+    same 'second-to-last is previous' trust model the original UTC path
+    already used via candles[-2], instead of independently re-verifying
+    wall-clock completion (which was the r1 bug)."""
+    if _NY_TZ is None:
+        return None
+    hourly = mdm.get_historical_candles(symbol, "1H", _NY_LOOKBACK_DAYS_FOR_TF[tf])
+    if not hourly:
+        return None
+
+    buckets: Dict[object, Dict[str, float]] = {}
+    for candle in hourly:
+        ts_ms = _source_timestamp(candle)
+        if ts_ms <= 0:
+            continue
+        ny_dt = datetime.datetime.fromtimestamp(ts_ms / 1000.0, tz=_NY_TZ)
+        key = _ny_period_key(tf, ny_dt)
+        high, low = cf(candle, "high"), cf(candle, "low")
+        bucket = buckets.setdefault(key, {"high": high, "low": low})
+        bucket["high"] = max(bucket["high"], high)
+        bucket["low"] = min(bucket["low"], low)
+
+    if len(buckets) < 2:
+        return None
+
+    ordered_keys = sorted(buckets.keys(), key=lambda k: _ny_period_start(tf, k))
+    previous_key = ordered_keys[-2]
+    previous_start = _ny_period_start(tf, previous_key)
+    bucket = buckets[previous_key]
+    return bucket["high"], bucket["low"], int(previous_start.timestamp() * 1000)
+
+
+class POILevelCalculatorWorker:
+    """Computes UTC (or NY, per timezone_mode) period levels and source-timeframe selected Flip lines."""
+
+    def __init__(self, market_data_monitor: MarketDataMonitorLike, symbol: str, enabled_types: Dict[str, bool], on_poi_update: Callable[[str, List[POI]], None], *, display_enabled: Optional[Dict[str, bool]] = None, strategy_enabled: Optional[Dict[str, bool]] = None, zone_source_tf_enabled: Optional[Dict[str, bool]] = None, timezone_mode: str = "NY") -> None:
         self.mdm = market_data_monitor
         self.symbol = symbol
         self.enabled_types = enabled_types
@@ -59,6 +159,7 @@ class POILevelCalculatorWorker:
         self.strategy_enabled = strategy_enabled or enabled_types
         self._legacy_zone_source_mode = zone_source_tf_enabled is None
         self.zone_source_tf_enabled = zone_source_tf_enabled or {}
+        self.timezone_mode = timezone_mode if timezone_mode in ("UTC", "NY") else "NY"
         self.on_poi_update = on_poi_update
         self.availability: HTFAvailability = probe_htf_availability(market_data_monitor, symbol)
         self._pois: Dict[str, POI] = {}
@@ -70,7 +171,11 @@ class POILevelCalculatorWorker:
         if not self.strategy_enabled.get(poi_type, False):
             return False
         source_tf = POI_SOURCE_TF.get(poi_type)
-        return source_tf is None or self.availability.is_available(source_tf)
+        if source_tf is None:
+            return True
+        if self.timezone_mode == "NY" and source_tf in _NY_DERIVED_TFS:
+            return self.availability.is_available("1H")
+        return self.availability.is_available(source_tf)
 
     def _selected_flip_tfs(self) -> List[str]:
         if self._legacy_zone_source_mode:
@@ -79,16 +184,19 @@ class POILevelCalculatorWorker:
 
     def _line_poi(self, poi_type: str, price: float, source_tf: str, index: int, source_ts: float) -> POI:
         is_high = poi_type.endswith("_HIGH") or poi_type == POIType.PDH
+        boundary_label = "NY" if (self.timezone_mode == "NY" and source_tf in _NY_DERIVED_TFS) else "UTC"
         return POI(
             poi_id=f"{self.symbol}:{poi_type}", symbol=self.symbol, poi_type=poi_type,
             role="resistance" if is_high else "support", source_tf=source_tf, price=price,
             formed_at_index=index, formed_at_ts=source_ts,
             display_enabled=self.display_enabled.get(poi_type, False),
             strategy_enabled=self.strategy_enabled.get(poi_type, False),
-            metadata={"source_kind": "previous_completed_futures_candle", "broker_boundary": "UTC", "source_tf": source_tf},
+            metadata={"source_kind": "previous_completed_futures_candle", "broker_boundary": boundary_label, "source_tf": source_tf},
         )
 
     def _compute_prev_period_high_low(self, tf: str):
+        if self.timezone_mode == "NY" and tf in _NY_DERIVED_TFS:
+            return _compute_ny_bucketed_prev_period(self.mdm, self.symbol, tf)
         candles = self.mdm.get_historical_candles(self.symbol, tf, LOOKBACK_DAYS_FOR_TF[tf])
         if not candles or len(candles) < 2:
             return None
@@ -103,7 +211,11 @@ class POILevelCalculatorWorker:
             previous = self._compute_prev_period_high_low(tf)
             if previous is None:
                 continue
-            high, low, index, source_ts = previous
+            if len(previous) == 3:
+                high, low, source_ts = previous
+                index = -1  # NY-bucketed periods have no meaningful HTF-series index
+            else:
+                high, low, index, source_ts = previous
             results.append(self._line_poi(poi_type, high if side == "high" else low, tf, index, source_ts))
         return results
 
@@ -168,6 +280,10 @@ class POILevelCalculatorWorker:
             self._legacy_zone_source_mode = False
             self.zone_source_tf_enabled = {tf: tf == LEGACY_FLIP_TF for tf in ZONE_SOURCE_TFS}
         self.zone_source_tf_enabled[timeframe] = bool(enabled)
+        self.recompute()
+
+    def set_timezone_mode(self, mode: str) -> None:
+        self.timezone_mode = mode if mode in ("UTC", "NY") else "NY"
         self.recompute()
 
     async def run_forever(self, poll_seconds: float = 30.0) -> None:

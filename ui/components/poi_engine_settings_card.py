@@ -2,10 +2,14 @@
 
 PATH: ui/components/poi_engine_settings_card.py (REPLACE ENTIRE FILE)
 
-CHANGE (v0.5.0-r11): custom recurring line rows now include a Name text
-input (shown on the chart instead of the raw time when filled in) and a
-12-hour hour/minute input pair plus an AM/PM segmented toggle, replacing
-the old single 24-hour "HH:MM" text field.
+CHANGE (Timezone Mode toggle): added a "Timezone Mode" section at the top
+of the card - UTC/NY (auto DST) segmented control. Only affects PDH/PDL,
+4H High/Low, Week High/Low, Month High/Low (the only 4 POI types whose
+"previous period" boundary actually differs between UTC and New York -
+1m/5m/15m/1H are mathematically identical in both, and zones stay
+UTC-only). Backend recompute for all active symbols happens in the
+background - the switch itself responds instantly, matching the existing
+poi_backend_busy "Applying..." pattern used everywhere else on this card.
 """
 from __future__ import annotations
 import reflex as rx
@@ -23,6 +27,27 @@ def _color_input(value: str, on_change) -> rx.Component:
         padding="0",
         border="none",
         cursor="pointer",
+    )
+
+
+def _poi_timezone_section() -> rx.Component:
+    return rx.vstack(
+        rx.heading("Timezone Mode", size="3"),
+        rx.text(
+            "Controls which clock PDH/PDL, 4H High/Low, Week High/Low, and Month High/Low "
+            "cut their \u201cprevious period\u201d boundary on. 1m/5m/15m/1H lines and all "
+            "zones (FVG/Order Block/Flip) are unaffected - their boundaries are the same "
+            "real-world instant in either mode.",
+            font_size="0.78rem", color="var(--qt19-text-muted)",
+        ),
+        rx.segmented_control.root(
+            rx.segmented_control.item("New York (auto DST)", value="NY"),
+            rx.segmented_control.item("UTC", value="UTC"),
+            value=AppState.poi_timezone_mode,
+            on_change=AppState.set_poi_timezone_mode,
+            size="2",
+        ),
+        spacing="2", width="100%",
     )
 
 
@@ -109,7 +134,7 @@ def _poi_zone_matrix_section() -> rx.Component:
     return rx.vstack(
         rx.heading("Zone Source-Timeframe Matrix", size="3"),
         rx.text("Which timeframes Flip/FVG/Inverse FVG/Order Block zones are calculated from. "
-                "Shared across all zone types.",
+                "Shared across all zone types. Always UTC-boundary based.",
                 font_size="0.78rem", color="var(--qt19-text-muted)"),
         rx.grid(
             rx.foreach(AppState.poi_zone_source_tf_rows, _poi_zone_source_tf_checkbox),
@@ -323,6 +348,8 @@ def poi_engine_settings_card() -> rx.Component:
         rx.cond(
             AppState.poi_settings_loaded,
             rx.vstack(
+                _poi_timezone_section(),
+                rx.divider(),
                 _poi_lines_section(),
                 rx.divider(),
                 _poi_zone_matrix_section(),
