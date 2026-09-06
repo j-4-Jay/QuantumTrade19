@@ -2,12 +2,27 @@
 
 PATH: state/app_state_mixins/poi_settings_mixin.py  (REPLACE ENTIRE FILE)
 
-FIX (Timezone Mode toggle) - added poi_timezone_mode ("UTC"/"NY", default
-"NY", loaded from _engine.get_poi_settings()["timezone_mode"]) and
-set_poi_timezone_mode() - persists via the engine (which now owns the
-real timezone_mode setting inside POISettings) and refreshes the Trading
-Panel chart overlays immediately so changed PDH/PDL/4H/Week/Month levels
-show up right away.
+FIX (Bulk Controls redefined per explicit clarification) - renamed and
+re-scoped from blanket "everything" operations to operations scoped to
+whatever is CURRENTLY on the chart:
+
+  poi_hide_extras() [was poi_hide_all] - captures every POI type
+    currently Display=True (into _poi_hidden_by_extras) THEN turns
+    Display off for exactly those - not a blanket "set everything
+    False" (which would discard the memory of what was actually shown).
+
+  poi_show_extras() [was poi_show_all] - restores Display=True ONLY for
+    the types captured by the most recent poi_hide_extras() call, then
+    clears that memory. Calling it without a prior Hide is a no-op.
+
+  poi_enable_default_strategy() - Strategy now goes True for the UNION
+    of the locked default set (PDH/PDL/4H_HIGH/4H_LOW) AND every POI
+    type CURRENTLY Display=True (i.e. "already attached to the chart") -
+    everything else resets to False.
+
+  poi_disable_all_strategy() - now only iterates POI types CURRENTLY
+    Display=True ("present on chart") and turns their Strategy off -
+    types not currently shown are left untouched, not force-reset.
 """
 from __future__ import annotations
 
@@ -29,6 +44,21 @@ _DEFAULT_TF_COLOR = {
     "1D": "#FFA500", "1W": "#FFFF00", "1M": "#DC143C",
 }
 _DEFAULT_CUSTOM_LINE_COLORS = ["#22C55E", "#F97316", "#38BDF8"]
+_DEFAULT_TF_DISPLAY = {tf: (tf in ("1D", "4H")) for tf in POI_LINE_TF_ORDER}
+_DEFAULT_TF_VERTICAL_STYLE = {tf: "solid" for tf in POI_LINE_TF_ORDER}
+_DEFAULT_TF_VERTICAL_OPACITY = {tf: 50 for tf in POI_LINE_TF_ORDER}
+_DEFAULT_ZONE_SOURCE_TF = {"1m": True, "5m": False, "15m": True, "1H": False, "4H": False, "1D": False, "1W": False, "1M": False}
+
+_ZONE_TYPE_KEYS = [t for t, _ in POI_ZONE_TYPES]
+_DEFAULT_ZONE_COLOR = {
+    "RESISTANCE_FLIP": "#EF4444",
+    "SUPPORT_FLIP": "#22C55E",
+    "FVG": "#3B82F6",
+    "INVERSE_FVG": "#A855F7",
+    "ORDER_BLOCK": "#F59E0B",
+}
+_DEFAULT_ZONE_MAX_COUNT = {t: 5 for t in _ZONE_TYPE_KEYS}
+_DEFAULT_ZONE_OPACITY = {t: 30 for t in _ZONE_TYPE_KEYS}
 
 
 def _default_custom_lines() -> list[dict]:
@@ -40,6 +70,11 @@ def _default_custom_lines() -> list[dict]:
 
 class PoiSettingsMixin(rx.State, mixin=True):
     def load_poi_settings(self) -> None:
+        if self.poi_settings_loaded:
+            if self.active_tab == "Trading Panel":
+                self.refresh_poi_chart_overlays()
+            return
+
         settings = _engine.get_poi_settings()
         self.poi_display_enabled = settings.get("display_enabled", {})
         self.poi_strategy_enabled = settings.get("strategy_enabled", {})
@@ -50,19 +85,20 @@ class PoiSettingsMixin(rx.State, mixin=True):
         self.poi_show_labels = visual.get("show_labels", True)
         self.poi_show_tooltips = visual.get("show_tooltips", True)
         self.poi_line_transparency = visual.get("line_transparency", 100)
-        self.poi_zone_opacity = visual.get("zone_opacity", 30)
         self.poi_show_source_tf_badge = visual.get("show_source_tf_badge", True)
         self.poi_show_logical_id = visual.get("show_logical_id", False)
         self.poi_reduced_motion = visual.get("reduced_motion", False)
-        self.poi_vertical_line_style = visual.get("vertical_line_style", "dashed")
-        self.poi_vertical_line_opacity = visual.get("vertical_line_opacity", 100)
+        self.poi_high_line_style = visual.get("high_line_style", "solid")
+        self.poi_high_line_thickness = visual.get("high_line_thickness", 2)
+        self.poi_low_line_style = visual.get("low_line_style", "solid")
+        self.poi_low_line_thickness = visual.get("low_line_thickness", 1)
 
         tf_settings = _engine.security.persistence.load().get("poi_tf_settings", {})
         self.poi_tf_color = tf_settings.get("color", dict(_DEFAULT_TF_COLOR))
-        self.poi_tf_vertical_enabled = tf_settings.get(
-            "vertical_enabled",
-            {tf: (tf in ("1D", "4H", "1W", "1M")) for tf in POI_LINE_TF_ORDER},
-        )
+        self.poi_tf_vertical_enabled = tf_settings.get("vertical_enabled", dict(_DEFAULT_TF_DISPLAY))
+        self.poi_tf_droplet_enabled = tf_settings.get("droplet_enabled", dict(_DEFAULT_TF_DISPLAY))
+        self.poi_tf_vertical_style = tf_settings.get("vertical_style", dict(_DEFAULT_TF_VERTICAL_STYLE))
+        self.poi_tf_vertical_opacity = tf_settings.get("vertical_opacity", dict(_DEFAULT_TF_VERTICAL_OPACITY))
         self.poi_tf_display_enabled = {
             tf: self.poi_display_enabled.get(POI_LINE_TYPE_MAP[tf][0], False)
             for tf in POI_LINE_TF_ORDER
@@ -72,31 +108,36 @@ class PoiSettingsMixin(rx.State, mixin=True):
             for tf in POI_LINE_TF_ORDER
         }
 
+        zone_settings = _engine.security.persistence.load().get("poi_zone_settings", {})
+        self.poi_zone_max_count = zone_settings.get("max_count", dict(_DEFAULT_ZONE_MAX_COUNT))
+        self.poi_zone_color = zone_settings.get("color", dict(_DEFAULT_ZONE_COLOR))
+        self.poi_zone_type_opacity = zone_settings.get("opacity", dict(_DEFAULT_ZONE_OPACITY))
+
         custom = _engine.security.persistence.load().get("poi_custom_lines_v2")
         if custom and len(custom) == 3 and "hour12" in custom[0]:
             self.poi_custom_lines = custom
         else:
             self.poi_custom_lines = _default_custom_lines()
 
+        self._poi_hidden_by_extras = _engine.security.persistence.load().get("poi_hidden_by_extras", {})
+
         self.poi_settings_loaded = True
         if self.active_tab == "Trading Panel":
             self.refresh_poi_chart_overlays()
 
-    @rx.event(background=True)
-    async def set_poi_timezone_mode(self, mode: str | list[str]):
-        resolved = mode[0] if isinstance(mode, list) else mode
-        async with self:
-            self.poi_timezone_mode = resolved
-            self.poi_backend_busy = True
-            if self.active_tab == "Trading Panel":
-                self.refresh_poi_chart_overlays()
-        try:
-            await asyncio.to_thread(_engine.set_poi_timezone_mode, resolved)
-        finally:
-            async with self:
-                self.poi_backend_busy = False
-                if self.active_tab == "Trading Panel":
-                    self.refresh_poi_chart_overlays()
+    def _sync_tf_dicts_from_flat(self) -> None:
+        """Rebuilds poi_tf_display_enabled/poi_tf_strategy_enabled from
+        the flat per-type dicts - call after any bulk mutation of
+        poi_display_enabled/poi_strategy_enabled that isn't already
+        going through the per-TF setters."""
+        self.poi_tf_display_enabled = {
+            tf: self.poi_display_enabled.get(POI_LINE_TYPE_MAP[tf][0], False)
+            for tf in POI_LINE_TF_ORDER
+        }
+        self.poi_tf_strategy_enabled = {
+            tf: self.poi_strategy_enabled.get(POI_LINE_TYPE_MAP[tf][0], False)
+            for tf in POI_LINE_TF_ORDER
+        }
 
     @rx.event(background=True)
     async def toggle_poi_display(self, poi_type: str, checked: bool):
@@ -134,6 +175,25 @@ class PoiSettingsMixin(rx.State, mixin=True):
         finally:
             async with self:
                 self.poi_backend_busy = False
+
+    @rx.event(background=True)
+    async def set_poi_timezone_mode(self, mode: str | list[str]):
+        resolved = mode[0] if isinstance(mode, list) else mode
+        async with self:
+            self.poi_timezone_mode = resolved
+            self.poi_backend_busy = True
+            if self.active_tab == "Trading Panel":
+                self.refresh_poi_chart_overlays()
+        try:
+            await asyncio.to_thread(_engine.set_poi_timezone_mode, resolved)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+                if self.active_tab == "Trading Panel":
+                    self.refresh_poi_chart_overlays()
+
+    def reset_poi_timezone_default(self):
+        return type(self).set_poi_timezone_mode("NY")
 
     @rx.event(background=True)
     async def toggle_poi_tf_display(self, tf: str, checked: bool):
@@ -176,6 +236,9 @@ class PoiSettingsMixin(rx.State, mixin=True):
             "poi_tf_settings": {
                 "color": dict(self.poi_tf_color),
                 "vertical_enabled": dict(self.poi_tf_vertical_enabled),
+                "droplet_enabled": dict(self.poi_tf_droplet_enabled),
+                "vertical_style": dict(self.poi_tf_vertical_style),
+                "vertical_opacity": dict(self.poi_tf_vertical_opacity),
             }
         })
         if self.active_tab == "Trading Panel":
@@ -188,6 +251,138 @@ class PoiSettingsMixin(rx.State, mixin=True):
     def toggle_poi_tf_vertical(self, tf: str, checked: bool) -> None:
         self.poi_tf_vertical_enabled = {**self.poi_tf_vertical_enabled, tf: checked}
         self._save_poi_tf_settings()
+
+    def toggle_poi_tf_droplet(self, tf: str, checked: bool) -> None:
+        self.poi_tf_droplet_enabled = {**self.poi_tf_droplet_enabled, tf: checked}
+        self._save_poi_tf_settings()
+
+    def set_poi_tf_vertical_style(self, tf: str, value: str | list[str]) -> None:
+        resolved = value[0] if isinstance(value, list) else value
+        self.poi_tf_vertical_style = {**self.poi_tf_vertical_style, tf: resolved}
+        self._save_poi_tf_settings()
+
+    def set_poi_tf_vertical_opacity(self, tf: str, value: list[float]) -> None:
+        self.poi_tf_vertical_opacity = {**self.poi_tf_vertical_opacity, tf: int(value[0])}
+        self._save_poi_tf_settings()
+
+    @rx.event(background=True)
+    async def reset_poi_lines_defaults(self):
+        async with self:
+            self.poi_tf_display_enabled = dict(_DEFAULT_TF_DISPLAY)
+            self.poi_tf_strategy_enabled = dict(_DEFAULT_TF_DISPLAY)
+            self.poi_tf_color = dict(_DEFAULT_TF_COLOR)
+            self.poi_tf_vertical_enabled = dict(_DEFAULT_TF_DISPLAY)
+            self.poi_tf_droplet_enabled = dict(_DEFAULT_TF_DISPLAY)
+            self.poi_tf_vertical_style = dict(_DEFAULT_TF_VERTICAL_STYLE)
+            self.poi_tf_vertical_opacity = dict(_DEFAULT_TF_VERTICAL_OPACITY)
+            for tf in POI_LINE_TF_ORDER:
+                high_type, low_type = POI_LINE_TYPE_MAP[tf]
+                enabled = _DEFAULT_TF_DISPLAY[tf]
+                self.poi_display_enabled = {**self.poi_display_enabled, high_type: enabled, low_type: enabled}
+                self.poi_strategy_enabled = {**self.poi_strategy_enabled, high_type: enabled, low_type: enabled}
+            self.poi_backend_busy = True
+            self._save_poi_tf_settings()
+
+        def _apply():
+            for tf in POI_LINE_TF_ORDER:
+                high_type, low_type = POI_LINE_TYPE_MAP[tf]
+                enabled = _DEFAULT_TF_DISPLAY[tf]
+                _engine.set_poi_display_enabled(high_type, enabled)
+                _engine.set_poi_display_enabled(low_type, enabled)
+                _engine.set_poi_strategy_enabled(high_type, enabled)
+                _engine.set_poi_strategy_enabled(low_type, enabled)
+        try:
+            await asyncio.to_thread(_apply)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+
+    def reset_poi_horizontal_style_defaults(self) -> None:
+        self.poi_high_line_style = "solid"
+        self.poi_high_line_thickness = 2
+        self.poi_low_line_style = "solid"
+        self.poi_low_line_thickness = 1
+        self._save_poi_visual_settings()
+
+    @rx.event(background=True)
+    async def reset_poi_zone_matrix_defaults(self):
+        async with self:
+            self.poi_zone_source_tf_enabled = dict(_DEFAULT_ZONE_SOURCE_TF)
+            self.poi_backend_busy = True
+            if self.active_tab == "Trading Panel":
+                self.refresh_poi_chart_overlays()
+
+        def _apply():
+            for tf, enabled in _DEFAULT_ZONE_SOURCE_TF.items():
+                _engine.set_poi_zone_source_tf_enabled(tf, enabled)
+        try:
+            await asyncio.to_thread(_apply)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+
+    def _save_poi_zone_settings(self) -> None:
+        _engine.security.persistence.save({
+            "poi_zone_settings": {
+                "max_count": dict(self.poi_zone_max_count),
+                "color": dict(self.poi_zone_color),
+                "opacity": dict(self.poi_zone_type_opacity),
+            }
+        })
+        if self.active_tab == "Trading Panel":
+            self.refresh_poi_chart_overlays()
+
+    def set_poi_zone_max_count(self, zone_type: str, value: str) -> None:
+        try:
+            count = max(1, min(50, int(value)))
+        except ValueError:
+            return
+        self.poi_zone_max_count = {**self.poi_zone_max_count, zone_type: count}
+        self._save_poi_zone_settings()
+
+    def set_poi_zone_color(self, zone_type: str, value: str) -> None:
+        self.poi_zone_color = {**self.poi_zone_color, zone_type: value}
+        self._save_poi_zone_settings()
+
+    def set_poi_zone_type_opacity(self, zone_type: str, value: list[float]) -> None:
+        self.poi_zone_type_opacity = {**self.poi_zone_type_opacity, zone_type: int(value[0])}
+        self._save_poi_zone_settings()
+
+    @rx.event(background=True)
+    async def reset_poi_zone_types_defaults(self):
+        async with self:
+            zone_types = [t for t, _ in POI_ZONE_TYPES]
+            self.poi_display_enabled = {**self.poi_display_enabled, **{t: False for t in zone_types}}
+            self.poi_strategy_enabled = {**self.poi_strategy_enabled, **{t: False for t in zone_types}}
+            self.poi_zone_max_count = dict(_DEFAULT_ZONE_MAX_COUNT)
+            self.poi_zone_color = dict(_DEFAULT_ZONE_COLOR)
+            self.poi_zone_type_opacity = dict(_DEFAULT_ZONE_OPACITY)
+            self.poi_backend_busy = True
+            self._save_poi_zone_settings()
+            if self.active_tab == "Trading Panel":
+                self.refresh_poi_chart_overlays()
+
+        def _apply():
+            for t in zone_types:
+                _engine.set_poi_display_enabled(t, False)
+                _engine.set_poi_strategy_enabled(t, False)
+        try:
+            await asyncio.to_thread(_apply)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+
+    def reset_poi_custom_lines_defaults(self) -> None:
+        self.poi_custom_lines = _default_custom_lines()
+        self._save_custom_lines()
+
+    def reset_poi_visual_controls_defaults(self) -> None:
+        self.poi_show_labels = True
+        self.poi_show_tooltips = True
+        self.poi_show_source_tf_badge = True
+        self.poi_show_logical_id = False
+        self.poi_reduced_motion = False
+        self._save_poi_visual_settings()
 
     def _save_custom_lines(self) -> None:
         _engine.security.persistence.save({"poi_custom_lines_v2": self.poi_custom_lines})
@@ -243,12 +438,13 @@ class PoiSettingsMixin(rx.State, mixin=True):
                 "show_labels": self.poi_show_labels,
                 "show_tooltips": self.poi_show_tooltips,
                 "line_transparency": self.poi_line_transparency,
-                "zone_opacity": self.poi_zone_opacity,
                 "show_source_tf_badge": self.poi_show_source_tf_badge,
                 "show_logical_id": self.poi_show_logical_id,
                 "reduced_motion": self.poi_reduced_motion,
-                "vertical_line_style": self.poi_vertical_line_style,
-                "vertical_line_opacity": self.poi_vertical_line_opacity,
+                "high_line_style": self.poi_high_line_style,
+                "high_line_thickness": self.poi_high_line_thickness,
+                "low_line_style": self.poi_low_line_style,
+                "low_line_thickness": self.poi_low_line_thickness,
             }
         })
         if self.active_tab == "Trading Panel":
@@ -278,85 +474,118 @@ class PoiSettingsMixin(rx.State, mixin=True):
         self.poi_line_transparency = int(value[0])
         self._save_poi_visual_settings()
 
-    def set_poi_zone_opacity(self, value: list[float]) -> None:
-        self.poi_zone_opacity = int(value[0])
-        self._save_poi_visual_settings()
-
-    def set_poi_vertical_line_style(self, value: str | list[str]) -> None:
+    def set_poi_high_line_style(self, value: str | list[str]) -> None:
         resolved = value[0] if isinstance(value, list) else value
-        self.poi_vertical_line_style = resolved
+        self.poi_high_line_style = resolved
         self._save_poi_visual_settings()
 
-    def set_poi_vertical_line_opacity(self, value: list[float]) -> None:
-        self.poi_vertical_line_opacity = int(value[0])
+    def set_poi_high_line_thickness(self, value: list[float]) -> None:
+        self.poi_high_line_thickness = int(value[0])
         self._save_poi_visual_settings()
 
+    def set_poi_low_line_style(self, value: str | list[str]) -> None:
+        resolved = value[0] if isinstance(value, list) else value
+        self.poi_low_line_style = resolved
+        self._save_poi_visual_settings()
+
+    def set_poi_low_line_thickness(self, value: list[float]) -> None:
+        self.poi_low_line_thickness = int(value[0])
+        self._save_poi_visual_settings()
+
+    # --- Bulk controls (renamed + re-scoped: operate on what is
+    # CURRENTLY on the chart, not blanket-all) ---
     @rx.event(background=True)
-    async def poi_show_all(self):
+    async def poi_hide_extras(self):
+        """Hide Extras: remembers every POI type currently Display=True,
+        then hides exactly those - not a blanket reset of every possible
+        type. "Extras" means the objects currently shown on the chart
+        beyond the candles/price line themselves."""
         async with self:
-            poi_types = list(self.poi_display_enabled.keys())
-            self.poi_display_enabled = {t: True for t in poi_types}
+            currently_shown = {t: True for t, v in self.poi_display_enabled.items() if v}
+            self._poi_hidden_by_extras = currently_shown
+            self.poi_display_enabled = {**self.poi_display_enabled, **{t: False for t in currently_shown}}
+            self._sync_tf_dicts_from_flat()
             self.poi_backend_busy = True
+            _engine.security.persistence.save({"poi_hidden_by_extras": currently_shown})
+            if self.active_tab == "Trading Panel":
+                self.refresh_poi_chart_overlays()
 
         def _apply():
-            for t in poi_types:
-                _engine.set_poi_display_enabled(t, True)
-        try:
-            await asyncio.to_thread(_apply)
-        finally:
-            async with self:
-                self.load_poi_settings()
-                self.poi_backend_busy = False
-
-    @rx.event(background=True)
-    async def poi_hide_all(self):
-        async with self:
-            poi_types = list(self.poi_display_enabled.keys())
-            self.poi_display_enabled = {t: False for t in poi_types}
-            self.poi_backend_busy = True
-
-        def _apply():
-            for t in poi_types:
+            for t in currently_shown:
                 _engine.set_poi_display_enabled(t, False)
         try:
             await asyncio.to_thread(_apply)
         finally:
             async with self:
-                self.load_poi_settings()
                 self.poi_backend_busy = False
 
     @rx.event(background=True)
-    async def poi_enable_default_strategy(self):
+    async def poi_show_extras(self):
+        """Show Extras: restores Display=True ONLY for the POI types
+        that the most recent Hide Extras click actually hid - a no-op if
+        nothing was hidden."""
         async with self:
-            poi_types = list(self.poi_strategy_enabled.keys())
-            self.poi_strategy_enabled = {t: (t in POI_DEFAULT_STRATEGY_TYPES) for t in poi_types}
+            to_restore = dict(self._poi_hidden_by_extras)
+            if not to_restore:
+                return
+            self.poi_display_enabled = {**self.poi_display_enabled, **to_restore}
+            self._sync_tf_dicts_from_flat()
+            self._poi_hidden_by_extras = {}
             self.poi_backend_busy = True
+            _engine.security.persistence.save({"poi_hidden_by_extras": {}})
+            if self.active_tab == "Trading Panel":
+                self.refresh_poi_chart_overlays()
 
         def _apply():
-            for t in poi_types:
-                _engine.set_poi_strategy_enabled(t, t in POI_DEFAULT_STRATEGY_TYPES)
+            for t in to_restore:
+                _engine.set_poi_display_enabled(t, True)
         try:
             await asyncio.to_thread(_apply)
         finally:
             async with self:
-                self.load_poi_settings()
+                self.poi_backend_busy = False
+
+    @rx.event(background=True)
+    async def poi_enable_default_strategy(self):
+        """Strategy = True for the union of the locked default set
+        (PDH/PDL/4H_HIGH/4H_LOW) AND every POI type currently
+        Display=True (already attached to the chart) - everything else
+        resets to False."""
+        async with self:
+            currently_shown = {t for t, v in self.poi_display_enabled.items() if v}
+            target = set(POI_DEFAULT_STRATEGY_TYPES) | currently_shown
+            all_types = list(self.poi_strategy_enabled.keys())
+            self.poi_strategy_enabled = {t: (t in target) for t in all_types}
+            self._sync_tf_dicts_from_flat()
+            self.poi_backend_busy = True
+
+        def _apply():
+            for t in all_types:
+                _engine.set_poi_strategy_enabled(t, t in target)
+        try:
+            await asyncio.to_thread(_apply)
+        finally:
+            async with self:
                 self.poi_backend_busy = False
 
     @rx.event(background=True)
     async def poi_disable_all_strategy(self):
+        """Strategy = False ONLY for POI types currently Display=True
+        ("present on chart") - types not currently shown are left
+        untouched."""
         async with self:
-            poi_types = list(self.poi_strategy_enabled.keys())
-            self.poi_strategy_enabled = {t: False for t in poi_types}
+            currently_shown = [t for t, v in self.poi_display_enabled.items() if v]
+            self.poi_strategy_enabled = {**self.poi_strategy_enabled, **{t: False for t in currently_shown}}
+            self._sync_tf_dicts_from_flat()
             self.poi_backend_busy = True
 
         def _apply():
-            for t in poi_types:
+            for t in currently_shown:
                 _engine.set_poi_strategy_enabled(t, False)
         try:
             await asyncio.to_thread(_apply)
         finally:
             async with self:
-                self.load_poi_settings()
                 self.poi_backend_busy = False
 
     def poi_reset_chart_filters(self) -> None:
@@ -371,6 +600,9 @@ class PoiSettingsMixin(rx.State, mixin=True):
             "strategy": self.poi_tf_strategy_enabled.get(tf, False),
             "color": self.poi_tf_color.get(tf, _DEFAULT_TF_COLOR.get(tf, "#38BDF8")),
             "vertical_enabled": self.poi_tf_vertical_enabled.get(tf, False),
+            "droplet_enabled": self.poi_tf_droplet_enabled.get(tf, False),
+            "vertical_style": self.poi_tf_vertical_style.get(tf, "solid"),
+            "vertical_opacity": self.poi_tf_vertical_opacity.get(tf, 50),
         } for tf in POI_LINE_TF_ORDER]
 
     @rx.var
@@ -379,6 +611,9 @@ class PoiSettingsMixin(rx.State, mixin=True):
             "type": t, "label": label,
             "display": self.poi_display_enabled.get(t, False),
             "strategy": self.poi_strategy_enabled.get(t, False),
+            "color": self.poi_zone_color.get(t, _DEFAULT_ZONE_COLOR.get(t, "#3B82F6")),
+            "max_count": self.poi_zone_max_count.get(t, 5),
+            "opacity": self.poi_zone_type_opacity.get(t, 30),
         } for t, label in POI_ZONE_TYPES]
 
     @rx.var

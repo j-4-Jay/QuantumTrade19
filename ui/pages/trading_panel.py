@@ -2,18 +2,11 @@
 
 PATH: ui/pages/trading_panel.py (REPLACE ENTIRE FILE)
 
-FIX v0.4.57 - removed the hover-glow effect from both Trading Panel cards
-(_header() and _chart_card()) entirely, per request - reverted from
-qt19_glow_card() back to a plain rx.box with GLASS_CARD_3XL_STYLE. The
-sidebar's glow (ui/components/sidebar.py) is untouched - this change is
-scoped only to this page.
-
-FIX v0.4.46 (carried forward): Row 2 removed; Display Last + QT19 DB days
-folded into the header row; chart card expands to fill remaining page
-height via flex="1"/min_height="0".
-
-FIX v0.4.43 (carried forward): countdown-to-candle-close text next to the
-OHLC pills, labeled "Closes in".
+FIX (Bulk Controls renamed + re-scoped) - buttons now read "Hide Extras",
+"Show Extras", "Enable Default Strategy", "Disable All Strategy" and
+call the renamed/re-scoped AppState handlers (poi_hide_extras/
+poi_show_extras replace poi_show_all/poi_hide_all - see
+poi_settings_mixin.py for the new semantics).
 """
 from __future__ import annotations
 
@@ -68,6 +61,19 @@ def _display_last_group() -> rx.Component:
     )
 
 
+def _bulk_controls_toggle_button() -> rx.Component:
+    return rx.tooltip(
+        rx.icon_button(
+            rx.icon("list-checks", size=16),
+            on_click=AppState.toggle_trading_panel_bulk_controls,
+            variant=rx.cond(AppState.trading_panel_bulk_controls_visible, "solid", "outline"),
+            size="1",
+            border_radius="9999px",
+        ),
+        content="POI bulk controls",
+    )
+
+
 def _header() -> rx.Component:
     return rx.box(
         rx.hstack(
@@ -79,6 +85,7 @@ def _header() -> rx.Component:
             ),
             _tf_buttons(),
             _display_last_group(),
+            _bulk_controls_toggle_button(),
             rx.spacer(),
             _ohlc_pill("O", AppState.trading_panel_current_open),
             _ohlc_pill("H", AppState.trading_panel_current_high),
@@ -94,6 +101,25 @@ def _header() -> rx.Component:
         style={**GLASS_CARD_3XL_STYLE, "padding": "0.9rem 1.1rem"},
         width="100%",
         flex_shrink="0",
+    )
+
+
+def _bulk_controls_strip() -> rx.Component:
+    return rx.cond(
+        AppState.trading_panel_bulk_controls_visible,
+        rx.box(
+            rx.flex(
+                rx.text("POI Bulk Controls:", font_size="0.78rem", font_weight="700", color="var(--qt19-text-muted)"),
+                rx.button("Hide Extras", on_click=AppState.poi_hide_extras, size="1", variant="soft"),
+                rx.button("Show Extras", on_click=AppState.poi_show_extras, size="1", variant="soft"),
+                rx.button("Enable Default Strategy", on_click=AppState.poi_enable_default_strategy, size="1", variant="soft"),
+                rx.button("Disable All Strategy", on_click=AppState.poi_disable_all_strategy, size="1", variant="soft"),
+                spacing="2", align_items="center", wrap="wrap",
+            ),
+            style={**GLASS_CARD_3XL_STYLE, "padding": "0.6rem 1.1rem"},
+            width="100%",
+            flex_shrink="0",
+        ),
     )
 
 
@@ -121,6 +147,7 @@ def _chart_card() -> rx.Component:
 def trading_panel_page() -> rx.Component:
     return rx.vstack(
         _header(),
+        _bulk_controls_strip(),
         _chart_card(),
         spacing="3",
         width="100%",

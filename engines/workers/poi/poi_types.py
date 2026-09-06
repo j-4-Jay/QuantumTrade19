@@ -1,5 +1,16 @@
-"""Shared POI structures and File 03.1 defaults."""
+"""Shared POI structures and File 03.1 defaults.
+
+PATH: engines/workers/poi/poi_types.py (REPLACE ENTIRE FILE)
+
+FIX (default Display changed per explicit request) - DEFAULT_DISPLAY_ENABLED
+no longer includes WEEK_HIGH/WEEK_LOW/MONTH_HIGH/MONTH_LOW - only
+H4_HIGH/H4_LOW/PDH/PDL default to Display=ON now. DEFAULT_STRATEGY_ENABLED
+is UNCHANGED (it already only had these same 4 types True). Every other
+POI type (including Week/Month lines, all zone types) still defaults to
+both Display and Strategy = OFF.
+"""
 from __future__ import annotations
+
 
 from dataclasses import dataclass, field
 from enum import Enum
@@ -7,12 +18,15 @@ from time import time
 from typing import Any, Dict, Optional
 
 
+
 LINE_SOURCE_TFS = ("1m", "5m", "15m", "1H", "4H", "1D", "1W", "1M")
 ZONE_SOURCE_TFS = LINE_SOURCE_TFS
 
 
+
 class POIType(str, Enum):
     """Every POI type the POI engine can compute."""
+
 
     PREV_1M_HIGH = "P1M_HIGH"
     PREV_1M_LOW = "P1M_LOW"
@@ -23,6 +37,7 @@ class POIType(str, Enum):
     PREV_1H_HIGH = "P1H_HIGH"
     PREV_1H_LOW = "P1H_LOW"
 
+
     H4_HIGH = "4H_HIGH"
     H4_LOW = "4H_LOW"
     PDH = "PDH"
@@ -32,11 +47,13 @@ class POIType(str, Enum):
     MONTH_HIGH = "1M_HIGH"
     MONTH_LOW = "1M_LOW"
 
+
     RESISTANCE_FLIP = "RESISTANCE_FLIP"
     SUPPORT_FLIP = "SUPPORT_FLIP"
     FVG = "FVG"
     ORDER_BLOCK = "ORDER_BLOCK"
     INVERSE_FVG = "INVERSE_FVG"
+
 
 
 LINE_POI_TYPES = (
@@ -58,6 +75,7 @@ LINE_POI_TYPES = (
     POIType.MONTH_LOW,
 )
 
+
 ZONE_POI_TYPES = (
     POIType.RESISTANCE_FLIP,
     POIType.SUPPORT_FLIP,
@@ -65,6 +83,7 @@ ZONE_POI_TYPES = (
     POIType.INVERSE_FVG,
     POIType.ORDER_BLOCK,
 )
+
 
 
 POI_SOURCE_TF: Dict[str, str] = {
@@ -85,6 +104,7 @@ POI_SOURCE_TF: Dict[str, str] = {
     POIType.MONTH_HIGH: "1M",
     POIType.MONTH_LOW: "1M",
 }
+
 
 
 POI_LABELS: Dict[str, str] = {
@@ -112,6 +132,7 @@ POI_LABELS: Dict[str, str] = {
 }
 
 
+
 DEFAULT_DISPLAY_ENABLED: Dict[str, bool] = {
     poi_type: False for poi_type in POIType
 }
@@ -121,12 +142,9 @@ DEFAULT_DISPLAY_ENABLED.update(
         POIType.H4_LOW: True,
         POIType.PDH: True,
         POIType.PDL: True,
-        POIType.WEEK_HIGH: True,
-        POIType.WEEK_LOW: True,
-        POIType.MONTH_HIGH: True,
-        POIType.MONTH_LOW: True,
     }
 )
+
 
 DEFAULT_STRATEGY_ENABLED: Dict[str, bool] = {
     poi_type: False for poi_type in POIType
@@ -140,6 +158,7 @@ DEFAULT_STRATEGY_ENABLED.update(
     }
 )
 
+
 DEFAULT_ZONE_SOURCE_TF_ENABLED: Dict[str, bool] = {
     "1m": True,
     "5m": False,
@@ -151,12 +170,15 @@ DEFAULT_ZONE_SOURCE_TF_ENABLED: Dict[str, bool] = {
     "1M": False,
 }
 
+
 # Legacy compatibility: existing File 03 workers use this map for calculation
 # eligibility. In File 03.1 it maps to strategy eligibility.
 DEFAULT_ENABLED: Dict[str, bool] = dict(DEFAULT_STRATEGY_ENABLED)
 
+
 # Legacy compatibility: existing availability code imports POI_TFS.
 POI_TFS = list(LINE_SOURCE_TFS)
+
 
 
 class POIState(str, Enum):
@@ -166,9 +188,11 @@ class POIState(str, Enum):
     RETESTING = "Retesting"
 
 
+
 @dataclass
 class POI:
     """One system Point of Interest: line or price-range."""
+
 
     poi_id: str
     symbol: str
@@ -185,8 +209,10 @@ class POI:
     strategy_enabled: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+
     def is_range(self) -> bool:
         return self.price_high is not None and self.price_low is not None
+
 
     def mid_price(self) -> float:
         if self.is_range():
@@ -195,9 +221,11 @@ class POI:
             raise ValueError(f"POI {self.poi_id} has no price.")
         return self.price
 
+
     @property
     def chart_label(self) -> str:
         return POI_LABELS.get(self.poi_type, str(self.poi_type))
+
 
     @property
     def line_width_px(self) -> int:
@@ -206,9 +234,11 @@ class POI:
         return 2 if self.role == "resistance" else 1
 
 
+
 @dataclass
 class POIStateRecord:
     """Live tracking state for one POI, independent of all others."""
+
 
     poi_id: str
     symbol: str

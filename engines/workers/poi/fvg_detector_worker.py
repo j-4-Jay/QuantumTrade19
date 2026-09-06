@@ -1,4 +1,32 @@
-"""File 03.1 Fair Value Gap detector with selectable zone source timeframes."""
+"""File 03.1 Fair Value Gap detector with selectable zone source timeframes.
+
+PATH: engines/workers/poi/fvg_detector_worker.py (REPLACE ENTIRE FILE)
+
+FIX (CRITICAL - "chart turns solid blue and app crashes/restarts") - REAL
+root cause found: `self.mdm.get_historical_candles(self.symbol, tf, LOOKBACK_CANDLES)`
+passed LOOKBACK_CANDLES (=60) as the `days` argument, not a candle count -
+that method's signature is `(symbol, tf, days)`. On "1m" or "15m" source
+timeframes (both default ON), this fetched 60 DAYS of the finest-
+granularity candles (tens of thousands of rows) and scanned EVERY 3-candle
+window in that entire range for FVGs - producing potentially thousands of
+overlapping zone overlays. Each is a semi-transparent filled rectangle;
+stacking thousands of them compounds into a solid color (exactly the
+solid blue seen), the sheer number of chart.createOverlay() calls and the
+POI payload sent over the websocket every 3s degrades performance
+progressively ("lightens up after some time"), and eventually the
+browser/app becomes unresponsive and restarts.
+
+Fixed with two independent safeguards:
+  1. Fetch a per-timeframe-appropriate number of DAYS (not a hardcoded 60
+     regardless of TF) - just enough to comfortably cover LOOKBACK_CANDLES
+     actual candles for that specific timeframe.
+  2. Slice the returned candle list down to the last LOOKBACK_CANDLES
+     entries in Python BEFORE scanning, regardless of how many the
+     Monitor actually returned - this is the real hard cap that
+     guarantees at most a few dozen FVG zones ever exist per symbol/TF,
+     no matter what get_historical_candles' exact day-to-candle
+     conversion does.
+"""
 from __future__ import annotations
 
 import logging
@@ -12,6 +40,13 @@ logger = logging.getLogger("poi_monitor.fvg_detector_worker")
 
 LOOKBACK_CANDLES = 60
 LEGACY_SCAN_TFS = ("4H", "1D", "1W", "1M")
+
+# Days to FETCH per timeframe - just enough to comfortably contain
+# LOOKBACK_CANDLES actual candles; the real cap is the slice below, this
+# is only to avoid over-fetching.
+_FETCH_DAYS_FOR_TF: Dict[str, int] = {
+    "1m": 1, "5m": 1, "15m": 2, "1H": 4, "4H": 12, "1D": 70, "1W": 450, "1M": 1900,
+}
 
 
 class FVGDetectorWorker:
@@ -44,9 +79,13 @@ class FVGDetectorWorker:
         return [tf for tf in ZONE_SOURCE_TFS if self.zone_source_tf_enabled.get(tf, False)]
 
     def _scan_tf(self, tf: str) -> List[POI]:
-        candles = self.mdm.get_historical_candles(self.symbol, tf, LOOKBACK_CANDLES)
+        days = _FETCH_DAYS_FOR_TF.get(tf, 5)
+        candles = self.mdm.get_historical_candles(self.symbol, tf, days)
         if not candles or len(candles) < 3:
             return []
+        # Hard cap: only ever scan the most recent LOOKBACK_CANDLES
+        # candles, no matter how many were actually returned.
+        candles = candles[-LOOKBACK_CANDLES:]
         found: List[POI] = []
         for index in range(2, len(candles)):
             first, third = candles[index - 2], candles[index]
@@ -79,7 +118,11 @@ class FVGDetectorWorker:
         return found
 
     def recompute(self) -> List[POI]:
-        if not self.strategy_enabled.get(POIType.FVG, self.enabled_types.get(POIType.FVG, False)):
+        wanted = (
+            self.strategy_enabled.get(POIType.FVG, self.enabled_types.get(POIType.FVG, False))
+            or self.display_enabled.get(POIType.FVG, False)
+        )
+        if not wanted:
             self._pois = {}
             self.on_poi_update(self.symbol, [])
             return []

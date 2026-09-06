@@ -1,4 +1,12 @@
-"""File 03.1 Order Block detector with selectable zone source timeframes."""
+"""File 03.1 Order Block detector with selectable zone source timeframes.
+
+PATH: engines/workers/poi/orderblock_detector_worker.py (REPLACE ENTIRE FILE)
+
+FIX (CRITICAL - same "days vs candle count" bug as fvg_detector_worker.py) -
+identical root cause and identical fix: fetch a per-TF-appropriate number
+of days, then hard-cap the scanned window to the most recent
+LOOKBACK_CANDLES candles regardless of how many were returned.
+"""
 from __future__ import annotations
 
 import logging
@@ -14,6 +22,10 @@ LOOKBACK_CANDLES = 60
 ATR_WINDOW = 14
 IMPULSE_MULTIPLIER = 1.8
 LEGACY_SCAN_TFS = ("4H", "1D", "1W", "1M")
+
+_FETCH_DAYS_FOR_TF: Dict[str, int] = {
+    "1m": 1, "5m": 1, "15m": 2, "1H": 4, "4H": 12, "1D": 70, "1W": 450, "1M": 1900,
+}
 
 
 def _true_range(candle, previous_close: float) -> float:
@@ -61,9 +73,13 @@ class OrderBlockDetectorWorker:
         return [tf for tf in ZONE_SOURCE_TFS if self.zone_source_tf_enabled.get(tf, False)]
 
     def _scan_tf(self, tf: str) -> List[POI]:
-        candles = self.mdm.get_historical_candles(self.symbol, tf, LOOKBACK_CANDLES)
+        days = _FETCH_DAYS_FOR_TF.get(tf, 5)
+        candles = self.mdm.get_historical_candles(self.symbol, tf, days)
         if not candles or len(candles) < ATR_WINDOW + 2:
             return []
+        # Hard cap: only ever scan the most recent LOOKBACK_CANDLES
+        # candles (plus a little headroom for the ATR warmup window).
+        candles = candles[-(LOOKBACK_CANDLES + ATR_WINDOW):]
         found: List[POI] = []
         for index in range(2, len(candles)):
             impulse = candles[index]
@@ -92,7 +108,11 @@ class OrderBlockDetectorWorker:
         return found
 
     def recompute(self) -> List[POI]:
-        if not self.strategy_enabled.get(POIType.ORDER_BLOCK, self.enabled_types.get(POIType.ORDER_BLOCK, False)):
+        wanted = (
+            self.strategy_enabled.get(POIType.ORDER_BLOCK, self.enabled_types.get(POIType.ORDER_BLOCK, False))
+            or self.display_enabled.get(POIType.ORDER_BLOCK, False)
+        )
+        if not wanted:
             self._pois = {}
             self.on_poi_update(self.symbol, [])
             return []

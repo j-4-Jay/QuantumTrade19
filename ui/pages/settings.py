@@ -2,22 +2,28 @@
 
 PATH: ui/pages/settings.py (REPLACE ENTIRE FILE)
 
-FIX v0.5.0-r11 - added a real Crosshair settings card (color, transparency,
-dashed/solid style, thickness, on/off toggle) to the Trading Defaults tab.
-
-FIX v0.5.0-r10 (carried forward) - page heading + tabs.list stay fixed;
-only the active tab's content scrolls (each rx.tabs.content gets
-flex=1/min_height=0/overflow_y=auto).
+FIX (merged cards) - poi_vertical_markers_card import/usage REMOVED - its
+settings are now inside poi_lines_card() per-TF. Grid updated accordingly
+(one fewer full-row card).
 """
 from __future__ import annotations
 import reflex as rx
 from state.app_state import AppState
 from ui.theme.glass import GLASS_CARD_3XL_STYLE
 from ui.components.deep_historical_data_card import deep_historical_data_card
-from ui.components.poi_engine_settings_card import poi_engine_settings_card
+from ui.components.poi_engine_settings_card import (
+    poi_timezone_card,
+    poi_lines_card,
+    poi_horizontal_style_card,
+    poi_zone_matrix_card,
+    poi_zone_types_card,
+    poi_custom_lines_card,
+    poi_visual_controls_card,
+)
 
 _SCROLL_CONTENT_STYLE = {
     "overflow_y": "auto",
+    "overflow_x": "hidden",
     "flex": "1",
     "min_height": "0",
     "width": "100%",
@@ -109,54 +115,99 @@ def _crosshair_settings_card() -> rx.Component:
             rx.spacer(),
             rx.hstack(
                 rx.text("On", font_size="0.78rem", color="var(--qt19-text-muted)"),
-                rx.switch(
-                    checked=AppState.trading_panel_crosshair_enabled,
-                    on_change=AppState.toggle_trading_panel_crosshair,
-                ),
+                rx.switch(checked=AppState.trading_panel_crosshair_enabled, on_change=AppState.toggle_trading_panel_crosshair),
                 spacing="2", align_items="center",
             ),
             width="100%", align_items="center",
         ),
-        rx.text(
-            "Controls the Trading Panel chart's crosshair lines (the lines that follow "
-            "your mouse over the candles).",
-            font_size="0.8rem", color="var(--qt19-text-muted)",
-        ),
+        rx.text("Controls the Trading Panel chart's crosshair lines.", font_size="0.8rem", color="var(--qt19-text-muted)"),
         rx.hstack(
             rx.text("Color:", font_size="0.82rem", font_weight="600"),
-            rx.input(
-                type="color",
-                value=AppState.trading_panel_crosshair_color,
-                on_change=AppState.set_trading_panel_crosshair_color,
-                width="40px", height="30px", padding="0", border="none", cursor="pointer",
-            ),
+            rx.input(type="color", value=AppState.trading_panel_crosshair_color, on_change=AppState.set_trading_panel_crosshair_color, width="40px", height="30px", padding="0", border="none", cursor="pointer"),
             rx.text("Style:", font_size="0.82rem", font_weight="600", margin_left="1rem"),
             rx.segmented_control.root(
-                rx.segmented_control.item("Dashed", value="dashed"),
+                rx.segmented_control.item("Dotted", value="dotted"),
                 rx.segmented_control.item("Solid", value="solid"),
-                value=AppState.trading_panel_crosshair_style,
-                on_change=AppState.set_trading_panel_crosshair_style,
-                size="1",
+                value=AppState.trading_panel_crosshair_style, on_change=AppState.set_trading_panel_crosshair_style, size="1",
             ),
             spacing="3", align_items="center", margin_top="0.5rem", wrap="wrap",
         ),
         rx.vstack(
             rx.text(f"Transparency: {AppState.trading_panel_crosshair_opacity}%", font_size="0.78rem"),
-            rx.slider(
-                default_value=[AppState.trading_panel_crosshair_opacity],
-                on_value_commit=AppState.set_trading_panel_crosshair_opacity,
-                min=0, max=100, width="100%",
-            ),
+            rx.slider(default_value=[AppState.trading_panel_crosshair_opacity], on_value_commit=AppState.set_trading_panel_crosshair_opacity, min=0, max=100, width="100%"),
             spacing="1", width="100%", margin_top="0.5rem",
         ),
         rx.vstack(
             rx.text(f"Thickness: {AppState.trading_panel_crosshair_thickness}px", font_size="0.78rem"),
-            rx.slider(
-                default_value=[AppState.trading_panel_crosshair_thickness],
-                on_value_commit=AppState.set_trading_panel_crosshair_thickness,
-                min=1, max=4, width="100%",
-            ),
+            rx.slider(default_value=[AppState.trading_panel_crosshair_thickness], on_value_commit=AppState.set_trading_panel_crosshair_thickness, min=1, max=4, width="100%"),
             spacing="1", width="100%", margin_top="0.5rem",
+        ),
+        spacing="2", width="100%", style=GLASS_CARD_3XL_STYLE,
+    )
+
+
+def _swatch(label: str, value: str, on_change) -> rx.Component:
+    return rx.hstack(
+        rx.input(type="color", value=value, on_change=on_change, width="34px", height="28px", padding="0", border="none", cursor="pointer"),
+        rx.text(label, font_size="0.76rem"),
+        spacing="2", align_items="center",
+    )
+
+
+def _candle_style_settings_card() -> rx.Component:
+    return rx.vstack(
+        rx.hstack(
+            rx.heading("Candle Style", size="4", color="var(--qt19-text-primary)"),
+            rx.spacer(),
+            rx.button("Reset to Premium Defaults", on_click=AppState.reset_candle_style_defaults, size="1", variant="soft"),
+            width="100%", align_items="center", wrap="wrap",
+        ),
+        rx.text(
+            "\u201cGradient fill\u201d isn't offered - the chart library only supports solid "
+            "colors natively. The premium look comes from a brighter border than the fill.",
+            font_size="0.78rem", color="var(--qt19-text-muted)",
+        ),
+        rx.hstack(
+            rx.text("Body Type:", font_size="0.82rem", font_weight="600"),
+            rx.select(
+                ["Solid", "Hollow (all)", "Up Hollow", "Down Hollow"],
+                value=rx.match(
+                    AppState.candle_style_mode,
+                    ("solid", "Solid"), ("hollow", "Hollow (all)"),
+                    ("up_hollow", "Up Hollow"), ("down_hollow", "Down Hollow"),
+                    "Solid",
+                ),
+                on_change=lambda v: AppState.set_candle_style_mode(
+                    rx.match(v, ("Solid", "solid"), ("Hollow (all)", "hollow"), ("Up Hollow", "up_hollow"), ("Down Hollow", "down_hollow"), "solid")
+                ),
+                width="160px",
+            ),
+            spacing="3", align_items="center", margin_top="0.5rem",
+        ),
+        rx.grid(
+            rx.vstack(
+                rx.text("Up (Bullish)", font_size="0.82rem", font_weight="700", color="#16C784"),
+                _swatch("Fill", AppState.candle_up_color, AppState.set_candle_up_color),
+                _swatch("Border", AppState.candle_up_border_color, AppState.set_candle_up_border_color),
+                _swatch("Wick", AppState.candle_up_wick_color, AppState.set_candle_up_wick_color),
+                spacing="2", width="100%", padding="0.6rem 0.7rem",
+                style={"background": "rgba(255,255,255,0.03)", "border": "1px solid var(--qt19-glass-border)", "border_radius": "0.65rem"},
+            ),
+            rx.vstack(
+                rx.text("Down (Bearish)", font_size="0.82rem", font_weight="700", color="#EA3943"),
+                _swatch("Fill", AppState.candle_down_color, AppState.set_candle_down_color),
+                _swatch("Border", AppState.candle_down_border_color, AppState.set_candle_down_border_color),
+                _swatch("Wick", AppState.candle_down_wick_color, AppState.set_candle_down_wick_color),
+                spacing="2", width="100%", padding="0.6rem 0.7rem",
+                style={"background": "rgba(255,255,255,0.03)", "border": "1px solid var(--qt19-glass-border)", "border_radius": "0.65rem"},
+            ),
+            columns=rx.breakpoints(initial="1", md="2"),
+            spacing="3", width="100%", margin_top="0.5rem",
+        ),
+        rx.hstack(
+            rx.text("No-Change Color:", font_size="0.78rem", font_weight="600"),
+            rx.input(type="color", value=AppState.candle_no_change_color, on_change=AppState.set_candle_no_change_color, width="34px", height="28px", padding="0", border="none", cursor="pointer"),
+            spacing="2", align_items="center", margin_top="0.5rem",
         ),
         spacing="2", width="100%", style=GLASS_CARD_3XL_STYLE,
     )
@@ -168,7 +219,7 @@ def _appearance_tab() -> rx.Component:
         _tab_transition_card(),
         _coming_soon_card("Theme", "6 selectable themes (Yellow/Saffron/Blue x Day/Night)."),
         columns=rx.breakpoints(initial="1", sm="1", md="2", lg="3"),
-        spacing="4", width="100%", margin_top="1rem", padding_bottom="1.5rem",
+        spacing="2", width="100%", margin_top="0.5rem", padding_bottom="1.5rem",
     )
 
 
@@ -178,7 +229,7 @@ def _data_connection_tab() -> rx.Component:
         _coming_soon_card("Symbols & Rows", "Choose which symbols appear on the Dashboard."),
         _coming_soon_card("Tick Bands & Alerts", "Per-symbol tick-size and alert-band configuration."),
         columns=rx.breakpoints(initial="1", sm="1", md="2", lg="2"),
-        spacing="4", width="100%", margin_top="1rem", padding_bottom="1.5rem",
+        spacing="2", width="100%", margin_top="0.5rem", padding_bottom="1.5rem",
     )
 
 
@@ -188,18 +239,26 @@ def _security_tab() -> rx.Component:
         _coming_soon_card("Notification Channels", "Telegram / Discord multi-recipient setup."),
         _coming_soon_card("Startup & Tray", "Run-on-startup and system tray behavior."),
         columns=rx.breakpoints(initial="1", sm="1", md="2", lg="3"),
-        spacing="4", width="100%", margin_top="1rem", padding_bottom="1.5rem",
+        spacing="2", width="100%", margin_top="0.5rem", padding_bottom="1.5rem",
     )
 
 
 def _trading_tab() -> rx.Component:
+    _full_row = {"grid_column": "1 / -1"}
     return rx.grid(
-        poi_engine_settings_card(),
+        poi_timezone_card(),
         _crosshair_settings_card(),
+        _candle_style_settings_card(),
+        rx.box(poi_lines_card(), style=_full_row, width="100%"),
+        poi_horizontal_style_card(),
+        poi_zone_matrix_card(),
+        rx.box(poi_zone_types_card(), style=_full_row, width="100%"),
+        poi_custom_lines_card(),
+        poi_visual_controls_card(),
         _coming_soon_card("Signal Bias Filter", "Market-aware auto-disable rules for filters."),
         _coming_soon_card("Paper Trading", "Paper/Live toggle defaults and simulator settings."),
-        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="2"),
-        spacing="4", width="100%", margin_top="1rem", padding_bottom="1.5rem",
+        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="3"),
+        spacing="2", width="100%", margin_top="0.5rem", padding_bottom="1.5rem",
     )
 
 
@@ -228,4 +287,5 @@ def settings_page() -> rx.Component:
         ),
         width="100%", height="100%", spacing="3",
         display="flex", flex_direction="column", overflow="hidden",
+        on_mount=AppState.load_poi_settings,
     )

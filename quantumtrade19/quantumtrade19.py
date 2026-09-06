@@ -2,42 +2,34 @@
 
 PATH: quantumtrade19/quantumtrade19.py  (REPLACE ENTIRE FILE)
 
-FIX v0.4.48 - "Trading Panel chart card stops at row-1 height instead of
-filling the page" - found ANOTHER broken link in the height chain (in
-addition to the ui/pages/trading_panel.py and trading_panel_chart.py
-flex/height fixes already applied): _shell_body()'s per-tab content
-wrapper (the rx.box wrapping all five pages) had width="100%" but NO
-height at all, so it always sized itself to content height regardless of
-what any child page tried to declare - every child's own height="100%"
-was resolving against this height-less parent, collapsing to "auto"
-every time. Added height="100%", flex="1", min_height="0", display=flex/
-flex_direction=column, and overflow_y="auto" (so Dashboard/Journal/Alerts/
-Settings, which are naturally content-height and may exceed the viewport,
-can still scroll internally exactly as before - only Trading Panel, which
-already declares its own overflow="hidden" internally, actually uses the
-new fill-height behavior).
+FIX (canvas background per page + no page-level scroll) - the per-tab
+content wrapper's `overflow_y="auto"` (which used to let the WHOLE page
+scroll as one region) is now `overflow="hidden"` - scrolling now only
+ever happens INSIDE a page's own cards (see dashboard.py/journal.py/
+alerts.py/settings.py), never at the page level. Also added a per-tab
+canvas background (_CANVAS_BG_FOR_TAB) applied to this same wrapper, so
+each page sits on its own distinct, fixed backdrop that cards visually
+float on top of - this background never scrolls since the wrapper that
+carries it no longer scrolls either.
 
-NOTE: this is very likely still not the FULL fix - qt19_page_shell()
-(ui/components/page_shell.py) sits between this file's outer
-height="100vh" box and this wrapper, and I don't have that file's source
-yet. If the chart still doesn't fill the page after this change, that
-file is almost certainly the remaining missing link in the chain.
+FIX v0.4.48 (carried forward) - this wrapper has height="100%", flex="1",
+min_height="0" so Trading Panel's chart can fill available height;
+display=flex/flex_direction=column preserved.
 
 CHANGE (v0.3.8.2, unchanged): trading_panel_context_menu() stays mounted
-as a direct sibling of the main transformed screen box, at the true top
-level of index()'s returned fragment - NOT nested inside it, so its
-position:fixed coordinates are measured from the real viewport instead of
-the screen box's own CSS transform context.
+as a direct sibling of the main transformed screen box.
 """
 from __future__ import annotations
 
+
 from config.logging_config import configure_logging
 
-# Must run before importing app state/components, which may construct service
-# singletons or schedule background work during import/on_load.
+
 configure_logging()
 
+
 import reflex as rx
+
 
 from state.app_state import AppState
 from ui.theme.global_css import qt19_global_css
@@ -59,6 +51,26 @@ from ui.components.page_shell import qt19_page_shell
 from ui.components.symbol_detail_popup import symbol_detail_popup
 
 
+# One distinct, FIXED canvas background per page - never scrolls (the
+# wrapper carrying this background no longer scrolls at all; only
+# individual cards inside each page scroll their own content).
+_CANVAS_BG_FOR_TAB = {
+    "Dashboard": "radial-gradient(circle at 15% 0%, rgba(120,170,255,0.05) 0%, transparent 55%)",
+    "Trading Panel": "radial-gradient(circle at 85% 0%, rgba(120,255,180,0.05) 0%, transparent 55%)",
+    "Journal & Reports": "radial-gradient(circle at 15% 100%, rgba(255,190,120,0.05) 0%, transparent 55%)",
+    "Alerts": "radial-gradient(circle at 85% 100%, rgba(255,120,140,0.05) 0%, transparent 55%)",
+    "Settings": "radial-gradient(circle at 50% 50%, rgba(180,140,255,0.05) 0%, transparent 60%)",
+}
+
+
+def _canvas_background() -> rx.Var:
+    return rx.match(
+        AppState.active_tab,
+        *[(tab, bg) for tab, bg in _CANVAS_BG_FOR_TAB.items()],
+        "transparent",
+    )
+
+
 def _shell_body() -> rx.Component:
     return rx.fragment(
         rx.box(
@@ -75,10 +87,12 @@ def _shell_body() -> rx.Component:
             min_height="0",
             display="flex",
             flex_direction="column",
-            overflow_y="auto",
+            overflow="hidden",
+            background=_canvas_background(),
         ),
         symbol_detail_popup(),
     )
+
 
 
 def _current_screen() -> rx.Component:
@@ -109,6 +123,7 @@ def _current_screen() -> rx.Component:
     )
 
 
+
 def index() -> rx.Component:
     return rx.fragment(
         qt19_global_css(),
@@ -133,6 +148,7 @@ def index() -> rx.Component:
         ),
         trading_panel_context_menu(),
     )
+
 
 
 app = rx.App()

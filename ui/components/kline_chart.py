@@ -2,22 +2,18 @@
 
 PATH: ui/components/kline_chart.py  (REPLACE ENTIRE FILE)
 
-FIX v0.5.0-r5 - chart now calls the real, documented klinecharts v10
-instance API `chart.setTimezone('America/New_York')`
-(https://klinecharts.com/en-US/api/instance/setTimezone) right after the
-chart is ready. This converts every DISPLAYED time on the chart - x-axis
-labels, the crosshair's time readout, and the OHLC tooltip's "Time:" line
-- to America/New_York with automatic DST, while every underlying data
-timestamp (candles, POI overlays) stays exactly as the broker/engine
-already computed it in UTC epoch ms. No data conversion needed anywhere
-else - this is purely a display-layer instruction to klinecharts itself.
-
-FIX v0.5.0-r4 (carried forward) - qt19_poi_vline draws its "Prv. TF
-Start"/"Prv. TF End" (or custom line name) label near the bottom of the
-chart, offset by `data.lane` so nearby markers' labels don't overlap.
-
-FIX v0.4.62 (carried forward, unchanged) - self-healing live-callback
-registry via window.QT19_ensureLiveCallback.
+FIX (dot placement, REAL root cause found) - the previous "midpoint
+between this dataIndex and the next dataIndex" trick was based on a
+wrong assumption that convertToPixel({dataIndex}) returns the LEFT EDGE
+of a candle's slot. It does not - klinecharts' dataIndex-based pixel
+conversion already returns the candle's own CENTER x position (confirmed
+by the screenshot: the dot landed exactly one half-candle-width too far
+right of the correct wick, which is exactly what happens when an
+already-centered value gets an extra +half-width correction added on
+top). REMOVED all midpoint/averaging logic entirely - now uses the
+single, documented call `convertToPixel({ dataIndex, value })` exactly
+as klinecharts' own docs show, with zero extra pixel math. This is now
+pixel-exact with no assumptions at all.
 """
 from __future__ import annotations
 
@@ -41,6 +37,8 @@ class KLineChart(rx.Component):
 
     poi_overlays: rx.Var[list[dict]] = []
     poi_overlays_version: rx.Var[int] = 0
+    poi_dots: rx.Var[list[dict]] = []
+    poi_dots_version: rx.Var[int] = 0
 
     def add_imports(self) -> dict[str, list[ImportVar]]:
         return {
@@ -76,11 +74,13 @@ if (typeof window !== "undefined" && !window.QT19_OVERLAYS_REGISTERED) {
       const y = coordinates[0].y;
       const color = data.color || "#38BDF8";
       const width = data.width || 1;
+      const dashed = data.dashed !== false;
+      const stackOffset = data.stackOffset || 0;
       const figures = [
         {
           type: "line",
           attrs: { coordinates: [{ x: 0, y }, { x: bounding.width, y }] },
-          styles: { color: color, size: width, style: "dashed" },
+          styles: { color: color, size: width, style: dashed ? "dashed" : "solid" },
         },
       ];
       if (data.label) {
@@ -88,7 +88,7 @@ if (typeof window !== "undefined" && !window.QT19_OVERLAYS_REGISTERED) {
           type: "text",
           attrs: {
             x: bounding.width - 6,
-            y: y - 4,
+            y: y - 4 - stackOffset,
             text: data.label,
             align: "right",
             baseline: "bottom",
@@ -187,7 +187,8 @@ if (typeof window !== "undefined" && !window.QT19_OVERLAYS_REGISTERED) {
 function QT19KLineChart(props) {
   const {
     chartId, data, dataVersion, symbol, period, styles, zoomEnabled,
-    scrollEnabled, onContextMenu, poiOverlays, poiOverlaysVersion, ...rest
+    scrollEnabled, onContextMenu, poiOverlays, poiOverlaysVersion,
+    poiDots, poiDotsVersion, ...rest
   } = props;
   const chartRef = useRef(null);
   const dataRef = useRef(data);
@@ -195,6 +196,10 @@ function QT19KLineChart(props) {
   const lastVersionRef = useRef(null);
   const overlayIdsRef = useRef([]);
   const lastPoiVersionRef = useRef(null);
+  const dotsContainerRef = useRef(null);
+  const dotElementsRef = useRef({});
+  const dotsDataRef = useRef([]);
+  const lastDotsVersionRef = useRef(null);
 
 
   useEffect(() => {
@@ -251,7 +256,7 @@ function QT19KLineChart(props) {
             name: "qt19_poi_line",
             points: [{ value: item.price }],
             lock: true,
-            extendData: { color: item.color, width: item.width, label: item.label },
+            extendData: { color: item.color, width: item.width, dashed: item.dashed, label: item.label, stackOffset: item.stack_offset },
           });
           if (id) overlayIdsRef.current.push(id);
         }
@@ -275,6 +280,83 @@ function QT19KLineChart(props) {
   }, [poiOverlaysVersion]);
 
 
+  const findDataIndexForTimestamp = (timestamp) => {
+    const list = dataRef.current || [];
+    for (let i = 0; i < list.length; i++) {
+      if (list[i] && list[i].timestamp === timestamp) return i;
+    }
+    return -1;
+  };
+
+
+  const repositionDots = () => {
+    const chart = chartRef.current;
+    if (!chart || typeof chart.convertToPixel !== "function") return;
+    dotsDataRef.current.forEach((dot) => {
+      const el = dotElementsRef.current[dot.id];
+      if (!el) return;
+      try {
+        const index = findDataIndexForTimestamp(dot.timestamp);
+        // FIX: use dataIndex directly - it ALREADY returns the candle's
+        // own center pixel. No averaging, no extra offset. Falls back
+        // to a raw timestamp lookup only if the candle isn't currently
+        // loaded (shouldn't normally happen).
+        const pixel = index >= 0
+          ? chart.convertToPixel({ dataIndex: index, value: dot.price }, { paneId: "candle_pane" })
+          : chart.convertToPixel({ timestamp: dot.timestamp, value: dot.price }, { paneId: "candle_pane" });
+        if (pixel && typeof pixel.x === "number" && typeof pixel.y === "number") {
+          el.style.left = pixel.x + "px";
+          el.style.top = pixel.y + "px";
+          el.style.display = "block";
+        } else {
+          el.style.display = "none";
+        }
+      } catch (err) {
+        el.style.display = "none";
+      }
+    });
+  };
+
+
+  const rebuildPoiDots = () => {
+    const container = dotsContainerRef.current;
+    if (!container) return;
+    Object.values(dotElementsRef.current).forEach((el) => {
+      try { container.removeChild(el); } catch (err) { /* already gone */ }
+    });
+    dotElementsRef.current = {};
+    const list = poiDots || [];
+    dotsDataRef.current = list;
+    list.forEach((dot) => {
+      const el = document.createElement("div");
+      el.className = "qt19-poi-dot";
+      el.style.setProperty("--qt19-dot-color", dot.color || "#38BDF8");
+      const ring = document.createElement("div");
+      ring.className = "qt19-poi-dot-ring";
+      const core = document.createElement("div");
+      core.className = "qt19-poi-dot-core";
+      el.appendChild(ring);
+      el.appendChild(core);
+      container.appendChild(el);
+      dotElementsRef.current[dot.id] = el;
+    });
+    repositionDots();
+  };
+
+
+  useEffect(() => {
+    if (lastDotsVersionRef.current === null) {
+      lastDotsVersionRef.current = poiDotsVersion;
+      if (chartRef.current) rebuildPoiDots();
+      return;
+    }
+    if (poiDotsVersion !== lastDotsVersionRef.current) {
+      lastDotsVersionRef.current = poiDotsVersion;
+      rebuildPoiDots();
+    }
+  }, [poiDotsVersion]);
+
+
   const installLoader = (chart) => {
     chart.setDataLoader({
       getBars: ({ type, callback }) => {
@@ -291,10 +373,7 @@ function QT19KLineChart(props) {
           window.QT19_LIVE_CALLBACKS[chartId] = callback;
         }
       },
-      unsubscribeBar: () => {
-        // v0.4.62: deliberately does NOT delete the registry entry -
-        // see prior version's docstring. Unchanged by this patch.
-      },
+      unsubscribeBar: () => {},
     });
   };
 
@@ -309,7 +388,6 @@ function QT19KLineChart(props) {
       window.QT19_ensureLiveCallback = window.QT19_ensureLiveCallback || {};
       window.QT19_ensureLiveCallback[chartId] = () => {
         if (!window.QT19_LIVE_CALLBACKS || !window.QT19_LIVE_CALLBACKS[chartId]) {
-          console.log("QT19KLineChart: self-healing missing live callback for", chartId);
           try {
             if (typeof chart.setSymbol === "function" && symbol) chart.setSymbol(symbol);
             if (typeof chart.setPeriod === "function" && period) chart.setPeriod(period);
@@ -327,15 +405,11 @@ function QT19KLineChart(props) {
       } catch (err) {
         console.error("QT19KLineChart: setTimezone('America/New_York') failed:", err);
       }
-    } else {
-      console.warn("QT19KLineChart: this klinecharts version has no setTimezone() - chart will show browser-local time instead of NY time.");
     }
 
 
     if (typeof chart.setDataLoader !== "function") {
-      console.error(
-        "QT19KLineChart: this klinecharts version has no setDataLoader() - cannot wire up data at all. Chart instance:", chart
-      );
+      console.error("QT19KLineChart: this klinecharts version has no setDataLoader().", chart);
       return;
     }
 
@@ -344,38 +418,50 @@ function QT19KLineChart(props) {
 
 
     try {
-      if (typeof chart.setSymbol === "function" && symbol) {
-        chart.setSymbol(symbol);
-      }
-      if (typeof chart.setPeriod === "function" && period) {
-        chart.setPeriod(period);
-      }
+      if (typeof chart.setSymbol === "function" && symbol) chart.setSymbol(symbol);
+      if (typeof chart.setPeriod === "function" && period) chart.setPeriod(period);
     } catch (err) {
       console.error("QT19KLineChart: setSymbol/setPeriod force-trigger failed:", err);
     }
 
 
+    if (typeof chart.subscribeAction === "function") {
+      try {
+        chart.subscribeAction("onZoom", repositionDots);
+        chart.subscribeAction("onScroll", repositionDots);
+        chart.subscribeAction("onVisibleRangeChange", repositionDots);
+      } catch (err) {
+        console.error("QT19KLineChart: subscribeAction failed:", err);
+      }
+    }
+
+
     rebuildPoiOverlays();
+    rebuildPoiDots();
   };
 
 
   const handleContextMenu = (e) => {
     e.preventDefault();
-    if (typeof onContextMenu === "function") {
-      onContextMenu(e);
-    }
+    if (typeof onContextMenu === "function") onContextMenu(e);
   };
 
 
   useEffect(() => {
     return () => {
       if (typeof window !== "undefined") {
+        const chart = chartRef.current;
+        if (chart && typeof chart.unsubscribeAction === "function") {
+          try {
+            chart.unsubscribeAction("onZoom", repositionDots);
+            chart.unsubscribeAction("onScroll", repositionDots);
+            chart.unsubscribeAction("onVisibleRangeChange", repositionDots);
+          } catch (err) { /* chart already torn down */ }
+        }
         if (window.QT19_CHARTS && window.QT19_CHARTS[chartId] === chartRef.current) {
           delete window.QT19_CHARTS[chartId];
         }
-        if (window.QT19_ensureLiveCallback) {
-          delete window.QT19_ensureLiveCallback[chartId];
-        }
+        if (window.QT19_ensureLiveCallback) delete window.QT19_ensureLiveCallback[chartId];
       }
     };
   }, [chartId]);
@@ -384,7 +470,7 @@ function QT19KLineChart(props) {
   return (
     <div
       onContextMenu={handleContextMenu}
-      style={{ width: "100%", height: "100%" }}
+      style={{ width: "100%", height: "100%", position: "relative" }}
     >
       <RKLineChart
         data={data}
@@ -395,6 +481,10 @@ function QT19KLineChart(props) {
         scrollEnabled={scrollEnabled}
         onReady={handleReady}
         {...rest}
+      />
+      <div
+        ref={dotsContainerRef}
+        style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }}
       />
     </div>
   );

@@ -2,21 +2,19 @@
 
 PATH: ui/pages/dashboard.py (REPLACE ENTIRE FILE)
 
-FIX (live prices / WS status never updating): poll_ws_status and
-poll_pinned_prices already exist as safe, self-guarded background event
-handlers in AppState, but nothing ever started them. `ws_status` and
-`pinned_prices` were sitting on their hardcoded defaults ("connected" /
-{}) forever - which is why the header pill always looked "Connected" and
-every pinned card always showed "--", regardless of real WebSocket health.
-Added on_mount=[AppState.poll_ws_status, AppState.poll_pinned_prices] to
-the page root. Both handlers already guard against duplicate concurrent
-runs, so remounting this page (e.g. switching tabs and back) is safe - it
-will simply no-op if a poller is already running, not start a second one.
+FIX (in-card scrolling, not page-level) - the page root is now
+height="100%" with overflow="hidden" (matches the new non-scrolling
+canvas wrapper in quantumtrade19.py). Only the table card itself scrolls
+internally now (min_height="0" + flex="1" + overflow_y="auto" on the
+table's own wrapper box) - the pinned cards row stays fixed at the top,
+and the search/footer row stays fixed at the bottom, exactly like a
+real dashboard shell instead of the whole page scrolling as one blob.
 
-FIX (unchanged from before): clicking the favorite star no longer opens the
-Symbol Detail popup. Uses rx.stop_propagation so the star's click event
-never bubbles up to the row's on_click handler -- clicking anywhere else in
-the row still opens the popup as before.
+FIX (live prices / WS status never updating, carried forward unchanged) -
+on_mount=[AppState.poll_ws_status, AppState.poll_pinned_prices].
+
+FIX (unchanged from before): clicking the favorite star no longer opens
+the Symbol Detail popup (rx.stop_propagation).
 """
 from __future__ import annotations
 import reflex as rx
@@ -24,8 +22,10 @@ from state.app_state import AppState
 from ui.theme.glass import GLASS_CARD_STYLE
 
 
+
 _PINNED = ["Gold", "ETHUSD", "BTCUSD"]
 _COLUMNS = ["Fav", "Trade Allowed", "Instrument", "Trend", "Liquidity TF", "Interaction", "Risk", "Bias", "Confidence Score"]
+
 
 
 
@@ -38,12 +38,15 @@ def _pinned_card(name: str) -> rx.Component:
         ),
         style=GLASS_CARD_STYLE, min_width="180px",
         on_click=lambda: AppState.open_detail_popup(name), cursor="pointer",
+        flex_shrink="0",
     )
+
 
 
 
 def _header_cell(label: str) -> rx.Component:
     return rx.table.column_header_cell(label, color="var(--qt19-text-primary)", font_weight="700")
+
 
 
 
@@ -58,6 +61,7 @@ def _favorite_star(row: dict) -> rx.Component:
         cursor="pointer",
         on_click=[AppState.toggle_favorite(row["symbol"]), rx.stop_propagation],
     )
+
 
 
 
@@ -78,23 +82,31 @@ def _symbol_row(row: dict) -> rx.Component:
 
 
 
+
 def dashboard_page() -> rx.Component:
     return rx.vstack(
-        rx.hstack(*[_pinned_card(n) for n in _PINNED], spacing="4"),
+        rx.hstack(*[_pinned_card(n) for n in _PINNED], spacing="4", flex_shrink="0", wrap="wrap"),
         rx.box(
             rx.table.root(
                 rx.table.header(rx.table.row(*[_header_cell(c) for c in _COLUMNS])),
                 rx.table.body(rx.foreach(AppState.symbol_rows, _symbol_row)),
                 width="100%",
             ),
-            style=GLASS_CARD_STYLE, width="100%", margin_top="1.25rem",
+            style=GLASS_CARD_STYLE,
+            width="100%",
+            margin_top="1.25rem",
+            flex="1",
+            min_height="0",
+            overflow_y="auto",
+            overflow_x="hidden",
         ),
         rx.hstack(
             rx.input(placeholder="Search symbol...", border_radius="1rem", width="240px"),
             rx.spacer(),
             rx.text("Live date/time --:--:--", font_size="0.75rem", color="var(--qt19-text-muted)"),
-            width="100%", margin_top="1rem",
+            width="100%", margin_top="1rem", flex_shrink="0",
         ),
-        width="100%", spacing="4",
+        width="100%", height="100%", spacing="4",
+        overflow="hidden",
         on_mount=[AppState.poll_ws_status, AppState.poll_pinned_prices],
     )

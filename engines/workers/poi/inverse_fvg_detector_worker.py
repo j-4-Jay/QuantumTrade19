@@ -1,4 +1,12 @@
-"""File 03.1 Inverse FVG detector preserving source-timeframe metadata."""
+"""File 03.1 Inverse FVG detector preserving source-timeframe metadata.
+
+PATH: engines/workers/poi/inverse_fvg_detector_worker.py (REPLACE ENTIRE FILE)
+
+FIX (Display/Strategy independence) - same fix as the other zone
+workers: recompute() now runs whenever EITHER display_enabled OR
+strategy_enabled wants Inverse FVG, not only when strategy_enabled is
+true.
+"""
 from __future__ import annotations
 
 import logging
@@ -54,7 +62,11 @@ class InverseFVGDetectorWorker:
         return cf(candles[-1], "close") if candles else None
 
     def recompute(self) -> List[POI]:
-        if not self.strategy_enabled.get(POIType.INVERSE_FVG, self.enabled_types.get(POIType.INVERSE_FVG, False)):
+        wanted = (
+            self.strategy_enabled.get(POIType.INVERSE_FVG, self.enabled_types.get(POIType.INVERSE_FVG, False))
+            or self.display_enabled.get(POIType.INVERSE_FVG, False)
+        )
+        if not wanted:
             self._pois = {}
             self.on_poi_update(self.symbol, [])
             return []

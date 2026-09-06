@@ -2,26 +2,29 @@
 
 PATH: engines/workers/poi/poi_level_calculator_worker.py (REPLACE ENTIRE FILE)
 
-FIX (r2) - "only 4H and PDH/PDL work, Week/Month don't" root cause: the
-NY-bucketing helper required the previous NY period to be provably FULLY
-ENDED via a strict wall-clock check (`period_end <= now_ny`) before it
-would use it. That's a STRICTER requirement than the original, already-
-locked UTC path ever had - the UTC path just trusts `candles[-2]` (the
-second-to-last available candle) is "the previous one" without
-independently re-verifying wall-clock completion. For Week/Month, local
-historical depth is often just barely enough to have 2 total buckets but
-not 2 *provably complete* ones under the strict check, so it silently
-returned None. Fixed by matching the UTC path's exact trust model: sort
-all NY buckets chronologically by period start and simply take the
-second-to-last one - no separate "is it really over yet" re-check.
+FIX (r3) - REAL root cause of "only PDH/PDL and 4H work, nothing else
+does even when Display is turned ON" found: `is_type_ready()` returned
+False whenever `strategy_enabled` was False for that POI type -
+REGARDLESS of `display_enabled`. Since only PDH/PDL/4H_HIGH/4H_LOW
+default to strategy_enabled=True (see poi_types.py's
+DEFAULT_STRATEGY_ENABLED), every other line type (Week/Month/1H/15m/5m/
+1m) was NEVER EVEN COMPUTED, no matter what the Display checkbox said -
+so turning Display ON for those had zero visible effect. This also
+explains the "checkboxes look like they auto-revert" symptom: the
+checkbox itself was fine, but the underlying POI simply never existed to
+render, which looked like the toggle "didn't take."
 
-NOTE for 1H/15m/5m/1m lines: these are NOT part of this NY-rebucketing
-logic at all (see _NY_DERIVED_TFS below) - they use the exact same code
-path in both timezone modes, unchanged. If they're not showing, that's
-because P1H/P15m/P5m/P1m default to Display=OFF (only PDH/PDL, 4H, Week,
-Month default ON per poi_types.py's DEFAULT_DISPLAY_ENABLED) - turn on
-their card's Display checkbox in Settings, that's expected behavior, not
-a bug.
+This directly violates the locked 03.1 spec (Scope A3): "Display ON/OFF
+affects chart rendering only. Strategy ON/OFF controls eligibility for
+POI/setup logic" - the two are supposed to be fully independent switches
+on TOP of a POI that's already being computed, not gates on whether it
+gets computed AT ALL.
+
+Fixed: a POI type is now computed whenever EITHER display_enabled OR
+strategy_enabled is true for it (compute it if ANYONE needs it), fully
+decoupling "is this worth calculating" from "which of the two uses is it
+for." Applied to both line types (is_type_ready) and Flip types
+(_compute_flip_types) - same bug, same fix, in both places in this file.
 """
 from __future__ import annotations
 
@@ -58,10 +61,6 @@ LINE_MAPPING: Dict[str, tuple[str, str]] = {
     POIType.MONTH_HIGH: ("1M", "high"), POIType.MONTH_LOW: ("1M", "low"),
 }
 
-# Only these 4 timeframes actually differ between UTC mode and NY mode -
-# 1m/5m/15m/1H are mathematically identical in both (NY is always a
-# whole number of hours behind UTC, so sub-hour and hour boundaries land
-# on the same real-world instant either way).
 _NY_DERIVED_TFS = {"4H", "1D", "1W", "1M"}
 _NY_LOOKBACK_DAYS_FOR_TF: Dict[str, int] = {"4H": 6, "1D": 4, "1W": 24, "1M": 97}
 
@@ -92,7 +91,7 @@ def _ny_period_key(tf: str, ny_dt: datetime.datetime):
     if tf == "1D":
         return ny_dt.date()
     if tf == "1W":
-        return ny_dt.date() - datetime.timedelta(days=ny_dt.weekday())  # Monday
+        return ny_dt.date() - datetime.timedelta(days=ny_dt.weekday())
     if tf == "1M":
         return (ny_dt.year, ny_dt.month)
     raise ValueError(f"Unsupported NY-derived timeframe: {tf}")
@@ -113,13 +112,6 @@ def _ny_period_start(tf: str, key) -> datetime.datetime:
 
 
 def _compute_ny_bucketed_prev_period(mdm: MarketDataMonitorLike, symbol: str, tf: str):
-    """Rebuckets the existing (already-locked, UTC-underneath) '1H' HTF
-    candle series into real America/New_York calendar periods, entirely
-    in-memory in this worker. Returns (high, low, source_ts_ms) for the
-    period immediately before the most recent one - matching the exact
-    same 'second-to-last is previous' trust model the original UTC path
-    already used via candles[-2], instead of independently re-verifying
-    wall-clock completion (which was the r1 bug)."""
     if _NY_TZ is None:
         return None
     hourly = mdm.get_historical_candles(symbol, "1H", _NY_LOOKBACK_DAYS_FOR_TF[tf])
@@ -168,7 +160,12 @@ class POILevelCalculatorWorker:
         self.availability = probe_htf_availability(self.mdm, self.symbol)
 
     def is_type_ready(self, poi_type: str) -> bool:
-        if not self.strategy_enabled.get(poi_type, False):
+        """FIX (r3): a POI type is worth computing if EITHER Display OR
+        Strategy wants it - not only when Strategy is on. This is what
+        makes Display and Strategy genuinely independent, per the locked
+        03.1 spec."""
+        wanted = self.display_enabled.get(poi_type, False) or self.strategy_enabled.get(poi_type, False)
+        if not wanted:
             return False
         source_tf = POI_SOURCE_TF.get(poi_type)
         if source_tf is None:
@@ -213,7 +210,7 @@ class POILevelCalculatorWorker:
                 continue
             if len(previous) == 3:
                 high, low, source_ts = previous
-                index = -1  # NY-bucketed periods have no meaningful HTF-series index
+                index = -1
             else:
                 high, low, index, source_ts = previous
             results.append(self._line_poi(poi_type, high if side == "high" else low, tf, index, source_ts))
@@ -221,8 +218,14 @@ class POILevelCalculatorWorker:
 
     def _compute_flip_types(self) -> List[POI]:
         results: List[POI] = []
-        support_on = self.strategy_enabled.get(POIType.SUPPORT_FLIP, False)
-        resistance_on = self.strategy_enabled.get(POIType.RESISTANCE_FLIP, False)
+        support_on = (
+            self.strategy_enabled.get(POIType.SUPPORT_FLIP, False)
+            or self.display_enabled.get(POIType.SUPPORT_FLIP, False)
+        )
+        resistance_on = (
+            self.strategy_enabled.get(POIType.RESISTANCE_FLIP, False)
+            or self.display_enabled.get(POIType.RESISTANCE_FLIP, False)
+        )
         if not (support_on or resistance_on):
             return results
         for tf in self._selected_flip_tfs():
@@ -239,7 +242,7 @@ class POILevelCalculatorWorker:
                             poi_type=POIType.SUPPORT_FLIP, role="support", source_tf=tf, price=cf(source, "high"),
                             formed_at_index=index, formed_at_ts=_source_timestamp(source),
                             display_enabled=self.display_enabled.get(POIType.SUPPORT_FLIP, tf in ("1m", "15m")),
-                            strategy_enabled=True,
+                            strategy_enabled=self.strategy_enabled.get(POIType.SUPPORT_FLIP, False),
                             metadata={"source_kind": "broken_swing_high", "source_tf": tf, "broker_boundary": "UTC"},
                         ))
                         break
@@ -252,7 +255,7 @@ class POILevelCalculatorWorker:
                             poi_type=POIType.RESISTANCE_FLIP, role="resistance", source_tf=tf, price=cf(source, "low"),
                             formed_at_index=index, formed_at_ts=_source_timestamp(source),
                             display_enabled=self.display_enabled.get(POIType.RESISTANCE_FLIP, tf in ("1m", "15m")),
-                            strategy_enabled=True,
+                            strategy_enabled=self.strategy_enabled.get(POIType.RESISTANCE_FLIP, False),
                             metadata={"source_kind": "broken_swing_low", "source_tf": tf, "broker_boundary": "UTC"},
                         ))
                         break

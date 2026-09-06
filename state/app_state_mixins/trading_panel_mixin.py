@@ -3,28 +3,15 @@
 TARGET PATH: D:\\QuantumTrade19\\state\\app_state_mixins\\trading_panel_mixin.py
 REPLACE THE ENTIRE FILE.
 
-FIX v0.5.0-r11 - added trading_panel_crosshair_* settings (color, opacity,
-dashed/solid style, thickness, on/off) wired into trading_panel_styles'
-new "crosshair" key. klinecharts v10 applies chart-level styles.crosshair
-reactively through the existing `styles` prop already flowing into
-KLineChart - no new JS plumbing needed, exactly like the existing
-grid/candle-color/day-night styling that already worked this way.
-
-FIX v0.4.62 (carried forward) - every poll tick now calls
-window.QT19_ensureLiveCallback BEFORE attempting to use the live push
-callback - self-heals the registration if React StrictMode's remount
-cycle ever leaves it empty.
-
-FIX v0.4.60 (carried forward) - throttled success/failure console logging
-on the push side (first 5 calls only).
-
-FIX v0.4.59 (carried forward) - trading_panel_data_version, incremented
-only inside refresh_trading_panel_chart() (a genuine full reload), never
-inside build_live_ohlc_update() (the 0.5s poll).
-
-FIX v0.4.54 (carried forward) - klinecharts v10.0.2 removed updateData()/
-applyNewData(); live ticks go through the callback stored in
-window.QT19_LIVE_CALLBACKS via subscribeBar().
+FIX (chart background auto-theme + Change Mode submenu) - added
+trading_panel_bg_mode ("auto" | one of the 8 app theme keys | "white" |
+"black", default "auto") and trading_panel_bg_submenu_open. When "auto",
+the chart background AND its day/night contrast (grid/axis/crosshair
+text) follow the app's CURRENT global theme automatically. Selecting an
+explicit theme/White/Black from the right-click "Change Mode" submenu
+overrides both. trading_panel_bg_color is the resolved CSS color;
+trading_panel_bg_mode_options feeds the submenu's list (all 8 themes +
+White + Black, each with its own swatch color).
 """
 from __future__ import annotations
 
@@ -35,6 +22,7 @@ import time
 
 import reflex as rx
 
+from config.settings import THEMES, THEME_LABELS
 from state.app_state_mixins.shared import (
     engine,
     TRADING_PANEL_CHART_ID,
@@ -44,6 +32,13 @@ from state.app_state_mixins.shared import (
 )
 
 _TF_DURATION_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000}
+
+_CANDLE_TYPE_MAP = {
+    "solid": "candle_solid",
+    "hollow": "candle_stroke",
+    "up_hollow": "candle_up_stroke",
+    "down_hollow": "candle_down_stroke",
+}
 
 
 def _today_str() -> str:
@@ -71,10 +66,6 @@ def _format_eta(seconds) -> str:
 
 
 def _hex_to_rgba(hex_color: str, opacity_pct: int) -> str:
-    """Converts a '#RRGGBB' color plus a 0-100 opacity percent into an
-    'rgba(r,g,b,a)' string klinecharts' style objects accept. Falls back
-    to the raw color unchanged if it isn't a recognizable hex string
-    (e.g. already 'rgba(...)' from an older saved setting)."""
     color = (hex_color or "").strip()
     if not color.startswith("#") or len(color) not in (4, 7):
         return color
@@ -201,7 +192,48 @@ class TradingPanelMixin(rx.State, mixin=True):
         self.trading_panel_follow_live = not self.trading_panel_follow_live
         engine.security.persistence.save({"trading_panel_follow_live": self.trading_panel_follow_live})
 
-    # --- Crosshair settings (v0.5.0-r11) ---
+    def toggle_trading_panel_bulk_controls(self) -> None:
+        self.trading_panel_bulk_controls_visible = not self.trading_panel_bulk_controls_visible
+
+    # --- Chart background mode (auto-theme + explicit override) ---
+    def _is_day_for_mode(self, mode: str) -> bool:
+        if mode == "white":
+            return True
+        if mode == "black":
+            return False
+        key = self.theme_key if mode == "auto" else mode
+        return key.endswith("-day")
+
+    def set_trading_panel_bg_mode(self, value: str) -> None:
+        self.trading_panel_bg_mode = value
+        self.trading_panel_bg_submenu_open = False
+        self.trading_panel_chart_theme = "day" if self._is_day_for_mode(value) else "night"
+        engine.security.persistence.save({"trading_panel_bg_mode": value})
+
+    def toggle_trading_panel_bg_submenu(self) -> None:
+        self.trading_panel_bg_submenu_open = not self.trading_panel_bg_submenu_open
+
+    @rx.var
+    def trading_panel_bg_color(self) -> str:
+        mode = self.trading_panel_bg_mode
+        if mode == "white":
+            return "#FFFFFF"
+        if mode == "black":
+            return "#000000"
+        key = self.theme_key if mode == "auto" else mode
+        theme = THEMES.get(key)
+        return theme.bg_from if theme else "#101722"
+
+    @rx.var
+    def trading_panel_bg_mode_options(self) -> list[dict]:
+        options = [{"key": "auto", "label": "Auto (match app theme)", "swatch": ""}]
+        for key, theme in THEMES.items():
+            options.append({"key": key, "label": THEME_LABELS.get(key, key), "swatch": theme.bg_from})
+        options.append({"key": "white", "label": "White", "swatch": "#FFFFFF"})
+        options.append({"key": "black", "label": "Black", "swatch": "#000000"})
+        return options
+
+    # --- Crosshair settings ---
     def toggle_trading_panel_crosshair(self, checked: bool) -> None:
         self.trading_panel_crosshair_enabled = checked
         engine.security.persistence.save({"trading_panel_crosshair_enabled": checked})
@@ -222,6 +254,65 @@ class TradingPanelMixin(rx.State, mixin=True):
     def set_trading_panel_crosshair_thickness(self, value: list[float]) -> None:
         self.trading_panel_crosshair_thickness = int(value[0])
         engine.security.persistence.save({"trading_panel_crosshair_thickness": self.trading_panel_crosshair_thickness})
+
+    # --- Candle style settings ---
+    def _save_candle_style(self) -> None:
+        engine.security.persistence.save({
+            "candle_style": {
+                "mode": self.candle_style_mode,
+                "up_color": self.candle_up_color,
+                "down_color": self.candle_down_color,
+                "no_change_color": self.candle_no_change_color,
+                "up_border_color": self.candle_up_border_color,
+                "down_border_color": self.candle_down_border_color,
+                "up_wick_color": self.candle_up_wick_color,
+                "down_wick_color": self.candle_down_wick_color,
+            }
+        })
+
+    def set_candle_style_mode(self, value: str | list[str]) -> None:
+        resolved = value[0] if isinstance(value, list) else value
+        self.candle_style_mode = resolved
+        self._save_candle_style()
+
+    def set_candle_up_color(self, value: str) -> None:
+        self.candle_up_color = value
+        self._save_candle_style()
+
+    def set_candle_down_color(self, value: str) -> None:
+        self.candle_down_color = value
+        self._save_candle_style()
+
+    def set_candle_no_change_color(self, value: str) -> None:
+        self.candle_no_change_color = value
+        self._save_candle_style()
+
+    def set_candle_up_border_color(self, value: str) -> None:
+        self.candle_up_border_color = value
+        self._save_candle_style()
+
+    def set_candle_down_border_color(self, value: str) -> None:
+        self.candle_down_border_color = value
+        self._save_candle_style()
+
+    def set_candle_up_wick_color(self, value: str) -> None:
+        self.candle_up_wick_color = value
+        self._save_candle_style()
+
+    def set_candle_down_wick_color(self, value: str) -> None:
+        self.candle_down_wick_color = value
+        self._save_candle_style()
+
+    def reset_candle_style_defaults(self) -> None:
+        self.candle_style_mode = "solid"
+        self.candle_up_color = "#16C784"
+        self.candle_down_color = "#EA3943"
+        self.candle_no_change_color = "#8B98AA"
+        self.candle_up_border_color = "#5CFFC8"
+        self.candle_down_border_color = "#FF7B86"
+        self.candle_up_wick_color = "#16C784"
+        self.candle_down_wick_color = "#EA3943"
+        self._save_candle_style()
 
     def reset_trading_panel_view(self):
         return rx.call_script(
@@ -246,6 +337,7 @@ class TradingPanelMixin(rx.State, mixin=True):
 
     def close_trading_panel_menu(self) -> None:
         self.trading_panel_menu_open = False
+        self.trading_panel_bg_submenu_open = False
 
     def refresh_trading_panel_chart(self) -> None:
         symbol = self.trading_panel_symbol
@@ -368,16 +460,8 @@ class TradingPanelMixin(rx.State, mixin=True):
                                 window.QT19_ensureLiveCallback['{TRADING_PANEL_CHART_ID}']();
                             }}
                             var pushLive = window.QT19_LIVE_CALLBACKS && window.QT19_LIVE_CALLBACKS['{TRADING_PANEL_CHART_ID}'];
-                            window.QT19_PUSH_COUNT = (window.QT19_PUSH_COUNT || 0) + 1;
                             if (pushLive) {{
                                 pushLive({bar_json});
-                                if (window.QT19_PUSH_COUNT <= 5) {{
-                                    console.log('QT19: pushLive() SUCCEEDED, call #' + window.QT19_PUSH_COUNT + ', bar:', {bar_json});
-                                }}
-                            }} else {{
-                                if (window.QT19_PUSH_COUNT <= 5) {{
-                                    console.warn('QT19: no live callback registered for {TRADING_PANEL_CHART_ID} on call #' + window.QT19_PUSH_COUNT + '. Bar that could not be pushed:', {bar_json});
-                                }}
                             }}
                             if (chart) {{
                                 {snap_call}
@@ -479,13 +563,27 @@ class TradingPanelMixin(rx.State, mixin=True):
             "color": crosshair_color,
             "style": self.trading_panel_crosshair_style,
         }
+        candle_type = _CANDLE_TYPE_MAP.get(self.candle_style_mode, "candle_solid")
         return {
             "grid": {
                 "show": grid_show,
                 "horizontal": {"show": grid_show, "color": grid_color},
                 "vertical": {"show": grid_show, "color": grid_color},
             },
-            "candle": {"bar": {"upColor": "#16c784", "downColor": "#ea3943", "noChangeColor": "#8b98aa"}},
+            "candle": {
+                "type": candle_type,
+                "bar": {
+                    "upColor": self.candle_up_color,
+                    "downColor": self.candle_down_color,
+                    "noChangeColor": self.candle_no_change_color,
+                    "upBorderColor": self.candle_up_border_color,
+                    "downBorderColor": self.candle_down_border_color,
+                    "noChangeBorderColor": self.candle_no_change_color,
+                    "upWickColor": self.candle_up_wick_color,
+                    "downWickColor": self.candle_down_wick_color,
+                    "noChangeWickColor": self.candle_no_change_color,
+                },
+            },
             "xAxis": {"axisLine": {"color": grid_color}, "tickLine": {"color": grid_color}, "tickText": {"color": foreground}},
             "yAxis": {"axisLine": {"color": grid_color}, "tickLine": {"color": grid_color}, "tickText": {"color": foreground}},
             "crosshair": {

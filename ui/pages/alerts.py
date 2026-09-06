@@ -2,12 +2,17 @@
 
 PATH: ui/pages/alerts.py  (REPLACE ENTIRE FILE)
 
-CHANGE (v0.3.7): removed the repeated "Alerts" heading (sidebar already
-shows the active page). Added the soft hover-glow class to the main card.
+FIX (in-card scrolling, not page-level) - card now takes the full page
+height and scrolls its OWN content internally (overflow_y="auto") if it
+ever grows taller than the page - matches the new non-scrolling canvas
+wrapper in quantumtrade19.py.
+
+CHANGE (v0.3.7, unchanged) - no repeated heading; soft hover-glow class.
 """
 from __future__ import annotations
 import reflex as rx
 from ui.theme.glass import GLASS_CARD_3XL_STYLE, HOVER_GLOW_CLASS
+
 
 
 def alerts_page():
@@ -20,4 +25,7 @@ def alerts_page():
         style=GLASS_CARD_3XL_STYLE,
         class_name=HOVER_GLOW_CLASS,
         width="100%",
+        height="100%",
+        overflow_y="auto",
+        overflow_x="hidden",
     )

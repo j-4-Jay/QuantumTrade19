@@ -4,10 +4,9 @@ PATH: state/app_state.py (REPLACE ENTIRE FILE)
 
 Composes executable mixins from state/app_state_mixins/.
 
-FIX (Timezone Mode toggle) - added poi_timezone_mode: str = "NY" - drives
-the new UTC/NY toggle for PDH/PDL/4H/Week/Month POI calculation
-boundaries (see poi_level_calculator_worker.py). Default "NY" per
-explicit request.
+FIX (Bulk Controls memory) - added _poi_hidden_by_extras: dict[str, bool] = {}
+- remembers exactly which POI types "Hide Extras" turned off, so "Show
+Extras" can restore precisely those (and only those).
 """
 from __future__ import annotations
 
@@ -44,6 +43,7 @@ class AppState(
     is_locked: bool = False
     sound_muted: bool = False
     sidebar_collapsed: bool = False
+    sidebar_stage: str = "full"
 
     totp_required: bool = False
 
@@ -131,31 +131,51 @@ class AppState(
     poi_show_labels: bool = True
     poi_show_tooltips: bool = True
     poi_line_transparency: int = 100
-    poi_zone_opacity: int = 30
     poi_show_source_tf_badge: bool = True
     poi_show_logical_id: bool = False
     poi_reduced_motion: bool = False
     poi_backend_busy: bool = False
+
+    # --- Bulk Controls memory (Hide Extras / Show Extras) ---
+    _poi_hidden_by_extras: dict[str, bool] = {}
+
+    # --- Global High/Low POI line style + thickness ---
+    poi_high_line_style: str = "solid"
+    poi_high_line_thickness: int = 2
+    poi_low_line_style: str = "solid"
+    poi_low_line_thickness: int = 1
 
     # --- Combined per-TF POI state ---
     poi_tf_display_enabled: dict[str, bool] = {}
     poi_tf_strategy_enabled: dict[str, bool] = {}
     poi_tf_color: dict[str, str] = {}
     poi_tf_vertical_enabled: dict[str, bool] = {}
+    poi_tf_droplet_enabled: dict[str, bool] = {}
+    poi_tf_vertical_style: dict[str, str] = {}
+    poi_tf_vertical_opacity: dict[str, int] = {}
+
     poi_custom_lines: list[dict] = [
         {"enabled": False, "hour12": 8, "minute": 30, "meridiem": "AM", "color": "#22C55E", "name": ""},
         {"enabled": False, "hour12": 8, "minute": 30, "meridiem": "AM", "color": "#F97316", "name": ""},
         {"enabled": False, "hour12": 8, "minute": 30, "meridiem": "AM", "color": "#38BDF8", "name": ""},
     ]
 
-    # --- POI vertical start/end markers ---
-    poi_vertical_line_style: str = "dashed"
-    poi_vertical_line_opacity: int = 100
+    # --- Per-zone-type settings (count/color/opacity) ---
+    poi_zone_max_count: dict[str, int] = {}
+    poi_zone_color: dict[str, str] = {}
+    poi_zone_type_opacity: dict[str, int] = {}
 
     # --- POI chart overlays ---
     poi_chart_overlays: list[dict] = []
     poi_chart_overlays_version: int = 0
     _poi_chart_poll_running: bool = False
+
+    # --- Droplet wave dots at each POI's formation point ---
+    poi_dots: list[dict] = []
+    poi_dots_version: int = 0
+
+    # --- Bulk controls strip on the Trading Panel page itself ---
+    trading_panel_bulk_controls_visible: bool = False
 
     # --- Chart crosshair settings ---
     trading_panel_crosshair_enabled: bool = True
@@ -163,6 +183,20 @@ class AppState(
     trading_panel_crosshair_opacity: int = 100
     trading_panel_crosshair_style: str = "dashed"
     trading_panel_crosshair_thickness: int = 1
+
+    # --- Chart background mode (auto-theme + Change Mode submenu) ---
+    trading_panel_bg_mode: str = "auto"
+    trading_panel_bg_submenu_open: bool = False
+
+    # --- Candle style settings (premium 2D, zero extra cost) ---
+    candle_style_mode: str = "solid"
+    candle_up_color: str = "#16C784"
+    candle_down_color: str = "#EA3943"
+    candle_no_change_color: str = "#8B98AA"
+    candle_up_border_color: str = "#5CFFC8"
+    candle_down_border_color: str = "#FF7B86"
+    candle_up_wick_color: str = "#16C784"
+    candle_down_wick_color: str = "#EA3943"
 
     transition_effects_enabled: list[str] = ["dissolve", "zoom-in", "slide-up", "flip-x", "blur-in"]
     transition_mode: str = "shuffle"

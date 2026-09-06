@@ -2,40 +2,15 @@
 
 PATH: ui/theme/global_css.py  (REPLACE ENTIRE FILE)
 
-FIX v0.4.55 - completely rebuilt the hover-glow technique after TWO
-targeted CSS specificity fixes (!important, style unification) produced
-zero visible change. Rather than keep fighting box-shadow precedence
-rules on the card element itself, this uses a structurally different,
-bulletproof technique: a SEPARATE glow layer element, positioned behind
-and slightly larger than the card, that only changes OPACITY on hover.
-Since this glow layer is not the same DOM element as the card and never
-touches box-shadow at all, there is no possible CSS specificity conflict
-with any inline style the card itself has - the glow can never be blocked
-by anything on the card, structurally guaranteed regardless of the card's
-own background/border/box-shadow/overflow.
-
-New classes:
-  .qt19-glow-wrap   - put on the OUTER wrapper (position: relative)
-  .qt19-glow-layer  - the actual glow element, a child of the wrapper,
-                      absolutely positioned slightly larger than the
-                      wrapper, blurred, transparent at rest, becomes
-                      visible only via opacity on :hover of the wrapper
-  .qt19-glow-content - put on the actual card/content box (the translucent
-                      glass card itself), sits ABOVE the glow layer via
-                      z-index so the card's own background naturally
-                      masks the center of the glow, leaving only a soft
-                      ring visible around the edges - the correct "glow
-                      bleeding out from behind a glass card" look.
-
-See ui/components/glow_card.py for the ready-made component that wires
-these three classes together correctly - use qt19_glow_card(...) instead
-of manually combining GLASS_CARD_STYLE + HOVER_GLOW_CLASS from now on.
-
-CHANGE (v0.4.51-v0.4.52, superseded): the [data-radius="full"] exclusion
-and !important box-shadow attempts are no longer needed for the glow
-specifically (kept below only because [data-radius="full"] may still
-protect something else unrelated I cannot see from this file), since the
-new glow layer never has box-shadow or the "full" radius data attribute.
+FIX (Day theme dropdown/menu text still invisible) - the previous fix
+targeted the CONTAINER (`[role="menu"]`, `[data-radix-popper-content-wrapper] > *`)
+but individual Radix menu/select ITEMS (`[role="menuitem"]`,
+`[role="option"]`) get their own explicit color from Radix Themes'
+internal color system, which has HIGHER specificity than an inherited
+container color - the container fix alone was not enough. Added direct
+rules for `[role="menuitem"]`, `[role="option"]`, `[role="menuitemradio"]`,
+`[role="menuitemcheckbox"]` forcing the theme's own text color, on top of
+the existing `[data-highlighted]` hover-fix (unchanged, still correct).
 """
 from __future__ import annotations
 import reflex as rx
@@ -44,6 +19,119 @@ import reflex as rx
 _CSS = """
 * { cursor: auto !important; }
 button, a, [role="button"], input[type="checkbox"], input[type="radio"] { cursor: pointer !important; }
+
+
+html, body {
+  height: 100% !important;
+  overflow: hidden !important;
+  overflow-x: hidden !important;
+}
+
+
+/* ---- Modern, near-invisible scrollbars everywhere ---- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.22) transparent;
+}
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.22);
+  border-radius: 9999px;
+  transition: background 0.2s ease;
+}
+*::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.5); }
+*::-webkit-scrollbar-corner { background: transparent; }
+
+
+/* ---- Theme-matched inputs, selects, dropdown popovers, menus ---- */
+input, textarea, select {
+  background: var(--qt19-glass-bg) !important;
+  border-color: var(--qt19-glass-border) !important;
+  color: var(--qt19-text-primary) !important;
+}
+input::placeholder, textarea::placeholder { color: var(--qt19-text-muted) !important; opacity: 1; }
+input[type="color"] { border: none !important; }
+
+[data-radix-popper-content-wrapper] > *,
+[role="listbox"],
+[role="menu"] {
+  background: var(--qt19-glass-bg) !important;
+  border: 1px solid var(--qt19-glass-border) !important;
+  color: var(--qt19-text-primary) !important;
+  backdrop-filter: blur(18px);
+}
+
+/* Individual items have their OWN explicit Radix color (higher
+   specificity than the container's inherited color) - must be forced
+   directly, not just on the container. */
+[role="menuitem"],
+[role="menuitemradio"],
+[role="menuitemcheckbox"],
+[role="option"] {
+  color: var(--qt19-text-primary) !important;
+}
+[role="menuitem"] *,
+[role="menuitemradio"] *,
+[role="menuitemcheckbox"] *,
+[role="option"] * {
+  color: inherit !important;
+}
+
+/* Every Radix Select/Menu/DropdownMenu item uses [data-highlighted] on
+   hover/keyboard-focus, in every Radix Themes version - this is the
+   single rule that fixes "invisible on hover" in both Day and Night. */
+[data-highlighted] {
+  background: var(--qt19-accent) !important;
+  color: white !important;
+}
+[data-highlighted] * {
+  color: white !important;
+}
+
+
+/* ---- Droplet wave dots at each POI's High/Low formation point ---- */
+.qt19-poi-dot {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 2;
+  display: none;
+}
+.qt19-poi-dot-core {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 32% 26%,
+    rgba(255, 255, 255, 0.95) 0%,
+    var(--qt19-dot-color) 42%,
+    rgba(0, 0, 0, 0.4) 100%
+  );
+  box-shadow:
+    0 0 4px 1px var(--qt19-dot-color),
+    inset 0 0 2px rgba(255, 255, 255, 0.75),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.4);
+  z-index: 2;
+}
+.qt19-poi-dot-ring {
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--qt19-dot-color) 0%, transparent 72%);
+  filter: blur(0.6px);
+  opacity: 0.5;
+  animation: qt19-droplet-ping 2.8s cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
+  will-change: transform, opacity;
+  z-index: 1;
+}
+@keyframes qt19-droplet-ping {
+  0%   { transform: scale(1);   opacity: 0.5; }
+  55%  { opacity: 0.24; }
+  100% { transform: scale(5.2); opacity: 0; }
+}
 
 
 [data-radius="full"]:not(.qt19-hover-glow):not(.qt19-glow-wrap):not(.qt19-glow-content) { overflow: hidden !important; }
@@ -107,8 +195,6 @@ input:-webkit-autofill { animation-name: qt19-autofill-detect; animation-duratio
 @keyframes qt19-anim-flip-x { from { opacity: 0; transform: perspective(800px) rotateX(35deg); } to { opacity: 1; transform: perspective(800px) rotateX(0deg); } }
 @keyframes qt19-anim-flip-y { from { opacity: 0; transform: perspective(800px) rotateY(35deg); } to { opacity: 1; transform: perspective(800px) rotateY(0deg); } }
 @keyframes qt19-anim-blur-in { from { opacity: 0; filter: blur(10px); } to { opacity: 1; filter: blur(0); } }
-
-
 .qt19-transition-dissolve { animation: qt19-anim-dissolve 1.0s ease both; }
 .qt19-transition-zoom-in { animation: qt19-anim-zoom-in 0.9s cubic-bezier(0.34,1.56,0.64,1) both; }
 .qt19-transition-zoom-out { animation: qt19-anim-zoom-out 0.9s cubic-bezier(0.34,1.56,0.64,1) both; }
@@ -121,10 +207,8 @@ input:-webkit-autofill { animation-name: qt19-autofill-detect; animation-duratio
 .qt19-transition-blur-in { animation: qt19-anim-blur-in 1.0s ease both; }
 
 
-/* ---- v0.4.55 bulletproof glow: separate layer, never fights box-shadow ---- */
-.qt19-glow-wrap {
-  position: relative !important;
-}
+/* ---- v0.4.55 bulletproof glow - separate layer, never fights box-shadow ---- */
+.qt19-glow-wrap { position: relative !important; }
 .qt19-glow-layer {
   position: absolute !important;
   inset: -14px !important;
@@ -136,28 +220,18 @@ input:-webkit-autofill { animation-name: qt19-autofill-detect; animation-duratio
   pointer-events: none !important;
   z-index: 0 !important;
 }
-.qt19-glow-wrap:hover .qt19-glow-layer {
-  opacity: 0.7;
-}
-.qt19-glow-content {
-  position: relative !important;
-  z-index: 1 !important;
-}
+.qt19-glow-wrap:hover .qt19-glow-layer { opacity: 0.7; }
+.qt19-glow-content { position: relative !important; z-index: 1 !important; }
 
 
-@keyframes qt19-sidebar-collapse {
-  from { width: 230px; }
-  to   { width: 64px; }
-}
-@keyframes qt19-sidebar-expand {
-  from { width: 64px; }
-  to   { width: 230px; }
-}
+@keyframes qt19-sidebar-collapse { from { width: 230px; } to { width: 64px; } }
+@keyframes qt19-sidebar-expand { from { width: 64px; } to { width: 230px; } }
 .qt19-sidebar-collapsing { animation: qt19-sidebar-collapse 0.28s cubic-bezier(0.22,1,0.36,1) both; }
 .qt19-sidebar-expanding { animation: qt19-sidebar-expand 0.28s cubic-bezier(0.22,1,0.36,1) both; }
 """
 
 
 def qt19_global_css() -> rx.Component:
-    """Render the single shared <style> block. Include this exactly once, at the app root."""
+    """Render the single shared style block. Include this exactly once,
+    at the app root."""
     return rx.html(f"<style>{_CSS}</style>")

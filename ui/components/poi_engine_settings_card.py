@@ -1,15 +1,12 @@
-"""File 03.1 Scope E - POI Engine & Chart Visibility Settings card.
+"""File 03.1 Scope E - POI Engine & Chart Visibility Settings cards.
 
 PATH: ui/components/poi_engine_settings_card.py (REPLACE ENTIRE FILE)
 
-CHANGE (Timezone Mode toggle): added a "Timezone Mode" section at the top
-of the card - UTC/NY (auto DST) segmented control. Only affects PDH/PDL,
-4H High/Low, Week High/Low, Month High/Low (the only 4 POI types whose
-"previous period" boundary actually differs between UTC and New York -
-1m/5m/15m/1H are mathematically identical in both, and zones stay
-UTC-only). Backend recompute for all active symbols happens in the
-background - the switch itself responds instantly, matching the existing
-poi_backend_busy "Applying..." pattern used everywhere else on this card.
+FIX (r2 - disabled= prop needs a Var-safe expression) - `~row["display"]`
+is not guaranteed to compile as boolean negation on a dict-indexed Var in
+every Reflex version; replaced with the always-safe
+`rx.cond(row["display"], False, True)` pattern for the disabled= prop on
+every merged sub-control.
 """
 from __future__ import annotations
 import reflex as rx
@@ -19,25 +16,26 @@ from ui.theme.glass import GLASS_CARD_3XL_STYLE
 
 def _color_input(value: str, on_change) -> rx.Component:
     return rx.input(
-        type="color",
-        value=value,
-        on_change=on_change,
-        width="36px",
-        height="28px",
-        padding="0",
-        border="none",
-        cursor="pointer",
+        type="color", value=value, on_change=on_change,
+        width="36px", height="28px", padding="0", border="none", cursor="pointer",
     )
 
 
-def _poi_timezone_section() -> rx.Component:
+def _card_header(title: str, on_reset) -> rx.Component:
+    return rx.hstack(
+        rx.heading(title, size="4"),
+        rx.spacer(),
+        rx.button("Reset", on_click=on_reset, size="1", variant="soft"),
+        width="100%", align_items="center",
+    )
+
+
+def poi_timezone_card() -> rx.Component:
     return rx.vstack(
-        rx.heading("Timezone Mode", size="3"),
+        _card_header("Timezone Mode", AppState.reset_poi_timezone_default),
         rx.text(
-            "Controls which clock PDH/PDL, 4H High/Low, Week High/Low, and Month High/Low "
-            "cut their \u201cprevious period\u201d boundary on. 1m/5m/15m/1H lines and all "
-            "zones (FVG/Order Block/Flip) are unaffected - their boundaries are the same "
-            "real-world instant in either mode.",
+            "Controls which clock PDH/PDL and 4H lines cut their \u201cprevious period\u201d "
+            "boundary on. 1m/5m/15m/1H lines and all zones are unaffected.",
             font_size="0.78rem", color="var(--qt19-text-muted)",
         ),
         rx.segmented_control.root(
@@ -47,11 +45,16 @@ def _poi_timezone_section() -> rx.Component:
             on_change=AppState.set_poi_timezone_mode,
             size="2",
         ),
-        spacing="2", width="100%",
+        spacing="2", width="100%", style=GLASS_CARD_3XL_STYLE,
     )
 
 
 def _poi_tf_card(row: dict) -> rx.Component:
+    """One card per timeframe - Display/Strategy/Color (always
+    editable), plus the merged Duration Start/End marker, Droplet
+    Display, Style, and Transparency controls - all four DISABLED until
+    row["display"] is ON."""
+    sub_disabled = rx.cond(row["display"], False, True)
     return rx.vstack(
         rx.hstack(
             rx.text(row["label"], font_size="0.85rem", font_weight="700"),
@@ -60,106 +63,198 @@ def _poi_tf_card(row: dict) -> rx.Component:
             width="100%", align_items="center",
         ),
         rx.hstack(
-            rx.checkbox(
-                checked=row["display"],
-                on_change=lambda checked: AppState.toggle_poi_tf_display(row["tf"], checked),
-            ),
+            rx.checkbox(checked=row["display"], on_change=lambda checked: AppState.toggle_poi_tf_display(row["tf"], checked)),
             rx.text("Display (High + Low)", font_size="0.72rem"),
             spacing="2", align_items="center", width="100%",
         ),
         rx.hstack(
-            rx.checkbox(
-                checked=row["strategy"],
-                on_change=lambda checked: AppState.toggle_poi_tf_strategy(row["tf"], checked),
-            ),
+            rx.checkbox(checked=row["strategy"], on_change=lambda checked: AppState.toggle_poi_tf_strategy(row["tf"], checked)),
             rx.text("Strategy (High + Low)", font_size="0.72rem"),
             spacing="2", align_items="center", width="100%",
         ),
+        rx.divider(margin_y="0.1rem"),
+        rx.hstack(
+            rx.checkbox(
+                checked=row["vertical_enabled"],
+                disabled=sub_disabled,
+                on_change=lambda checked: AppState.toggle_poi_tf_vertical(row["tf"], checked),
+            ),
+            rx.text("Duration Start/End Marker", font_size="0.7rem"),
+            spacing="2", align_items="center", width="100%",
+        ),
+        rx.hstack(
+            rx.checkbox(
+                checked=row["droplet_enabled"],
+                disabled=sub_disabled,
+                on_change=lambda checked: AppState.toggle_poi_tf_droplet(row["tf"], checked),
+            ),
+            rx.text("Droplet Display", font_size="0.7rem"),
+            spacing="2", align_items="center", width="100%",
+        ),
+        rx.hstack(
+            rx.text("Style:", font_size="0.68rem", color="var(--qt19-text-muted)"),
+            rx.segmented_control.root(
+                rx.segmented_control.item("Dotted", value="dotted"),
+                rx.segmented_control.item("Solid", value="solid"),
+                value=row["vertical_style"],
+                disabled=sub_disabled,
+                on_change=lambda v: AppState.set_poi_tf_vertical_style(row["tf"], v),
+                size="1",
+            ),
+            spacing="2", align_items="center", width="100%",
+        ),
+        rx.vstack(
+            rx.text(f"Marker transparency: {row['vertical_opacity']}%", font_size="0.68rem", color="var(--qt19-text-muted)"),
+            rx.slider(
+                default_value=[row["vertical_opacity"]],
+                disabled=sub_disabled,
+                on_value_commit=lambda v: AppState.set_poi_tf_vertical_opacity(row["tf"], v),
+                min=0, max=100, width="100%",
+            ),
+            spacing="1", width="100%",
+        ),
         spacing="2", width="100%", padding="0.6rem 0.7rem",
-        style={
-            "background": "rgba(255,255,255,0.03)",
-            "border": "1px solid var(--qt19-glass-border)",
-            "border_radius": "0.65rem",
-        },
+        style={"background": "rgba(255,255,255,0.03)", "border": "1px solid var(--qt19-glass-border)", "border_radius": "0.65rem"},
     )
 
 
-def _poi_lines_section() -> rx.Component:
+def poi_lines_card() -> rx.Component:
     return rx.vstack(
-        rx.heading("Previous High/Low Lines", size="3"),
+        _card_header("Previous High/Low Lines", AppState.reset_poi_lines_defaults),
         rx.text(
-            "One card per timeframe. Display shows both the High and Low line together; "
-            "Strategy makes both eligible for setup detection together. Pick any color.",
+            "One card per timeframe. Display shows both High and Low together; Strategy makes "
+            "both eligible for setup detection together - fully independent of Display. The "
+            "Duration marker, Droplet, Style, and Transparency controls below only become "
+            "editable once Display is turned ON.",
             font_size="0.78rem", color="var(--qt19-text-muted)",
         ),
         rx.grid(
             rx.foreach(AppState.poi_tf_card_rows, _poi_tf_card),
-            columns=rx.breakpoints(initial="2", md="4"),
+            columns=rx.breakpoints(initial="1", sm="2", md="4"),
             spacing="3", width="100%", margin_top="0.5rem",
         ),
-        spacing="2", width="100%",
+        spacing="2", width="100%", style=GLASS_CARD_3XL_STYLE,
     )
 
 
-def _poi_zone_type_row(row: dict) -> rx.Component:
-    return rx.hstack(
-        rx.text(row["label"], font_size="0.82rem", font_weight="600", width="140px"),
-        rx.checkbox(
-            checked=row["display"],
-            on_change=lambda checked: AppState.toggle_poi_display(row["type"], checked),
+def poi_horizontal_style_card() -> rx.Component:
+    return rx.vstack(
+        _card_header("Horizontal POI Line Style", AppState.reset_poi_horizontal_style_defaults),
+        rx.text(
+            "One style + thickness for ALL High lines together, and a separate one for ALL Low "
+            "lines together. Defaults: High = Solid 2px, Low = Solid 1px.",
+            font_size="0.78rem", color="var(--qt19-text-muted)",
         ),
-        rx.text("Display", font_size="0.75rem"),
-        rx.checkbox(
-            checked=row["strategy"],
-            on_change=lambda checked: AppState.toggle_poi_strategy(row["type"], checked),
+        rx.grid(
+            rx.vstack(
+                rx.text("High Lines", font_size="0.82rem", font_weight="700"),
+                rx.segmented_control.root(
+                    rx.segmented_control.item("Dotted", value="dotted"),
+                    rx.segmented_control.item("Solid", value="solid"),
+                    value=AppState.poi_high_line_style, on_change=AppState.set_poi_high_line_style, size="1",
+                ),
+                rx.text(f"Thickness: {AppState.poi_high_line_thickness}px", font_size="0.76rem"),
+                rx.slider(default_value=[AppState.poi_high_line_thickness], on_value_commit=AppState.set_poi_high_line_thickness, min=1, max=5, width="100%"),
+                spacing="2", width="100%", padding="0.6rem 0.7rem",
+                style={"background": "rgba(255,255,255,0.03)", "border": "1px solid var(--qt19-glass-border)", "border_radius": "0.65rem"},
+            ),
+            rx.vstack(
+                rx.text("Low Lines", font_size="0.82rem", font_weight="700"),
+                rx.segmented_control.root(
+                    rx.segmented_control.item("Dotted", value="dotted"),
+                    rx.segmented_control.item("Solid", value="solid"),
+                    value=AppState.poi_low_line_style, on_change=AppState.set_poi_low_line_style, size="1",
+                ),
+                rx.text(f"Thickness: {AppState.poi_low_line_thickness}px", font_size="0.76rem"),
+                rx.slider(default_value=[AppState.poi_low_line_thickness], on_value_commit=AppState.set_poi_low_line_thickness, min=1, max=5, width="100%"),
+                spacing="2", width="100%", padding="0.6rem 0.7rem",
+                style={"background": "rgba(255,255,255,0.03)", "border": "1px solid var(--qt19-glass-border)", "border_radius": "0.65rem"},
+            ),
+            columns=rx.breakpoints(initial="1", md="2"),
+            spacing="3", width="100%", margin_top="0.5rem",
         ),
-        rx.text("Use in Strategy", font_size="0.75rem"),
-        spacing="3", width="100%", padding_y="0.3rem",
-        border_bottom="1px solid var(--qt19-glass-border)",
+        spacing="2", width="100%", style=GLASS_CARD_3XL_STYLE,
     )
 
 
 def _poi_zone_source_tf_checkbox(row: dict) -> rx.Component:
     return rx.hstack(
-        rx.checkbox(
-            checked=row["enabled"],
-            on_change=lambda checked: AppState.toggle_poi_zone_source_tf(row["tf"], checked),
-        ),
+        rx.checkbox(checked=row["enabled"], on_change=lambda checked: AppState.toggle_poi_zone_source_tf(row["tf"], checked)),
         rx.text(row["tf"], font_size="0.78rem"),
         spacing="2", align_items="center",
     )
 
 
-def _poi_zone_matrix_section() -> rx.Component:
+def poi_zone_matrix_card() -> rx.Component:
     return rx.vstack(
-        rx.heading("Zone Source-Timeframe Matrix", size="3"),
-        rx.text("Which timeframes Flip/FVG/Inverse FVG/Order Block zones are calculated from. "
-                "Shared across all zone types. Always UTC-boundary based.",
-                font_size="0.78rem", color="var(--qt19-text-muted)"),
+        _card_header("Zone Source-Timeframe Matrix", AppState.reset_poi_zone_matrix_defaults),
+        rx.text(
+            "Which timeframes Flip/FVG/Inverse FVG/Order Block zones are calculated from. "
+            "Shared across all zone types. Always UTC-boundary based.",
+            font_size="0.78rem", color="var(--qt19-text-muted)",
+        ),
         rx.grid(
             rx.foreach(AppState.poi_zone_source_tf_rows, _poi_zone_source_tf_checkbox),
             columns="4", spacing="2", width="100%", margin_top="0.5rem",
         ),
-        spacing="2", width="100%",
+        spacing="2", width="100%", style=GLASS_CARD_3XL_STYLE,
     )
 
 
-def _poi_zone_types_section() -> rx.Component:
+def _poi_zone_type_card(row: dict) -> rx.Component:
     return rx.vstack(
-        rx.heading("Zone Types", size="3"),
-        rx.vstack(rx.foreach(AppState.poi_zone_type_rows, _poi_zone_type_row), spacing="1", width="100%", margin_top="0.5rem"),
-        spacing="2", width="100%",
+        rx.hstack(
+            rx.text(row["label"], font_size="0.84rem", font_weight="700"),
+            rx.spacer(),
+            _color_input(row["color"], lambda v: AppState.set_poi_zone_color(row["type"], v)),
+            width="100%", align_items="center",
+        ),
+        rx.hstack(
+            rx.checkbox(checked=row["display"], on_change=lambda checked: AppState.toggle_poi_display(row["type"], checked)),
+            rx.text("Display", font_size="0.72rem"),
+            rx.checkbox(checked=row["strategy"], on_change=lambda checked: AppState.toggle_poi_strategy(row["type"], checked)),
+            rx.text("Strategy", font_size="0.72rem"),
+            spacing="2", align_items="center", width="100%", wrap="wrap",
+        ),
+        rx.hstack(
+            rx.text("Show last:", font_size="0.72rem", color="var(--qt19-text-muted)"),
+            rx.input(
+                value=row["max_count"].to_string(),
+                on_blur=lambda v: AppState.set_poi_zone_max_count(row["type"], v),
+                width="56px", size="1", type_="number",
+            ),
+            rx.text("fresh zones", font_size="0.72rem", color="var(--qt19-text-muted)"),
+            spacing="2", align_items="center", width="100%",
+        ),
+        rx.vstack(
+            rx.text(f"Transparency: {row['opacity']}%", font_size="0.7rem", color="var(--qt19-text-muted)"),
+            rx.slider(
+                default_value=[row["opacity"]],
+                on_value_commit=lambda v: AppState.set_poi_zone_type_opacity(row["type"], v),
+                min=0, max=100, width="100%",
+            ),
+            spacing="1", width="100%",
+        ),
+        spacing="2", width="100%", padding="0.6rem 0.7rem",
+        style={"background": "rgba(255,255,255,0.03)", "border": "1px solid var(--qt19-glass-border)", "border_radius": "0.65rem"},
     )
 
 
-def _tf_vertical_checkbox(row: dict) -> rx.Component:
-    return rx.hstack(
-        rx.checkbox(
-            checked=row["vertical_enabled"],
-            on_change=lambda checked: AppState.toggle_poi_tf_vertical(row["tf"], checked),
+def poi_zone_types_card() -> rx.Component:
+    return rx.vstack(
+        _card_header("Zone Types", AppState.reset_poi_zone_types_defaults),
+        rx.text(
+            "Only FRESH (not yet mitigated/touched) zones are ever shown. Each type has its own "
+            "color, transparency, and a cap on how many of the most recent fresh zones to display "
+            "(default 5) - keeps the chart readable no matter how many were historically detected.",
+            font_size="0.78rem", color="var(--qt19-text-muted)",
         ),
-        rx.text(row["label"], font_size="0.76rem"),
-        spacing="2", align_items="center",
+        rx.grid(
+            rx.foreach(AppState.poi_zone_type_rows, _poi_zone_type_card),
+            columns=rx.breakpoints(initial="1", sm="2", lg="3"),
+            spacing="3", width="100%", margin_top="0.5rem",
+        ),
+        spacing="2", width="100%", style=GLASS_CARD_3XL_STYLE,
     )
 
 
@@ -167,204 +262,49 @@ def _custom_line_row(index: int) -> rx.Component:
     line = AppState.poi_custom_lines[index]
     return rx.vstack(
         rx.hstack(
-            rx.checkbox(
-                checked=line["enabled"],
-                on_change=lambda checked: AppState.toggle_custom_line_enabled(index, checked),
-            ),
+            rx.checkbox(checked=line["enabled"], on_change=lambda checked: AppState.toggle_custom_line_enabled(index, checked)),
             rx.text(f"Custom Line {index + 1}", font_size="0.78rem", font_weight="600", width="110px"),
             _color_input(line["color"], lambda v: AppState.set_custom_line_color(index, v)),
             spacing="2", align_items="center", width="100%",
         ),
         rx.hstack(
-            rx.input(
-                value=line["hour12"].to_string(),
-                on_blur=lambda v: AppState.set_custom_line_hour(index, v),
-                placeholder="HH",
-                width="54px", size="1", type_="number",
-            ),
+            rx.input(value=line["hour12"].to_string(), on_blur=lambda v: AppState.set_custom_line_hour(index, v), placeholder="HH", width="54px", size="1", type_="number"),
             rx.text(":", font_size="0.9rem"),
-            rx.input(
-                value=line["minute"].to_string(),
-                on_blur=lambda v: AppState.set_custom_line_minute(index, v),
-                placeholder="MM",
-                width="54px", size="1", type_="number",
-            ),
+            rx.input(value=line["minute"].to_string(), on_blur=lambda v: AppState.set_custom_line_minute(index, v), placeholder="MM", width="54px", size="1", type_="number"),
             rx.segmented_control.root(
                 rx.segmented_control.item("AM", value="AM"),
                 rx.segmented_control.item("PM", value="PM"),
-                value=line["meridiem"],
-                on_change=lambda v: AppState.set_custom_line_meridiem(index, v),
-                size="1",
+                value=line["meridiem"], on_change=lambda v: AppState.set_custom_line_meridiem(index, v), size="1",
             ),
             rx.text("(New York time)", font_size="0.68rem", color="var(--qt19-text-muted)"),
             spacing="2", align_items="center", width="100%",
         ),
-        rx.input(
-            value=line["name"],
-            on_blur=lambda v: AppState.set_custom_line_name(index, v),
-            placeholder="Optional name shown on chart (else shows the time)",
-            width="100%", size="1",
-        ),
+        rx.input(value=line["name"], on_blur=lambda v: AppState.set_custom_line_name(index, v), placeholder="Optional name shown on chart (else shows the time)", width="100%", size="1"),
         spacing="2", width="100%", padding="0.5rem 0.6rem",
-        style={
-            "background": "rgba(255,255,255,0.03)",
-            "border": "1px solid var(--qt19-glass-border)",
-            "border_radius": "0.6rem",
-        },
+        style={"background": "rgba(255,255,255,0.03)", "border": "1px solid var(--qt19-glass-border)", "border_radius": "0.6rem"},
     )
 
 
-def _poi_vertical_markers_section() -> rx.Component:
+def poi_custom_lines_card() -> rx.Component:
     return rx.vstack(
-        rx.heading("Previous-Period Start/End Markers", size="3"),
+        _card_header("Custom Recurring Lines", AppState.reset_poi_custom_lines_defaults),
         rx.text(
-            "Two vertical lines mark where each timeframe's previous period began and ended "
-            "(e.g. the previous 4H candle's open/close time). Only shows when that "
-            "timeframe's Display checkbox above is also ON. Same color as the horizontal "
-            "line, 1px thick, recurring - they automatically shift forward as each period "
-            "closes in real time.",
+            "Up to 3 independent daily lines at a fixed time (America/New_York) - automatically "
+            "reappear at the same time every day. Give one a Name to show that instead of the time.",
             font_size="0.78rem", color="var(--qt19-text-muted)",
         ),
-        rx.grid(
-            rx.foreach(AppState.poi_tf_card_rows, _tf_vertical_checkbox),
-            columns="4", spacing="2", width="100%", margin_top="0.5rem",
-        ),
-        rx.hstack(
-            rx.text("Style:", font_size="0.78rem", font_weight="600"),
-            rx.segmented_control.root(
-                rx.segmented_control.item("Dashed", value="dashed"),
-                rx.segmented_control.item("Solid", value="solid"),
-                value=AppState.poi_vertical_line_style,
-                on_change=AppState.set_poi_vertical_line_style,
-                size="1",
-            ),
-            spacing="3", align_items="center", margin_top="0.75rem",
-        ),
-        rx.vstack(
-            rx.text(f"Marker transparency: {AppState.poi_vertical_line_opacity}%", font_size="0.78rem"),
-            rx.slider(
-                default_value=[AppState.poi_vertical_line_opacity],
-                on_value_commit=AppState.set_poi_vertical_line_opacity,
-                min=0, max=100, width="100%",
-            ),
-            spacing="1", width="100%", margin_top="0.5rem",
-        ),
-        rx.divider(margin_y="0.5rem"),
-        rx.text("Custom Recurring Lines", font_size="0.82rem", font_weight="700"),
-        rx.text(
-            "Up to 3 independent daily lines at a fixed time (America/New_York). They "
-            "automatically reappear at the same time every day - nothing to reset manually. "
-            "Give one a Name to show that instead of the time on the chart.",
-            font_size="0.76rem", color="var(--qt19-text-muted)",
-        ),
-        rx.vstack(
-            _custom_line_row(0), _custom_line_row(1), _custom_line_row(2),
-            spacing="2", width="100%", margin_top="0.3rem",
-        ),
-        spacing="2", width="100%",
+        rx.vstack(_custom_line_row(0), _custom_line_row(1), _custom_line_row(2), spacing="2", width="100%", margin_top="0.3rem"),
+        spacing="2", width="100%", style=GLASS_CARD_3XL_STYLE,
     )
 
 
-def _poi_visual_controls_section() -> rx.Component:
+def poi_visual_controls_card() -> rx.Component:
     return rx.vstack(
-        rx.heading("Visual Controls", size="3"),
-        rx.hstack(
-            rx.checkbox(checked=AppState.poi_show_labels, on_change=AppState.toggle_poi_show_labels),
-            rx.text("POI labels", font_size="0.78rem"),
-            spacing="2",
-        ),
-        rx.hstack(
-            rx.checkbox(checked=AppState.poi_show_tooltips, on_change=AppState.toggle_poi_show_tooltips),
-            rx.text("POI tooltips", font_size="0.78rem"),
-            spacing="2",
-        ),
-        rx.hstack(
-            rx.checkbox(checked=AppState.poi_show_source_tf_badge, on_change=AppState.toggle_poi_show_source_tf_badge),
-            rx.text("Show source TF badge", font_size="0.78rem"),
-            spacing="2",
-        ),
-        rx.hstack(
-            rx.checkbox(checked=AppState.poi_show_logical_id, on_change=AppState.toggle_poi_show_logical_id),
-            rx.text("Show logical ID in tooltip", font_size="0.78rem"),
-            spacing="2",
-        ),
-        rx.hstack(
-            rx.checkbox(checked=AppState.poi_reduced_motion, on_change=AppState.toggle_poi_reduced_motion),
-            rx.text("Reduced motion", font_size="0.78rem"),
-            spacing="2",
-        ),
-        rx.vstack(
-            rx.text(f"Line transparency: {AppState.poi_line_transparency}%", font_size="0.78rem"),
-            rx.slider(
-                default_value=[AppState.poi_line_transparency],
-                on_value_commit=AppState.set_poi_line_transparency,
-                min=0, max=100, width="100%",
-            ),
-            spacing="1", width="100%",
-        ),
-        rx.vstack(
-            rx.text(f"Zone opacity: {AppState.poi_zone_opacity}%", font_size="0.78rem"),
-            rx.slider(
-                default_value=[AppState.poi_zone_opacity],
-                on_value_commit=AppState.set_poi_zone_opacity,
-                min=0, max=100, width="100%",
-            ),
-            spacing="1", width="100%",
-        ),
-        spacing="3", width="100%",
-    )
-
-
-def _poi_bulk_controls_section() -> rx.Component:
-    return rx.vstack(
-        rx.heading("Bulk Controls", size="3"),
-        rx.flex(
-            rx.button("Show All POIs", on_click=AppState.poi_show_all, size="2", variant="soft"),
-            rx.button("Hide All POIs", on_click=AppState.poi_hide_all, size="2", variant="soft"),
-            rx.button("Enable Default Strategy POIs", on_click=AppState.poi_enable_default_strategy, size="2", variant="soft"),
-            rx.button("Disable All Strategy POIs", on_click=AppState.poi_disable_all_strategy, size="2", variant="soft"),
-            rx.button("Reset Chart POI Filters", on_click=AppState.poi_reset_chart_filters, size="2", variant="soft"),
-            spacing="2", wrap="wrap",
-        ),
-        spacing="2", width="100%",
-    )
-
-
-def poi_engine_settings_card() -> rx.Component:
-    return rx.vstack(
-        rx.hstack(
-            rx.heading("POI Engine & Chart Visibility", size="4"),
-            rx.cond(
-                AppState.poi_backend_busy,
-                rx.badge("Applying...", variant="soft", color_scheme="amber"),
-            ),
-            justify="between", width="100%", align_items="center",
-        ),
-        rx.text("Controls every POI type shown here independently of whether it's used for "
-                "setup detection - Display and Strategy never affect each other. Toggles "
-                "respond instantly; the backend recompute (real network calls) finishes a "
-                "moment later in the background.",
-                font_size="0.8rem", color="var(--qt19-text-muted)"),
-        rx.cond(
-            AppState.poi_settings_loaded,
-            rx.vstack(
-                _poi_timezone_section(),
-                rx.divider(),
-                _poi_lines_section(),
-                rx.divider(),
-                _poi_zone_matrix_section(),
-                rx.divider(),
-                _poi_zone_types_section(),
-                rx.divider(),
-                _poi_vertical_markers_section(),
-                rx.divider(),
-                _poi_visual_controls_section(),
-                rx.divider(),
-                _poi_bulk_controls_section(),
-                spacing="4", width="100%", margin_top="0.5rem",
-            ),
-            rx.text("Loading POI settings...", font_size="0.8rem", color="var(--qt19-text-muted)", margin_top="0.5rem"),
-        ),
+        _card_header("Visual Controls", AppState.reset_poi_visual_controls_defaults),
+        rx.hstack(rx.checkbox(checked=AppState.poi_show_labels, on_change=AppState.toggle_poi_show_labels), rx.text("POI labels", font_size="0.78rem"), spacing="2"),
+        rx.hstack(rx.checkbox(checked=AppState.poi_show_tooltips, on_change=AppState.toggle_poi_show_tooltips), rx.text("POI tooltips", font_size="0.78rem"), spacing="2"),
+        rx.hstack(rx.checkbox(checked=AppState.poi_show_source_tf_badge, on_change=AppState.toggle_poi_show_source_tf_badge), rx.text("Show source TF badge", font_size="0.78rem"), spacing="2"),
+        rx.hstack(rx.checkbox(checked=AppState.poi_show_logical_id, on_change=AppState.toggle_poi_show_logical_id), rx.text("Show logical ID in tooltip", font_size="0.78rem"), spacing="2"),
+        rx.hstack(rx.checkbox(checked=AppState.poi_reduced_motion, on_change=AppState.toggle_poi_reduced_motion), rx.text("Reduced motion", font_size="0.78rem"), spacing="2"),
         spacing="3", width="100%", style=GLASS_CARD_3XL_STYLE,
-        on_mount=AppState.load_poi_settings,
     )

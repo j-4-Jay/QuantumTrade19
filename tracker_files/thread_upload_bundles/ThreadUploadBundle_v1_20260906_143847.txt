@@ -1,0 +1,1009 @@
+﻿----------------------------------------------------------------------------------------------------
+QUANTUMTRADE19 - THREAD UPLOAD BUNDLE (v1)
+Created: 20260906_143847
+Project root: D:\QuantumTrade19
+Total files requested: 4
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: poi_monitor.py
+FULL PATH: D:\QuantumTrade19\engines\monitors\poi_monitor.py
+----------------------------------------------------------------------------------------------------
+"""File 03.1 POI Monitor: persistent display, strategy and zone-source controls.
+
+PATH: engines/monitors/poi_monitor.py (REPLACE ENTIRE FILE)
+
+FIX (Timezone Mode toggle) - added set_poi_timezone_mode(mode). Passed
+explicitly ONLY to POILevelCalculatorWorker's constructor/setter (NOT
+added to the shared `kwargs` dict passed to all four workers, since
+FVGDetectorWorker/OrderBlockDetectorWorker/InverseFVGDetectorWorker do
+not declare a `timezone_mode` parameter and would raise TypeError if it
+were - see poi_level_calculator_worker.py's docstring for why zones stay
+UTC-only in this pass).
+
+FIX 1 (corrected, carried forward): tick_size lookup uses
+`self.symbol_registry.get_tick_size(symbol)`.
+
+FIX 2 (unchanged, carried forward): set_poi_display_enabled() also
+updates the display_enabled dict directly on the three zone workers.
+"""
+from __future__ import annotations
+
+
+import asyncio
+from typing import Dict, List, Optional
+
+
+from engines.workers.poi.htf_availability import MarketDataMonitorLike
+from engines.workers.poi.poi_types import POI, POIStateRecord, POIType
+from engines.workers.poi.poi_settings import POISettingsStore
+from engines.workers.poi.poi_level_calculator_worker import POILevelCalculatorWorker
+from engines.workers.poi.fvg_detector_worker import FVGDetectorWorker
+from engines.workers.poi.orderblock_detector_worker import OrderBlockDetectorWorker
+from engines.workers.poi.inverse_fvg_detector_worker import InverseFVGDetectorWorker
+from engines.workers.poi.poi_state_tracker_worker import POIStateTrackerWorker
+
+
+
+class POIMonitor:
+    """Tier-2 orchestration layer; workers own calculations, monitor owns wiring."""
+
+
+    def __init__(self, market_data_monitor: MarketDataMonitorLike, symbol_registry, settings_store: Optional[POISettingsStore] = None) -> None:
+        self.mdm = market_data_monitor
+        self.symbol_registry = symbol_registry
+        self._settings_store = settings_store or POISettingsStore()
+        self._settings = self._settings_store.get()
+        self._level_pois: Dict[str, Dict[str, POI]] = {}
+        self._fvg_pois: Dict[str, Dict[str, POI]] = {}
+        self._ob_pois: Dict[str, Dict[str, POI]] = {}
+        self._inv_fvg_pois: Dict[str, Dict[str, POI]] = {}
+        self._states: Dict[str, Dict[str, POIStateRecord]] = {}
+        self._enabled_types: Dict[str, Dict[str, bool]] = {}
+        self._level_workers: Dict[str, POILevelCalculatorWorker] = {}
+        self._fvg_workers: Dict[str, FVGDetectorWorker] = {}
+        self._ob_workers: Dict[str, OrderBlockDetectorWorker] = {}
+        self._inv_workers: Dict[str, InverseFVGDetectorWorker] = {}
+        self._state_workers: Dict[str, POIStateTrackerWorker] = {}
+        self._tasks: List[asyncio.Task] = []
+        for symbol in self.symbol_registry.get_active_symbols():
+            self._wire_symbol(symbol)
+
+
+    def _wire_symbol(self, symbol: str) -> None:
+        strategy = self._settings.strategy_enabled
+        self._enabled_types[symbol] = strategy
+        self._level_pois[symbol], self._fvg_pois[symbol] = {}, {}
+        self._ob_pois[symbol], self._inv_fvg_pois[symbol], self._states[symbol] = {}, {}, {}
+
+
+        def level_update(sym: str, pois: List[POI]) -> None: self._level_pois[sym] = {p.poi_id: p for p in pois}
+        def fvg_update(sym: str, pois: List[POI]) -> None: self._fvg_pois[sym] = {p.poi_id: p for p in pois}
+        def ob_update(sym: str, pois: List[POI]) -> None: self._ob_pois[sym] = {p.poi_id: p for p in pois}
+        def inverse_update(sym: str, pois: List[POI]) -> None: self._inv_fvg_pois[sym] = {p.poi_id: p for p in pois}
+        def state_update(sym: str, states: Dict[str, POIStateRecord]) -> None: self._states[sym] = states
+
+
+        kwargs = {"display_enabled": self._settings.display_enabled, "strategy_enabled": strategy, "zone_source_tf_enabled": self._settings.zone_source_tf_enabled}
+        self._level_workers[symbol] = POILevelCalculatorWorker(self.mdm, symbol, strategy, level_update, timezone_mode=self._settings.timezone_mode, **kwargs)
+        self._fvg_workers[symbol] = FVGDetectorWorker(self.mdm, symbol, strategy, fvg_update, **kwargs)
+        self._ob_workers[symbol] = OrderBlockDetectorWorker(self.mdm, symbol, strategy, ob_update, **kwargs)
+        self._inv_workers[symbol] = InverseFVGDetectorWorker(self.mdm, symbol, strategy, lambda sym=symbol: list(self._fvg_pois[sym].values()), inverse_update, **kwargs)
+        self._state_workers[symbol] = POIStateTrackerWorker(self.mdm, symbol, self.symbol_registry.get_tick_size(symbol), lambda sym=symbol: self._collect_all_pois(sym), state_update)
+        self._recompute_symbol(symbol)
+
+
+    def _recompute_symbol(self, symbol: str) -> None:
+        self._level_workers[symbol].recompute()
+        self._fvg_workers[symbol].recompute()
+        self._ob_workers[symbol].recompute()
+        self._inv_workers[symbol].recompute()
+        self._state_workers[symbol].recompute()
+
+
+    def _collect_all_pois(self, symbol: str) -> List[POI]:
+        merged: Dict[str, POI] = {}
+        for registry in (self._level_pois, self._fvg_pois, self._ob_pois, self._inv_fvg_pois):
+            merged.update(registry.get(symbol, {}))
+        return [poi for poi in merged.values() if poi.active]
+
+
+    def start(self) -> None:
+        for symbol in self.symbol_registry.get_active_symbols():
+            self._tasks.extend([
+                asyncio.create_task(self._level_workers[symbol].run_forever()),
+                asyncio.create_task(self._fvg_workers[symbol].run_forever()),
+                asyncio.create_task(self._ob_workers[symbol].run_forever()),
+                asyncio.create_task(self._inv_workers[symbol].run_forever()),
+                asyncio.create_task(self._state_workers[symbol].run_forever()),
+            ])
+
+
+    async def stop(self) -> None:
+        for task in self._tasks: task.cancel()
+        self._tasks.clear()
+
+
+    def get_active_pois(self, symbol: str) -> List[POI]:
+        return self._collect_all_pois(symbol)
+
+
+    def get_poi_state(self, symbol: str, poi_id: str) -> Optional[POIStateRecord]:
+        return self._states.get(symbol, {}).get(poi_id)
+
+
+    def get_poi_settings(self) -> dict:
+        return self._settings.to_dict()
+
+
+    def set_poi_display_enabled(self, poi_type: str, enabled: bool) -> None:
+        self._settings_store.set_display_enabled(poi_type, enabled)
+        self._settings = self._settings_store.get()
+        for symbol in self.symbol_registry.get_active_symbols():
+            self._level_workers[symbol].set_display_enabled(poi_type, enabled)
+            # The three zone workers have no set_display_enabled() method of
+            # their own - each holds an independent display_enabled dict
+            # that only ever gets read at scan time, so it must be updated
+            # directly here to actually take effect.
+            self._fvg_workers[symbol].display_enabled[poi_type] = bool(enabled)
+            self._ob_workers[symbol].display_enabled[poi_type] = bool(enabled)
+            self._inv_workers[symbol].display_enabled[poi_type] = bool(enabled)
+            self._recompute_symbol(symbol)
+
+
+    def set_poi_strategy_enabled(self, poi_type: str, enabled: bool) -> None:
+        self._settings_store.set_strategy_enabled(poi_type, enabled)
+        self._settings = self._settings_store.get()
+        for symbol in self.symbol_registry.get_active_symbols():
+            if poi_type == POIType.FVG: self._fvg_workers[symbol].set_enabled(enabled)
+            elif poi_type == POIType.ORDER_BLOCK: self._ob_workers[symbol].set_enabled(enabled)
+            elif poi_type == POIType.INVERSE_FVG: self._inv_workers[symbol].set_enabled(enabled)
+            else: self._level_workers[symbol].set_type_enabled(poi_type, enabled)
+            self._state_workers[symbol].recompute()
+
+
+    def set_poi_type_enabled(self, poi_type: str, enabled: bool) -> None:
+        """Legacy File 03 API. Equivalent to set_poi_strategy_enabled."""
+        self.set_poi_strategy_enabled(poi_type, enabled)
+
+
+    def set_zone_source_tf_enabled(self, timeframe: str, enabled: bool) -> None:
+        self._settings_store.set_zone_source_tf_enabled(timeframe, enabled)
+        self._settings = self._settings_store.get()
+        for symbol in self.symbol_registry.get_active_symbols():
+            self._level_workers[symbol].set_source_tf_enabled(timeframe, enabled)
+            self._fvg_workers[symbol].set_source_tf_enabled(timeframe, enabled)
+            self._ob_workers[symbol].set_source_tf_enabled(timeframe, enabled)
+            self._inv_workers[symbol].set_source_tf_enabled(timeframe, enabled)
+            self._state_workers[symbol].recompute()
+
+
+    def set_poi_timezone_mode(self, mode: str) -> None:
+        """Only affects POILevelCalculatorWorker (4H/1D/1W/1M line POIs).
+        Zone workers (FVG/Order Block/Flip) are unaffected - see
+        poi_level_calculator_worker.py's docstring."""
+        self._settings_store.set_timezone_mode(mode)
+        self._settings = self._settings_store.get()
+        for symbol in self.symbol_registry.get_active_symbols():
+            self._level_workers[symbol].set_timezone_mode(self._settings.timezone_mode)
+            self._state_workers[symbol].recompute()
+
+
+    def get_health(self, symbol: str) -> str:
+        worker = self._level_workers.get(symbol)
+        if worker is None: return "DOWN"
+        for poi_type, enabled in self._settings.strategy_enabled.items():
+            if enabled and not worker.is_type_ready(poi_type) and poi_type in worker.enabled_types:
+                if worker.availability.candle_counts: return "DEGRADED"
+        return "OK"
+
+----------------------------------------------------------------------------------------------------
+END FILE: poi_monitor.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: poi_types.py
+FULL PATH: D:\QuantumTrade19\engines\workers\poi\poi_types.py
+----------------------------------------------------------------------------------------------------
+"""Shared POI structures and File 03.1 defaults.
+
+PATH: engines/workers/poi/poi_types.py (REPLACE ENTIRE FILE)
+
+FIX (default Display changed per explicit request) - DEFAULT_DISPLAY_ENABLED
+no longer includes WEEK_HIGH/WEEK_LOW/MONTH_HIGH/MONTH_LOW - only
+H4_HIGH/H4_LOW/PDH/PDL default to Display=ON now. DEFAULT_STRATEGY_ENABLED
+is UNCHANGED (it already only had these same 4 types True). Every other
+POI type (including Week/Month lines, all zone types) still defaults to
+both Display and Strategy = OFF.
+"""
+from __future__ import annotations
+
+
+from dataclasses import dataclass, field
+from enum import Enum
+from time import time
+from typing import Any, Dict, Optional
+
+
+
+LINE_SOURCE_TFS = ("1m", "5m", "15m", "1H", "4H", "1D", "1W", "1M")
+ZONE_SOURCE_TFS = LINE_SOURCE_TFS
+
+
+
+class POIType(str, Enum):
+    """Every POI type the POI engine can compute."""
+
+
+    PREV_1M_HIGH = "P1M_HIGH"
+    PREV_1M_LOW = "P1M_LOW"
+    PREV_5M_HIGH = "P5M_HIGH"
+    PREV_5M_LOW = "P5M_LOW"
+    PREV_15M_HIGH = "P15M_HIGH"
+    PREV_15M_LOW = "P15M_LOW"
+    PREV_1H_HIGH = "P1H_HIGH"
+    PREV_1H_LOW = "P1H_LOW"
+
+
+    H4_HIGH = "4H_HIGH"
+    H4_LOW = "4H_LOW"
+    PDH = "PDH"
+    PDL = "PDL"
+    WEEK_HIGH = "1W_HIGH"
+    WEEK_LOW = "1W_LOW"
+    MONTH_HIGH = "1M_HIGH"
+    MONTH_LOW = "1M_LOW"
+
+
+    RESISTANCE_FLIP = "RESISTANCE_FLIP"
+    SUPPORT_FLIP = "SUPPORT_FLIP"
+    FVG = "FVG"
+    ORDER_BLOCK = "ORDER_BLOCK"
+    INVERSE_FVG = "INVERSE_FVG"
+
+
+
+LINE_POI_TYPES = (
+    POIType.PREV_1M_HIGH,
+    POIType.PREV_1M_LOW,
+    POIType.PREV_5M_HIGH,
+    POIType.PREV_5M_LOW,
+    POIType.PREV_15M_HIGH,
+    POIType.PREV_15M_LOW,
+    POIType.PREV_1H_HIGH,
+    POIType.PREV_1H_LOW,
+    POIType.H4_HIGH,
+    POIType.H4_LOW,
+    POIType.PDH,
+    POIType.PDL,
+    POIType.WEEK_HIGH,
+    POIType.WEEK_LOW,
+    POIType.MONTH_HIGH,
+    POIType.MONTH_LOW,
+)
+
+
+ZONE_POI_TYPES = (
+    POIType.RESISTANCE_FLIP,
+    POIType.SUPPORT_FLIP,
+    POIType.FVG,
+    POIType.INVERSE_FVG,
+    POIType.ORDER_BLOCK,
+)
+
+
+
+POI_SOURCE_TF: Dict[str, str] = {
+    POIType.PREV_1M_HIGH: "1m",
+    POIType.PREV_1M_LOW: "1m",
+    POIType.PREV_5M_HIGH: "5m",
+    POIType.PREV_5M_LOW: "5m",
+    POIType.PREV_15M_HIGH: "15m",
+    POIType.PREV_15M_LOW: "15m",
+    POIType.PREV_1H_HIGH: "1H",
+    POIType.PREV_1H_LOW: "1H",
+    POIType.H4_HIGH: "4H",
+    POIType.H4_LOW: "4H",
+    POIType.PDH: "1D",
+    POIType.PDL: "1D",
+    POIType.WEEK_HIGH: "1W",
+    POIType.WEEK_LOW: "1W",
+    POIType.MONTH_HIGH: "1M",
+    POIType.MONTH_LOW: "1M",
+}
+
+
+
+POI_LABELS: Dict[str, str] = {
+    POIType.PREV_1M_HIGH: "P1m H",
+    POIType.PREV_1M_LOW: "P1m L",
+    POIType.PREV_5M_HIGH: "P5m H",
+    POIType.PREV_5M_LOW: "P5m L",
+    POIType.PREV_15M_HIGH: "P15m H",
+    POIType.PREV_15M_LOW: "P15m L",
+    POIType.PREV_1H_HIGH: "P1H H",
+    POIType.PREV_1H_LOW: "P1H L",
+    POIType.H4_HIGH: "P4H H",
+    POIType.H4_LOW: "P4H L",
+    POIType.PDH: "PDH",
+    POIType.PDL: "PDL",
+    POIType.WEEK_HIGH: "PWH",
+    POIType.WEEK_LOW: "PWL",
+    POIType.MONTH_HIGH: "PMH",
+    POIType.MONTH_LOW: "PML",
+    POIType.RESISTANCE_FLIP: "Resistance Flip",
+    POIType.SUPPORT_FLIP: "Support Flip",
+    POIType.FVG: "FVG",
+    POIType.INVERSE_FVG: "iFVG",
+    POIType.ORDER_BLOCK: "OB",
+}
+
+
+
+DEFAULT_DISPLAY_ENABLED: Dict[str, bool] = {
+    poi_type: False for poi_type in POIType
+}
+DEFAULT_DISPLAY_ENABLED.update(
+    {
+        POIType.H4_HIGH: True,
+        POIType.H4_LOW: True,
+        POIType.PDH: True,
+        POIType.PDL: True,
+    }
+)
+
+
+DEFAULT_STRATEGY_ENABLED: Dict[str, bool] = {
+    poi_type: False for poi_type in POIType
+}
+DEFAULT_STRATEGY_ENABLED.update(
+    {
+        POIType.H4_HIGH: True,
+        POIType.H4_LOW: True,
+        POIType.PDH: True,
+        POIType.PDL: True,
+    }
+)
+
+
+DEFAULT_ZONE_SOURCE_TF_ENABLED: Dict[str, bool] = {
+    "1m": True,
+    "5m": False,
+    "15m": True,
+    "1H": False,
+    "4H": False,
+    "1D": False,
+    "1W": False,
+    "1M": False,
+}
+
+
+# Legacy compatibility: existing File 03 workers use this map for calculation
+# eligibility. In File 03.1 it maps to strategy eligibility.
+DEFAULT_ENABLED: Dict[str, bool] = dict(DEFAULT_STRATEGY_ENABLED)
+
+
+# Legacy compatibility: existing availability code imports POI_TFS.
+POI_TFS = list(LINE_SOURCE_TFS)
+
+
+
+class POIState(str, Enum):
+    APPROACHING = "Approaching"
+    HIT = "Hit"
+    CROSSED = "Crossed"
+    RETESTING = "Retesting"
+
+
+
+@dataclass
+class POI:
+    """One system Point of Interest: line or price-range."""
+
+
+    poi_id: str
+    symbol: str
+    poi_type: str
+    role: str
+    source_tf: str
+    price: Optional[float] = None
+    price_high: Optional[float] = None
+    price_low: Optional[float] = None
+    formed_at_index: int = -1
+    formed_at_ts: float = 0.0
+    active: bool = True
+    display_enabled: bool = True
+    strategy_enabled: bool = False
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+    def is_range(self) -> bool:
+        return self.price_high is not None and self.price_low is not None
+
+
+    def mid_price(self) -> float:
+        if self.is_range():
+            return (self.price_high + self.price_low) / 2.0
+        if self.price is None:
+            raise ValueError(f"POI {self.poi_id} has no price.")
+        return self.price
+
+
+    @property
+    def chart_label(self) -> str:
+        return POI_LABELS.get(self.poi_type, str(self.poi_type))
+
+
+    @property
+    def line_width_px(self) -> int:
+        if self.is_range():
+            return 1
+        return 2 if self.role == "resistance" else 1
+
+
+
+@dataclass
+class POIStateRecord:
+    """Live tracking state for one POI, independent of all others."""
+
+
+    poi_id: str
+    symbol: str
+    distance_ticks: float
+    state: str
+    last_touch_ts: Optional[float]
+    last_price: float
+    crossed_direction: Optional[str] = None
+    updated_at: float = field(default_factory=time)
+
+----------------------------------------------------------------------------------------------------
+END FILE: poi_types.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: candle_builder_worker.py
+FULL PATH: D:\QuantumTrade19\engines\workers\market_data\candle_builder_worker.py
+----------------------------------------------------------------------------------------------------
+"""
+FULL PATH: engines/workers/market_data/candle_builder_worker.py
+File 02 — Market Data Monitor — Worker 6/6
+
+Aggregates normalized ticks into 1m/5m/15m (trading) and 1H/4H/Daily/Weekly/Monthly
+(POI) candles. Stitches historical backfill + live ticks into ONE continuous series
+— no gap, no duplicate candle. Verified via tests/test_market_data_monitor.py
+(5/5 passing, mocked data — no live network required).
+"""
+from __future__ import annotations
+
+import threading
+from dataclasses import dataclass, asdict
+from typing import Callable, Dict, List, Optional, Tuple
+
+TRADING_TFS = ["1m", "5m", "15m"]
+POI_TFS = ["1H", "4H", "1D", "1W", "1M"]
+ALL_TFS = TRADING_TFS + POI_TFS
+
+_TF_MS: Dict[str, int] = {
+    "1m": 60_000, "5m": 5 * 60_000, "15m": 15 * 60_000,
+    "1H": 60 * 60_000, "4H": 4 * 60 * 60_000, "1D": 24 * 60 * 60_000,
+    "1W": 7 * 24 * 60 * 60_000, "1M": 30 * 24 * 60 * 60_000,  # 1M = calendar approx bucket
+}
+
+
+@dataclass
+class Candle:
+    symbol: str
+    timeframe: str
+    open_time: int
+    close_time: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    is_closed: bool = False
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def _bucket_start(exchange_ts: int, tf: str) -> int:
+    step = _TF_MS[tf]
+    return (exchange_ts // step) * step
+
+
+class CandleBuilderWorker:
+    """One instance shared across all symbols/timeframes; state keyed by (symbol, tf)."""
+
+    def __init__(self, on_candle_closed: Optional[Callable[["Candle"], None]] = None) -> None:
+        self._lock = threading.RLock()
+        self._current: Dict[Tuple[str, str], Candle] = {}
+        self._closed_history: Dict[Tuple[str, str], List[Candle]] = {}
+        self._last_closed_time: Dict[Tuple[str, str], int] = {}
+        self._on_candle_closed = on_candle_closed
+
+    def seed_historical(self, symbol: str, timeframe: str, candles: List[Candle]) -> None:
+        """Loads Historical_Data_Loader_Worker output so the live series starts
+        continuous - no gap between backfill and first live tick.
+
+        FIX: the last baseline candle is CoinDCX's still-forming "current"
+        bucket at fetch time, not a truly closed one. Holding it back into
+        _current (instead of _closed_history) lets the first live tick
+        extend it in place, instead of creating a second candle with the
+        same open_time that later duplicates on close."""
+        key = (symbol, timeframe)
+        with self._lock:
+            ordered = sorted(candles, key=lambda c: c.open_time)
+            if not ordered:
+                return
+            last = ordered[-1]
+            closed_part = ordered[:-1]
+            self._closed_history[key] = closed_part
+            if closed_part:
+                self._last_closed_time[key] = closed_part[-1].open_time
+            reopened = Candle(
+                symbol=last.symbol, timeframe=last.timeframe,
+                open_time=last.open_time, close_time=last.close_time,
+                open=last.open, high=last.high, low=last.low,
+                close=last.close, volume=last.volume, is_closed=False,
+            )
+            self._current[key] = reopened
+    def ingest(self, tick, timeframes: Optional[List[str]] = None) -> List[Candle]:
+        """Feeds one normalized tick into every requested timeframe bucket.
+        Returns the list of candles that just CLOSED as a result (may be empty)."""
+        tfs = timeframes or ALL_TFS
+        closed_now: List[Candle] = []
+        with self._lock:
+            for tf in tfs:
+                key = (tick.symbol, tf)
+                bucket_open = _bucket_start(tick.exchange_ts, tf)
+                current = self._current.get(key)
+
+                if current is None:
+                    current = Candle(
+                        symbol=tick.symbol, timeframe=tf,
+                        open_time=bucket_open, close_time=bucket_open + _TF_MS[tf] - 1,
+                        open=tick.price, high=tick.price, low=tick.price,
+                        close=tick.price, volume=tick.volume,
+                    )
+                    self._current[key] = current
+                    continue
+
+                if bucket_open == current.open_time:
+                    current.high = max(current.high, tick.price)
+                    current.low = min(current.low, tick.price)
+                    current.close = tick.price
+                    current.volume += tick.volume
+                elif bucket_open > current.open_time:
+                    # current bucket is finished — close it, then open the new one
+                    current.is_closed = True
+                    self._closed_history.setdefault(key, []).append(current)
+                    self._last_closed_time[key] = current.open_time
+                    closed_now.append(current)
+                    if self._on_candle_closed:
+                        self._on_candle_closed(current)
+
+                    new_candle = Candle(
+                        symbol=tick.symbol, timeframe=tf,
+                        open_time=bucket_open, close_time=bucket_open + _TF_MS[tf] - 1,
+                        open=tick.price, high=tick.price, low=tick.price,
+                        close=tick.price, volume=tick.volume,
+                    )
+                    self._current[key] = new_candle
+                # bucket_open < current.open_time -> stale/late tick, dropped (never rewrites a closed candle)
+        return closed_now
+
+    def get_live_candle(self, symbol: str, timeframe: str) -> Optional[Candle]:
+        with self._lock:
+            return self._current.get((symbol, timeframe))
+
+    def get_series(self, symbol: str, timeframe: str, limit: Optional[int] = None) -> List[Candle]:
+        """Closed history + current forming candle, oldest -> newest, no gaps/dupes."""
+        key = (symbol, timeframe)
+        with self._lock:
+            series = list(self._closed_history.get(key, []))
+            live = self._current.get(key)
+            if live is not None:
+                series = series + [live]
+            if limit:
+                series = series[-limit:]
+            return series
+
+    def check_continuity(self, symbol: str, timeframe: str) -> Dict[str, object]:
+        """Check-gate helper: scans closed history for gaps/dupes. Returns a report dict."""
+        key = (symbol, timeframe)
+        step = _TF_MS[timeframe]
+        with self._lock:
+            history = self._closed_history.get(key, [])
+            gaps, dupes = [], []
+            for i in range(1, len(history)):
+                delta = history[i].open_time - history[i - 1].open_time
+                if delta == 0:
+                    dupes.append(history[i].open_time)
+                elif delta != step:
+                    gaps.append((history[i - 1].open_time, history[i].open_time))
+            return {"symbol": symbol, "timeframe": timeframe, "candle_count": len(history),
+                    "gaps": gaps, "duplicates": dupes, "clean": not gaps and not dupes}
+
+----------------------------------------------------------------------------------------------------
+END FILE: candle_builder_worker.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: market_data_monitor.py
+FULL PATH: D:\QuantumTrade19\engines\monitors\market_data_monitor.py
+----------------------------------------------------------------------------------------------------
+"""Market Data Monitor (Tier 2 Assembly).
+
+TARGET PATH: D:\QuantumTrade19\engines\monitors\market_data_monitor.py
+REPLACE THE ENTIRE FILE.
+
+FIX v0.4.35 - Deep Historical Data card progress bar stays green/100%
+forever after clicking Delete:
+
+delete_deep_history() cleared the manifest and the physical SQLite rows,
+but never reset DeepHistoryDownloaderWorker's own in-memory status cache
+(percent, state, present/required/missing candles) for that symbol+
+timeframe. get_deep_history_progress() reads percent/state directly from
+that cached status dict (self.deep_history_downloader.get_status()) - it
+is NOT recomputed from physical rows on every call. So after a delete, the
+UI kept displaying the last cached "complete/100%" value even though the
+database was empty, because nothing ever told the downloader its own
+cached status was now stale.
+
+Fix: delete_deep_history() now also calls
+self.deep_history_downloader.reset_status(symbol, timeframe) (new method,
+added to deep_history_downloader_worker.py in this same patch) immediately
+after clearing the manifest and SQLite rows. The next
+get_deep_history_progress() call for that symbol/timeframe now correctly
+reports state="idle", percent=0, until a new download is started.
+
+NOTE (not a bug - explained, not "fixed"): the Trading Panel chart still
+showing some candles immediately after Delete Data is BY DESIGN. Delete
+Data only clears the persistent SQLite deep-history archive - it
+deliberately does NOT touch CandleBuilderWorker's separate in-memory
+baseline window (the always-on minimum-5-day rolling window), per the
+project's own Deep Historical Data spec ("Delete Data removes the deep
+archive only, 5-day minimum re-downloads automatically if needed").
+get_chart_candles() merges both sources on purpose.
+
+FIX v0.4.21 (carried forward, unchanged) - DeepHistoryDownloaderWorker is
+wired with get_missing_ranges=self.candle_store.get_missing_ranges and
+get_coverage=self.sqlite_coverage_payload (both backed by real SQLite
+rows). get_deep_history_progress() returns the full real-time status from
+DeepHistoryDownloaderWorker.get_status() - percent, present_candles,
+required_candles, missing_candles, eta_seconds, broker_ceiling_reached -
+plus physical SQLite coverage.
+
+Everything else - WS/REST/health-report logic, get_historical_candles(),
+chart candle merging - is unchanged from v0.3.9.
+"""
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from typing import Dict, List, Optional
+
+from engines.workers.market_data.symbol_registry_worker import SymbolRegistryWorker
+from engines.workers.market_data.ws_feed_worker import WSFeedWorker, SocketTransport
+from engines.workers.market_data.rest_poll_fallback_worker import RestPollFallbackWorker
+from engines.workers.market_data.historical_data_loader_worker import HistoricalDataLoaderWorker
+from engines.workers.market_data.tick_normalizer_worker import TickNormalizerWorker
+from engines.workers.market_data.candle_builder_worker import (
+    CandleBuilderWorker,
+    Candle,
+    TRADING_TFS,
+    POI_TFS,
+)
+from engines.workers.market_data.history_manifest_worker import HistoryManifestWorker
+from engines.workers.market_data.deep_history_downloader_worker import DeepHistoryDownloaderWorker
+from engines.workers.market_data.history_depth_prober_worker import HistoryDepthProberWorker
+from engines.workers.market_data.candle_store_worker import CandleStoreWorker
+
+logger = logging.getLogger("market_data.monitor")
+
+DAY_MS = 86_400_000
+
+
+class MarketDataMonitor:
+    def __init__(self, transport: SocketTransport) -> None:
+        self._lock = threading.RLock()
+
+        self.symbol_registry = SymbolRegistryWorker()
+        self.candle_builder = CandleBuilderWorker(on_candle_closed=self._publish_candle_closed)
+        self.historical_loader = HistoricalDataLoaderWorker()
+        self.rest_fallback = RestPollFallbackWorker(on_tick=self._handle_rest_tick)
+        self.ws_feed = WSFeedWorker(
+            transport=transport,
+            on_tick=self._handle_ws_tick,
+            on_drop=self._handle_ws_drop,
+            on_restore=self._handle_ws_restore,
+        )
+
+        self.history_manifest = HistoryManifestWorker()
+        self.candle_store = CandleStoreWorker()
+        self.deep_history_downloader = DeepHistoryDownloaderWorker(
+            manifest=self.history_manifest,
+            on_chunk=self._handle_deep_history_chunk,
+            get_missing_ranges=self.candle_store.get_missing_ranges,
+            get_coverage=self.sqlite_coverage_payload,
+        )
+        self.depth_prober = HistoryDepthProberWorker(manifest=self.history_manifest)
+
+        self._subscribed: set[str] = set()
+        self._degraded: set[str] = set()
+        self._last_health: Dict[str, str] = {}
+        logger.info("market_data_monitor_created")
+
+    # ================= public interface =================
+
+    def start(self) -> None:
+        active_symbols = self.symbol_registry.get_active_symbols()
+        logger.info("market_data_monitor_start active_symbols=%s", active_symbols)
+        self.ws_feed.start()
+        for symbol in active_symbols:
+            self.subscribe(symbol)
+
+    def stop(self) -> None:
+        logger.info("market_data_monitor_stop subscribed_count=%d", len(self._subscribed))
+        with self._lock:
+            symbols = list(self._subscribed)
+        for symbol in symbols:
+            self.unsubscribe(symbol)
+        self.ws_feed.stop()
+
+    def subscribe(self, symbol: str) -> None:
+        with self._lock:
+            if symbol in self._subscribed:
+                logger.debug("market_data_subscribe_ignored_already_subscribed symbol=%s", symbol)
+                return
+            self._subscribed.add(symbol)
+        logger.info("market_data_subscribe_started symbol=%s", symbol)
+        try:
+            self._seed_baseline_history(symbol)
+            self.ws_feed.subscribe(symbol)
+            logger.info("market_data_subscribe_complete symbol=%s", symbol)
+        except Exception:
+            with self._lock:
+                self._subscribed.discard(symbol)
+            logger.exception("market_data_subscribe_failed symbol=%s", symbol)
+            raise
+
+    def unsubscribe(self, symbol: str) -> None:
+        with self._lock:
+            was_subscribed = symbol in self._subscribed
+            self._subscribed.discard(symbol)
+            self._degraded.discard(symbol)
+            self._last_health.pop(symbol, None)
+        self.ws_feed.unsubscribe(symbol)
+        self.rest_fallback.disengage(symbol)
+        if was_subscribed:
+            logger.info("market_data_unsubscribed symbol=%s", symbol)
+
+    def get_live_candle(self, symbol: str, timeframe: str) -> Optional[Candle]:
+        return self.candle_builder.get_live_candle(symbol, timeframe)
+
+    def get_historical_candles(self, symbol: str, timeframe: str, days: int) -> List[Candle]:
+        """Explicit broker-history read. Not permitted for Trading Panel
+        rendering or chart polling. Use get_chart_candles() for chart data."""
+        end_ms = self._now_ms()
+        start_ms = end_ms - days * 24 * 60 * 60 * 1000
+        candles = self.historical_loader.fetch_range(symbol, timeframe, start_ms, end_ms)
+        logger.debug(
+            "market_data_historical_fetch symbol=%s timeframe=%s days=%d candles=%d",
+            symbol, timeframe, days, len(candles),
+        )
+        return candles
+
+    def get_chart_candles(self, symbol: str, timeframe: str, days: int) -> List[Candle]:
+        """Return local-only chart candles, oldest to newest. Merges
+        CandleStoreWorker (persistent SQLite) with CandleBuilderWorker's
+        in-memory RAM series - RAM wins on any timestamp collision (it
+        always has the current forming candle). Deliberately continues to
+        include the RAM baseline window even after a deep-history Delete -
+        see module docstring."""
+        if days <= 0:
+            return []
+
+        cutoff_ms = self._now_ms() - days * 24 * 60 * 60 * 1000
+        now_ms = self._now_ms()
+
+        merged: Dict[int, Candle] = {}
+
+        persisted = self.candle_store.get_candles(symbol, timeframe, cutoff_ms, now_ms)
+        for candle in persisted:
+            merged[candle.open_time] = candle
+
+        series = self.candle_builder.get_series(symbol, timeframe)
+        for candle in series:
+            if candle.open_time >= cutoff_ms:
+                merged[candle.open_time] = candle
+
+        result = [merged[open_time] for open_time in sorted(merged)]
+
+        logger.debug(
+            "market_data_chart_local_read symbol=%s timeframe=%s requested_days=%d persisted=%d ram=%d merged=%d",
+            symbol, timeframe, days, len(persisted), len(series), len(result),
+        )
+        return result
+
+    def get_recent_window(
+        self, symbol: str, timeframe: str, end_ms: Optional[int] = None,
+        visible_days: int = 1, older_buffer_days: int = 2,
+    ) -> dict:
+        if end_ms is None:
+            end_ms = self._now_ms()
+        return self.candle_store.get_recent_window(
+            symbol, timeframe, int(end_ms), visible_days=visible_days, older_buffer_days=older_buffer_days,
+        )
+
+    def get_local_coverage(self, symbol: str, timeframe: str, requested_days: Optional[int] = None) -> dict:
+        coverage = self.candle_store.get_local_coverage(symbol, timeframe, requested_days, self._now_ms())
+        return coverage.to_dict()
+
+    def sqlite_coverage_payload(self, symbol: str, timeframe: str, start_ms: int, end_ms: int) -> dict:
+        """Real-time coverage callback wired into DeepHistoryDownloaderWorker.
+        Computes required/present/missing candle counts directly from
+        physical SQLite rows for the exact window the downloader is
+        currently working on - this is what makes the progress bar and
+        ETA in the UI genuinely truthful instead of a guess."""
+        requested_days = max(1, int((end_ms - start_ms) / DAY_MS))
+        return self.candle_store.get_local_coverage(symbol, timeframe, requested_days, end_ms).to_dict()
+
+    def get_chart_coverage_days(self, symbol: str, timeframe: str) -> float:
+        return self.candle_store.get_chart_coverage_days(symbol, timeframe)
+
+    def get_health(self) -> Dict[str, str]:
+        report: Dict[str, str] = {}
+        with self._lock:
+            symbols = list(self._subscribed)
+        for symbol in symbols:
+            if self.ws_feed.is_healthy(symbol):
+                health = "OK"
+            elif self.rest_fallback.is_engaged(symbol):
+                health = "DEGRADED"
+            else:
+                health = "DOWN"
+            report[symbol] = health
+            self._log_health_transition(symbol, health)
+        return report
+
+    # ================= deep history / ceiling interface =================
+
+    def start_deep_history(self, symbol: str, timeframe: str, target_days: Optional[int] = None) -> None:
+        logger.info("deep_history_started symbol=%s timeframe=%s target_days=%s", symbol, timeframe, target_days)
+        self.deep_history_downloader.start_download(symbol, timeframe, target_days)
+
+    def cancel_deep_history(self, symbol: str, timeframe: str) -> None:
+        logger.info("deep_history_cancel_requested symbol=%s timeframe=%s", symbol, timeframe)
+        self.deep_history_downloader.cancel_download(symbol, timeframe)
+
+    def get_deep_history_progress(self, symbol: str, timeframe: str) -> dict:
+        """Full real-time download progress, sourced directly from
+        DeepHistoryDownloaderWorker.get_status() (percent, present/
+        required/missing candle counts, eta_seconds, broker ceiling flag)
+        plus physical SQLite coverage. This is the single source of truth
+        the Trading Panel and Deep Historical Data card must bind to -
+        there is no other progress signal anywhere else in the app."""
+        status = self.deep_history_downloader.get_status(symbol, timeframe)
+        coverage = self.candle_store.get_local_coverage(symbol, timeframe)
+        return {
+            "state": status["state"],
+            "error": status["error"],
+            "percent": status["percent"],
+            "present_candles": status["present_candles"],
+            "required_candles": status["required_candles"],
+            "missing_candles": status["missing_candles"],
+            "eta_seconds": status["eta_seconds"],
+            "broker_ceiling_reached": status["broker_ceiling_reached"],
+            "covered_days": coverage.contiguous_days,
+            "is_complete": status["state"] == "complete",
+        }
+
+    def delete_deep_history(self, symbol: str, timeframe: str) -> None:
+        logger.warning("deep_history_delete_requested symbol=%s timeframe=%s", symbol, timeframe)
+        self.history_manifest.delete_symbol_manifest(symbol)
+        self.candle_store.delete_symbol_timeframe(symbol, timeframe)
+        self.deep_history_downloader.reset_status(symbol, timeframe)
+
+    def start_ceiling_probe(self, symbol: str, timeframe: str) -> None:
+        logger.info("history_ceiling_probe_started symbol=%s timeframe=%s", symbol, timeframe)
+        self.depth_prober.start_probe(symbol, timeframe)
+
+    def get_ceiling_days(self, symbol: str, timeframe: str):
+        return self.depth_prober.get_ceiling_days(symbol, timeframe)
+
+    # ================= internal wiring =================
+
+    def _seed_baseline_history(self, symbol: str) -> None:
+        started = time.monotonic()
+        logger.info("baseline_seed_started symbol=%s timeframes=%s", symbol, TRADING_TFS)
+        baseline = self.historical_loader.backfill_baseline(symbol)
+        counts: Dict[str, int] = {}
+        for timeframe, candles in baseline.items():
+            self.candle_builder.seed_historical(symbol, timeframe, candles)
+            counts[timeframe] = len(candles)
+        logger.info(
+            "baseline_seed_complete symbol=%s counts=%s duration_s=%.3f",
+            symbol, counts, time.monotonic() - started,
+        )
+
+    def _handle_ws_tick(self, symbol: str, payload: dict) -> None:
+        tick = TickNormalizerWorker.from_ws_payload(symbol, payload)
+        if TickNormalizerWorker.is_valid(tick):
+            self.candle_builder.ingest(tick, timeframes=TRADING_TFS + POI_TFS)
+        else:
+            logger.warning(
+                "ws_price_bearing_delta_rejected_by_normalizer symbol=%s keys=%s",
+                symbol, sorted(payload.keys()) if isinstance(payload, dict) else type(payload).__name__,
+            )
+
+    def _handle_rest_tick(self, symbol: str, payload: dict) -> None:
+        tick = TickNormalizerWorker.from_rest_ticker(symbol, payload)
+        if TickNormalizerWorker.is_valid(tick):
+            self.candle_builder.ingest(tick, timeframes=TRADING_TFS + POI_TFS)
+        else:
+            logger.debug("rest_tick_rejected_by_normalizer symbol=%s", symbol)
+
+    def _handle_ws_drop(self, symbol: str) -> None:
+        with self._lock:
+            already_degraded = symbol in self._degraded
+            self._degraded.add(symbol)
+        if not already_degraded:
+            logger.warning("ws_drop_rest_fallback_engaging symbol=%s", symbol)
+            self.rest_fallback.engage(symbol)
+
+    def _handle_ws_restore(self, symbol: str) -> None:
+        with self._lock:
+            was_degraded = symbol in self._degraded
+            self._degraded.discard(symbol)
+        self.rest_fallback.disengage(symbol)
+        if was_degraded:
+            logger.info("ws_restored_rest_fallback_disengaged symbol=%s", symbol)
+
+    def _handle_deep_history_chunk(self, symbol: str, timeframe: str, candles: list) -> None:
+        saved = self.candle_store.save_candles(symbol, timeframe, candles)
+        logger.debug(
+            "deep_history_chunk_persisted symbol=%s timeframe=%s rows=%d",
+            symbol, timeframe, saved,
+        )
+
+    def _publish_candle_closed(self, candle: Candle) -> None:
+        try:
+            self.candle_store.save_candles(candle.symbol, candle.timeframe, [candle])
+        except Exception:
+            logger.exception(
+                "candle_close_persist_failed symbol=%s timeframe=%s open_time=%d",
+                candle.symbol, candle.timeframe, candle.open_time,
+            )
+        logger.debug(
+            "candle_closed symbol=%s timeframe=%s open_time=%d close=%s",
+            candle.symbol, candle.timeframe, candle.open_time, candle.close,
+        )
+
+    def _log_health_transition(self, symbol: str, health: str) -> None:
+        with self._lock:
+            previous = self._last_health.get(symbol)
+            self._last_health[symbol] = health
+        if previous != health:
+            level = logging.INFO if health == "OK" else logging.WARNING
+            logger.log(
+                level, "market_data_health_transition symbol=%s previous=%s current=%s",
+                symbol, previous or "UNSET", health,
+            )
+
+    @staticmethod
+    def _now_ms() -> int:
+        return int(time.time() * 1000)
+
+----------------------------------------------------------------------------------------------------
+END FILE: market_data_monitor.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BUNDLE SUMMARY
+Files successfully added: 4
+Files skipped/failed: 0
+----------------------------------------------------------------------------------------------------
+

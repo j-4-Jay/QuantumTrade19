@@ -2,14 +2,20 @@
 
 PATH: ui/components/page_shell.py  (REPLACE ENTIRE FILE)
 
-CHANGE (v0.3.7): restructured so the topbar spans the FULL width of the
-screen (top row), with the sidebar + content area as a row underneath it,
-instead of sidebar + (topbar+content) side by side. This is what makes the
-header full-width and the sidebar correspondingly shorter. The content box
-automatically fills whatever width the (now-collapsible) sidebar frees up -
-no extra logic needed, since the sidebar's own width transition (see
-ui/components/sidebar.py) combined with this row's flex="1" content box
-handles the expand/collapse resize automatically.
+FIX (shared background / seamless glow blend) - the sidebar's own outer
+margin ("0.75rem 0 0.75rem 0.75rem") and the content box's own padding
+("1.5rem" on all sides) used to stack independently, producing a slightly
+asymmetric double-gap between the sidebar's right edge and the first
+content card's left edge - visually reading as two disconnected floating
+panels instead of one continuous surface. Content box's LEFT padding is
+now reduced to match the sidebar's own margin unit exactly (0.75rem),
+so there is exactly ONE consistent gap between them; top/right/bottom
+padding are unchanged. Both panels already render on the exact same
+PAGE_BG_STYLE gradient (this vstack's own `style=`) - the gap width was
+the only real inconsistency, not the background itself.
+
+CHANGE (v0.3.7, unchanged) - topbar spans the full width; sidebar renders
+below it as a row with the content area.
 """
 from __future__ import annotations
 import reflex as rx
@@ -35,7 +41,16 @@ def qt19_page_shell(content: rx.Component, show_nav: bool = True) -> rx.Componen
         rx.cond(show_nav, qt19_topbar(), rx.fragment()),
         rx.hstack(
             rx.cond(show_nav, qt19_sidebar(), rx.fragment()),
-            rx.box(content, width="100%", padding="1.5rem", flex="1", overflow_y="auto"),
+            rx.box(
+                content,
+                width="100%",
+                padding_top="1.5rem",
+                padding_right="1.5rem",
+                padding_bottom="1.5rem",
+                padding_left="0.75rem",
+                flex="1",
+                overflow_y="auto",
+            ),
             width="100%", height="100%", spacing="0", align_items="stretch",
         ),
         width="100%", height="100vh", spacing="0", style=PAGE_BG_STYLE,

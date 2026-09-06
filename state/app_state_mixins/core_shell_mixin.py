@@ -2,16 +2,9 @@
 
 PATH: state/app_state_mixins/core_shell_mixin.py  (REPLACE ENTIRE FILE)
 
-FIX v0.5.0-r11 - on_load() now also restores the 5 new
-trading_panel_crosshair_* settings from persistence, same pattern as
-every other trading_panel_* setting already restored here.
-
-FIX v0.5.0 (carried forward) - on_load()/set_active_tab() also refresh
-and start the POI chart overlay poller whenever landing on/switching to
-Trading Panel.
-
-FIX v0.4.41 (carried forward) - background poller auto-start in on_load()
-for whichever tab was actually restored, not just on manual tab clicks.
+FIX (chart background auto-theme) - on_load() now also restores
+trading_panel_bg_mode, same pattern as every other trading_panel_*
+setting already restored here.
 """
 from __future__ import annotations
 
@@ -32,6 +25,8 @@ from state.app_state_mixins.shared import (
     TRANSITION_EFFECTS,
 )
 
+_SIDEBAR_STAGE_ORDER = ["full", "icons", "line"]
+
 
 class CoreShellMixin(rx.State, mixin=True):
     async def on_load(self) -> None:
@@ -49,13 +44,27 @@ class CoreShellMixin(rx.State, mixin=True):
         self.trading_panel_chart_theme = settings.get("trading_panel_chart_theme", self.trading_panel_chart_theme)
         self.trading_panel_symbol = settings.get("trading_panel_symbol", self.trading_panel_symbol)
         self.trading_panel_chart_tf = settings.get("trading_panel_chart_tf", self.trading_panel_chart_tf)
-        self.sidebar_collapsed = bool(settings.get("sidebar_collapsed", False))
+        self.trading_panel_bg_mode = settings.get("trading_panel_bg_mode", self.trading_panel_bg_mode)
+
+        saved_stage = settings.get("sidebar_stage", "full")
+        self.sidebar_stage = saved_stage if saved_stage in _SIDEBAR_STAGE_ORDER else "full"
+        self.sidebar_collapsed = self.sidebar_stage != "full"
 
         self.trading_panel_crosshair_enabled = bool(settings.get("trading_panel_crosshair_enabled", True))
         self.trading_panel_crosshair_color = settings.get("trading_panel_crosshair_color", self.trading_panel_crosshair_color)
         self.trading_panel_crosshair_opacity = int(settings.get("trading_panel_crosshair_opacity", self.trading_panel_crosshair_opacity))
         self.trading_panel_crosshair_style = settings.get("trading_panel_crosshair_style", self.trading_panel_crosshair_style)
         self.trading_panel_crosshair_thickness = int(settings.get("trading_panel_crosshair_thickness", self.trading_panel_crosshair_thickness))
+
+        candle_style = settings.get("candle_style", {})
+        self.candle_style_mode = candle_style.get("mode", self.candle_style_mode)
+        self.candle_up_color = candle_style.get("up_color", self.candle_up_color)
+        self.candle_down_color = candle_style.get("down_color", self.candle_down_color)
+        self.candle_no_change_color = candle_style.get("no_change_color", self.candle_no_change_color)
+        self.candle_up_border_color = candle_style.get("up_border_color", self.candle_up_border_color)
+        self.candle_down_border_color = candle_style.get("down_border_color", self.candle_down_border_color)
+        self.candle_up_wick_color = candle_style.get("up_wick_color", self.candle_up_wick_color)
+        self.candle_down_wick_color = candle_style.get("down_wick_color", self.candle_down_wick_color)
 
         saved_days = settings.get(f"chart_display_days::{self.trading_panel_symbol}", TRADING_PANEL_DEFAULT_DISPLAY_DAYS)
         self.trading_panel_display_days_input = str(saved_days)
@@ -167,9 +176,15 @@ class CoreShellMixin(rx.State, mixin=True):
         is_on = _engine.ui.sound.toggle_master()
         self.sound_muted = not is_on
 
+    def cycle_sidebar_stage(self) -> None:
+        current_index = _SIDEBAR_STAGE_ORDER.index(self.sidebar_stage) if self.sidebar_stage in _SIDEBAR_STAGE_ORDER else 0
+        next_stage = _SIDEBAR_STAGE_ORDER[(current_index + 1) % len(_SIDEBAR_STAGE_ORDER)]
+        self.sidebar_stage = next_stage
+        self.sidebar_collapsed = next_stage != "full"
+        _engine.security.persistence.save({"sidebar_stage": next_stage})
+
     def toggle_sidebar_collapsed(self) -> None:
-        self.sidebar_collapsed = not self.sidebar_collapsed
-        _engine.security.persistence.save({"sidebar_collapsed": self.sidebar_collapsed})
+        self.cycle_sidebar_stage()
 
     def play_sound(self, event_name: str):
         url = _engine.ui.play_sound(event_name)
