@@ -30,7 +30,7 @@ from engines.monitors.market_data_monitor import MarketDataMonitor
 from engines.monitors.poi_monitor import POIMonitor
 from engines.workers.market_data.coindcx_socket_transport import CoinDCXSocketTransport
 from engines.event_bus.bus import event_bus
-
+from engines.monitors.setup_detection_monitor import SetupDetectionMonitor
 
 class ShellScreen(str, Enum):
     SPLASH = "splash"
@@ -50,6 +50,8 @@ class MasterAppEngine:
         self._market_data_started = False
         self.poi_monitor: Optional[POIMonitor] = None
         self._poi_monitor_started = False
+        self.setup_detection_monitor: Optional[SetupDetectionMonitor] = None
+        self._setup_detection_monitor_started = False
         self.screen: ShellScreen = ShellScreen.SPLASH
         self.paper_mode: bool = True
 
@@ -66,6 +68,35 @@ class MasterAppEngine:
         if not self._poi_monitor_started:
             self.poi_monitor = POIMonitor(self.market_data, self.market_data.symbol_registry)
             self._poi_monitor_started = True
+    
+    
+    def ensure_setup_detection_monitor_started(self) -> None:
+        """File 04.1 wiring: lazily builds SetupDetectionMonitor exactly once,
+        registers it to receive every closed candle from MarketDataMonitor,
+        and depends on POIMonitor already being started (same lazy pattern
+        as ensure_poi_monitor_started)."""
+        if not self._setup_detection_monitor_started:
+            self.ensure_poi_monitor_started()
+            self.setup_detection_monitor = SetupDetectionMonitor(
+                self.poi_monitor, self.market_data.symbol_registry
+            )
+            self.market_data.add_candle_close_subscriber(
+                self.setup_detection_monitor.on_candle_closed
+            )
+            self._setup_detection_monitor_started = True
+
+    def get_confirmed_setups(self, symbol: str, tf: str):
+        self.ensure_setup_detection_monitor_started()
+        return self.setup_detection_monitor.get_confirmed_setups(symbol, tf)
+
+    def get_pending_setups(self, symbol: str, tf: str):
+        self.ensure_setup_detection_monitor_started()
+        return self.setup_detection_monitor.get_pending_setups(symbol, tf)
+        
+    
+    
+    
+    
 
     def get_poi_settings(self) -> dict:
         return self.poi_monitor.get_poi_settings() if self.poi_monitor else {}

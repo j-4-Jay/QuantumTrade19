@@ -1,54 +1,29 @@
 """Market Data Monitor (Tier 2 Assembly).
 
-TARGET PATH: D:\QuantumTrade19\engines\monitors\market_data_monitor.py
+TARGET PATH: D:\\QuantumTrade19\\engines\\monitors\\market_data_monitor.py
 REPLACE THE ENTIRE FILE.
 
-FIX v0.4.35 - Deep Historical Data card progress bar stays green/100%
-forever after clicking Delete:
-
-delete_deep_history() cleared the manifest and the physical SQLite rows,
-but never reset DeepHistoryDownloaderWorker's own in-memory status cache
-(percent, state, present/required/missing candles) for that symbol+
-timeframe. get_deep_history_progress() reads percent/state directly from
-that cached status dict (self.deep_history_downloader.get_status()) - it
-is NOT recomputed from physical rows on every call. So after a delete, the
-UI kept displaying the last cached "complete/100%" value even though the
-database was empty, because nothing ever told the downloader its own
-cached status was now stale.
-
-Fix: delete_deep_history() now also calls
-self.deep_history_downloader.reset_status(symbol, timeframe) (new method,
-added to deep_history_downloader_worker.py in this same patch) immediately
-after clearing the manifest and SQLite rows. The next
-get_deep_history_progress() call for that symbol/timeframe now correctly
-reports state="idle", percent=0, until a new download is started.
-
-NOTE (not a bug - explained, not "fixed"): the Trading Panel chart still
-showing some candles immediately after Delete Data is BY DESIGN. Delete
-Data only clears the persistent SQLite deep-history archive - it
-deliberately does NOT touch CandleBuilderWorker's separate in-memory
-baseline window (the always-on minimum-5-day rolling window), per the
-project's own Deep Historical Data spec ("Delete Data removes the deep
-archive only, 5-day minimum re-downloads automatically if needed").
-get_chart_candles() merges both sources on purpose.
-
-FIX v0.4.21 (carried forward, unchanged) - DeepHistoryDownloaderWorker is
-wired with get_missing_ranges=self.candle_store.get_missing_ranges and
-get_coverage=self.sqlite_coverage_payload (both backed by real SQLite
-rows). get_deep_history_progress() returns the full real-time status from
-DeepHistoryDownloaderWorker.get_status() - percent, present_candles,
-required_candles, missing_candles, eta_seconds, broker_ceiling_reached -
-plus physical SQLite coverage.
+FIX (File 04.1 wiring gap) - added a minimal, additive candle-close
+subscriber list: add_candle_close_subscriber(callback) lets OTHER
+monitors (specifically SetupDetectionMonitor, File 04) register to be
+called with every closed Candle, on every timeframe, the moment it closes
+- something nothing in File 02 previously exposed. _publish_candle_closed()
+now calls every registered subscriber (wrapped in try/except so a
+subscriber's exception can never break candle persistence or the
+websocket/tick pipeline itself) IN ADDITION to its original persistence
+job, which is completely unchanged. No existing method signature, return
+value, or behavior changed - this is purely additive.
 
 Everything else - WS/REST/health-report logic, get_historical_candles(),
-chart candle merging - is unchanged from v0.3.9.
+chart candle merging, deep history - is UNCHANGED from the previously
+locked version.
 """
 from __future__ import annotations
 
 import logging
 import threading
 import time
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from engines.workers.market_data.symbol_registry_worker import SymbolRegistryWorker
 from engines.workers.market_data.ws_feed_worker import WSFeedWorker, SocketTransport
@@ -99,9 +74,23 @@ class MarketDataMonitor:
         self._subscribed: set[str] = set()
         self._degraded: set[str] = set()
         self._last_health: Dict[str, str] = {}
+
+        # FIX (File 04.1 wiring gap): other monitors (SetupDetectionMonitor)
+        # register here to receive every closed Candle on every timeframe.
+        # Purely additive - candle persistence below is unchanged either way.
+        self._candle_close_subscribers: List[Callable[[Candle], None]] = []
+
         logger.info("market_data_monitor_created")
 
     # ================= public interface =================
+
+    def add_candle_close_subscriber(self, callback: Callable[[Candle], None]) -> None:
+        """Registers `callback(candle)` to be invoked for every candle this
+        monitor closes, on every timeframe (1m/5m/15m/1H/4H/1D/1W/1M).
+        Safe to call multiple times; duplicates are not de-duplicated by
+        design (callers are expected to register exactly once, same as
+        every other lazy-singleton monitor in this engine)."""
+        self._candle_close_subscribers.append(callback)
 
     def start(self) -> None:
         active_symbols = self.symbol_registry.get_active_symbols()
@@ -208,11 +197,7 @@ class MarketDataMonitor:
         return coverage.to_dict()
 
     def sqlite_coverage_payload(self, symbol: str, timeframe: str, start_ms: int, end_ms: int) -> dict:
-        """Real-time coverage callback wired into DeepHistoryDownloaderWorker.
-        Computes required/present/missing candle counts directly from
-        physical SQLite rows for the exact window the downloader is
-        currently working on - this is what makes the progress bar and
-        ETA in the UI genuinely truthful instead of a guess."""
+        """Real-time coverage callback wired into DeepHistoryDownloaderWorker."""
         requested_days = max(1, int((end_ms - start_ms) / DAY_MS))
         return self.candle_store.get_local_coverage(symbol, timeframe, requested_days, end_ms).to_dict()
 
@@ -245,12 +230,6 @@ class MarketDataMonitor:
         self.deep_history_downloader.cancel_download(symbol, timeframe)
 
     def get_deep_history_progress(self, symbol: str, timeframe: str) -> dict:
-        """Full real-time download progress, sourced directly from
-        DeepHistoryDownloaderWorker.get_status() (percent, present/
-        required/missing candle counts, eta_seconds, broker ceiling flag)
-        plus physical SQLite coverage. This is the single source of truth
-        the Trading Panel and Deep Historical Data card must bind to -
-        there is no other progress signal anywhere else in the app."""
         status = self.deep_history_downloader.get_status(symbol, timeframe)
         coverage = self.candle_store.get_local_coverage(symbol, timeframe)
         return {
@@ -346,6 +325,18 @@ class MarketDataMonitor:
             "candle_closed symbol=%s timeframe=%s open_time=%d close=%s",
             candle.symbol, candle.timeframe, candle.open_time, candle.close,
         )
+        # FIX (File 04.1 wiring gap): fan the same closed candle out to any
+        # registered subscriber (e.g. SetupDetectionMonitor.on_candle_closed).
+        # Wrapped so a subscriber's own bug can NEVER break candle
+        # persistence or the tick pipeline above.
+        for callback in self._candle_close_subscribers:
+            try:
+                callback(candle)
+            except Exception:
+                logger.exception(
+                    "candle_close_subscriber_failed symbol=%s timeframe=%s open_time=%d callback=%r",
+                    candle.symbol, candle.timeframe, candle.open_time, callback,
+                )
 
     def _log_health_transition(self, symbol: str, health: str) -> None:
         with self._lock:

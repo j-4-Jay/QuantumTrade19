@@ -79,6 +79,7 @@ class CoreShellMixin(rx.State, mixin=True):
             self.refresh_poi_chart_overlays()
             background_tasks.append(type(self).poll_trading_panel_chart)
             background_tasks.append(type(self).poll_poi_chart_overlays)
+            background_tasks.append(type(self).poll_setup_visualization)
         return background_tasks
 
     @rx.event(background=True)
@@ -91,6 +92,7 @@ class CoreShellMixin(rx.State, mixin=True):
             await asyncio.to_thread(_engine.ensure_poi_monitor_started)
             async with self:
                 self.load_poi_settings()
+                self.load_setup_detect_lookback()
         finally:
             async with self:
                 self._poi_monitor_starting = False
@@ -159,6 +161,7 @@ class CoreShellMixin(rx.State, mixin=True):
                 self.play_sound("tab-slide"),
                 type(self).poll_trading_panel_chart,
                 type(self).poll_poi_chart_overlays,
+                type(self).poll_setup_visualization,
             ]
         if tab == "Settings":
             return [self.play_sound("tab-slide"), type(self).poll_deep_history_cards]

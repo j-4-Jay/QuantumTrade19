@@ -2,10 +2,17 @@
 
 PATH: ui/components/trading_panel_chart.py  (REPLACE ENTIRE FILE)
 
-FIX (auto-theme chart background) - background now comes from
-AppState.trading_panel_bg_color (auto-follows the app's current theme,
-or an explicit override chosen via the right-click "Change Mode"
-submenu) instead of a hardcoded day/night pair of hex colors.
+FIX (File 04.1 - Setup Visualization) - poi_overlays/poi_dots swapped for
+AppState.combined_chart_overlays / AppState.combined_chart_dots (and their
+matching *_version counters), which is just POI overlays/dots (unchanged)
+PLUS the new confirmed/pending 123Bull/123Bear setup markers from
+setup_visualization_mixin.py, concatenated together. kline_chart.py itself
+is UNCHANGED - it already renders these generically (kind="zone" for the
+candle-highlight, plain dots for the Candle3 icon / pending marker).
+
+Carried forward unchanged: background still comes from
+AppState.trading_panel_bg_color (auto-follows the app's current theme, or
+an explicit override chosen via the right-click "Change Mode" submenu).
 """
 from __future__ import annotations
 
@@ -25,10 +32,10 @@ def trading_panel_chart() -> rx.Component:
             symbol=AppState.trading_panel_symbol_info,
             period=AppState.trading_panel_period,
             styles=AppState.trading_panel_styles,
-            poi_overlays=AppState.poi_chart_overlays,
-            poi_overlays_version=AppState.poi_chart_overlays_version,
-            poi_dots=AppState.poi_dots,
-            poi_dots_version=AppState.poi_dots_version,
+            poi_overlays=AppState.combined_chart_overlays,
+            poi_overlays_version=AppState.combined_chart_overlays_version,
+            poi_dots=AppState.combined_chart_dots,
+            poi_dots_version=AppState.combined_chart_dots_version,
             chart_id=TRADING_PANEL_CHART_ID,
             id=TRADING_PANEL_CHART_ID,
             on_context_menu=AppState.open_trading_panel_menu,

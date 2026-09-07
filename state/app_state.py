@@ -22,11 +22,13 @@ from state.app_state_mixins.trading_panel_mixin import TradingPanelMixin
 from state.app_state_mixins.deep_history_card_mixin import DeepHistoryCardMixin
 from state.app_state_mixins.poi_chart_mixin import PoiChartMixin
 
+from state.app_state_mixins.setup_visualization_mixin import SetupVisualizationMixin
 TRADING_PANEL_TF_OPTIONS = ["1m", "5m", "15m"]
 TRADING_PANEL_DAY_PRESETS = ["1", "3", "5", "7", "14", "30", "90"]
 
 class AppState(
     CoreShellMixin,
+    SetupVisualizationMixin,
     AuthSecurityMixin,
     MarketDashboardMixin,
     PoiSettingsMixin,
