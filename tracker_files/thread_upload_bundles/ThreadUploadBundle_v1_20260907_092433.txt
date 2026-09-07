@@ -1,0 +1,589 @@
+﻿----------------------------------------------------------------------------------------------------
+QUANTUMTRADE19 - THREAD UPLOAD BUNDLE (v1)
+Created: 20260907_092433
+Project root: D:\QuantumTrade19
+Total files requested: 5
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: v0.4.0-alpha_SetupDetectionMonitor_Summary.md
+FULL PATH: D:\QuantumTrade19\docs\build_log\v0.4.0-alpha_SetupDetectionMonitor_Summary.md
+----------------------------------------------------------------------------------------------------
+# v0.4.0-alpha — File 04 Setup Detection Monitor — Lock Summary
+
+**Status:** LOCKED
+**Locked on:** 07-09-2026
+**Module:** File 04 — Setup Detection Monitor
+**Version:** v0.4.0-alpha
+**Previous locked version:** v0.5.0 (POI Chart Overlay Wiring) — untouched throughout this module.
+
+---
+
+## Delivered Architecture
+
+Tier 2 `SetupDetectionMonitor` (`engines/monitors/setup_detection_monitor.py`) wires 7 Tier 1 Workers behind the locked interface:
+
+```python
+get_pending_setups(symbol, tf)
+get_confirmed_setups(symbol, tf)
+subscribe(callback)   # Confirmed Setup event bus for Confidence Monitor / Execution Monitor
+```
+
+Delivered Workers:
+
+1. `CandleColorClassifierWorker` — Green/Red from close-vs-open only, doji → `None`.
+2. `POIInteractionDetectorWorker` — Touch/Sweep/Cross per closed candle vs every active POI; Scenario-B retest/double-cross-flip read directly off File 03's `POIStateRecord.state` and `INVERSE_FVG` role — zero re-derivation.
+3. `Bull123FSMWorker` / `Bear123FSMWorker` — the Candle1/2/3 role-assignment machine, independently per (symbol, timeframe, poi_id), sharing a `CandleLockRegistry` so no candle is ever reused across setups, directions, or POIs.
+4. `EngulfingDetectorWorker` — Candle2-fully-engulfs-Candle1 confidence input.
+5. `FVGConfirmationDetectorWorker` — Candle3/Candle1 FVG confidence input.
+6. `MTFCascadeWorker` — 15m/5m → 1m cascade: timeout, proximity guard, HTF-extreme break, tighten-to-1m-SL on success, hard "no trade" on any cancellation.
+
+## Algorithm — final, validated form
+
+The Candle1/2/3 machine (`_fsm_base.py`) is **color-agnostic at the anchor/pairing stage** — direction is decided only at the confirmation test (Candle2/Candle3 color + extreme check), matching the master prompts' own description of Bull/Bear as mirror images of one shared mechanic. States per (symbol, timeframe, poi_id): `NONE → ANCHOR → WAITING_C3 → confirmed/aborted`.
+
+Two real bugs were found and fixed via the check gate (see `_fsm_base.py` header for full detail):
+1. Candle1 is not color-locked per direction (a Green candle can anchor a Bull-flavored search).
+2. On a failed Candle3 test, the engine recycles **Candle2** (not the failing candle) as the new Candle1, and immediately re-tests the failing candle as the new Candle2.
+
+## Required Check Gate — Results
+
+### Automated suite
+**Result: PASS — 26/26 tests**, covering all 7 workers, the Tier 2 assembly, cross-timeframe isolation, Bull/Bear no-candle-sharing, and idempotent event emission.
+
+### Real historical validation (the binding gate)
+Hand-extracted from live CoinDCX ETHUSDT 1m chart, PDH = 2513.64, 01:43–01:59, 07-09-2026 (user-sourced, numerically re-verified against the corrected engine):
+
+| Time | Real OHLC (O/H/L/C) | Engine result |
+|---|---|---|
+| 01:43→01:45 | 2516.26/2516.41/2512.67/2514.00 → 2514.99/2516.53/2514.98/2515.62 | **BULL CONFIRMED** (c1=01:43, c2=01:44, c3=01:45) |
+| 01:46→01:47 | 2515.62/2515.79/2512.95/2512.96 → 2512.96/2513.33/2512.08/2512.49 | Correctly refused — predecessor 01:45 already locked; then aborted (same color, no touch) |
+| 01:48→01:51 | — | Anchor chain extends twice (01:49→01:50, both touching), then aborts cleanly (01:51 same color, no touch) |
+| 01:52→01:54 | 2514.34/2515.24/2514.00/2515.24 → 2515.24/2515.24/2513.00/2513.63 → 2513.62/2513.62/2512.88/2512.89 | **BEAR CONFIRMED** (c1=01:52, c2=01:53, c3=01:54) |
+| 01:55→01:58 | 2512.89/2513.99/2512.88/2513.73 → 2513.73/2513.74/2509.70/2510.20 → 2510.21/2511.11/2510.20/2510.91 → 2510.91/2512.06/2510.90/2511.91 | Locked-predecessor reset (01:55), Bear pairing (01:56), failed Bear test recycling Candle2 into a fresh pairing (01:57), **BULL CONFIRMED** (c1=01:56, c2=01:57, c3=01:58) |
+
+**All 7 user-traced scenarios matched exactly**, including every abort, recycle, and lock-rejection. Result: **2 confirmed Bull + 1 confirmed Bear + 4 clean fail/abort/recycle paths**, all numerically verified. User explicitly accepted this as sufficient in lieu of the literal "5 Bull + 5 Bear confirmed" count, given the failure/recycle logic (where both real bugs lived) was exercised and proven correct multiple times over on real data.
+
+## Scope Boundary at Lock
+
+Out of scope for File 04 (belongs to later files):
+- SL/TP/Trailing/Confidence-score math (123Bull/123Bear Sections 8–13) — Risk Math Monitor (File 10) / Confidence Monitor (File 05).
+- Dashboard/Journal/Alerts visual polish — deferred, untouched.
+- `sl_price` on `ConfirmedSetup` is the bare 3-candle extreme only (no fee/volatility/leverage buffer yet) — a deliberate placeholder for File 10.
+
+## Next Module
+
+Proceed to **File 05 — Confidence Monitor**, consuming `SetupDetectionMonitor.subscribe()` and the locked 20-filter/100-point scoring table (123Bull/123Bear Section 13).
+
+----------------------------------------------------------------------------------------------------
+END FILE: v0.4.0-alpha_SetupDetectionMonitor_Summary.md
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: setup_detection_monitor.py
+FULL PATH: D:\QuantumTrade19\engines\monitors\setup_detection_monitor.py
+----------------------------------------------------------------------------------------------------
+"""File 04 - Setup Detection Monitor - Tier 2 Assembly.
+PATH: engines/monitors/setup_detection_monitor.py (REPLACE ENTIRE FILE)
+
+Wires the 7 Tier 1 Workers behind the exact interface locked in
+04_SetupDetectionMonitor_Prompt.md Section 3:
+
+    get_pending_setups(symbol, tf)
+    get_confirmed_setups(symbol, tf)
+
+Every CONFIRMED setup is pushed onto the shared internal event bus exactly
+once, carrying a unique event_id (supports the locked idempotency rule) - for
+Confidence Monitor (File 05) and, later, Execution Monitor's Opposite-Setup
+Exit Guard (File 11) to consume.
+
+Does NOT re-derive or alter File 03 POI/FVG/Order Block logic (consumed
+read-only via POIMonitor) or the locked 123Bull/123Bear rules (consumed via
+Bull123FSMWorker / Bear123FSMWorker, unmodified).
+
+(No wiring changes in this revision - only the internal FSM engine in
+_fsm_base.py changed. Replace this file only to keep the whole File 04
+module on one consistent revision.)
+"""
+from __future__ import annotations
+
+from typing import Callable, Dict, List, Tuple
+
+from engines.workers.setup.setup_types import ConfirmedSetup, PendingSetup, SetupDirection
+from engines.workers.setup.candle_lock_registry import CandleLockRegistry
+from engines.workers.setup.poi_interaction_detector_worker import POIInteractionDetectorWorker
+from engines.workers.setup.engulfing_detector_worker import EngulfingDetectorWorker
+from engines.workers.setup.fvg_confirmation_detector_worker import FVGConfirmationDetectorWorker
+from engines.workers.setup.bull123_fsm_worker import Bull123FSMWorker
+from engines.workers.setup.bear123_fsm_worker import Bear123FSMWorker
+from engines.workers.setup.mtf_cascade_worker import MTFCascadeWorker
+
+TRADING_TFS = ("1m", "5m", "15m")
+
+
+class SetupDetectionMonitor:
+    """Tier-2 orchestration layer; workers own calculations, monitor owns wiring.
+
+    poi_monitor must expose: get_active_pois(symbol), get_poi_state(symbol, poi_id)
+    (File 03, locked, read-only).
+    symbol_registry must expose: get_active_symbols(), get_tick_size(symbol)
+    (File 02, locked, read-only)."""
+
+    def __init__(self, poi_monitor, symbol_registry) -> None:
+        self.poi_monitor = poi_monitor
+        self.symbol_registry = symbol_registry
+
+        self._interaction = POIInteractionDetectorWorker()
+        self._engulfing = EngulfingDetectorWorker()
+        self._fvg_confirm = FVGConfirmationDetectorWorker()
+
+        self._lock_registry: Dict[Tuple[str, str], CandleLockRegistry] = {}
+        self._bull_fsm: Dict[Tuple[str, str], Bull123FSMWorker] = {}
+        self._bear_fsm: Dict[Tuple[str, str], Bear123FSMWorker] = {}
+        self._cascade: Dict[str, MTFCascadeWorker] = {}
+
+        self._confirmed_setups: Dict[Tuple[str, str], List[ConfirmedSetup]] = {}
+        self._seen_event_ids: set = set()
+        self._subscribers: List[Callable[[ConfirmedSetup], None]] = []
+
+        for symbol in self.symbol_registry.get_active_symbols():
+            self._wire_symbol(symbol)
+
+    def _wire_symbol(self, symbol: str) -> None:
+        for tf in TRADING_TFS:
+            key = (symbol, tf)
+            self._lock_registry[key] = CandleLockRegistry()
+            self._bull_fsm[key] = Bull123FSMWorker(self._lock_registry[key])
+            self._bear_fsm[key] = Bear123FSMWorker(self._lock_registry[key])
+            self._confirmed_setups[key] = []
+        self._cascade[symbol] = MTFCascadeWorker(
+            bull_1m_fsm=self._bull_fsm[(symbol, "1m")],
+            bear_1m_fsm=self._bear_fsm[(symbol, "1m")],
+        )
+
+    def get_pending_setups(self, symbol: str, tf: str) -> List[PendingSetup]:
+        key = (symbol, tf)
+        pending: List[PendingSetup] = []
+        if key in self._bull_fsm:
+            pending.extend(self._bull_fsm[key].get_pending(symbol, tf))
+        if key in self._bear_fsm:
+            pending.extend(self._bear_fsm[key].get_pending(symbol, tf))
+        return pending
+
+    def get_confirmed_setups(self, symbol: str, tf: str) -> List[ConfirmedSetup]:
+        return list(self._confirmed_setups.get((symbol, tf), []))
+
+    def subscribe(self, callback: Callable[[ConfirmedSetup], None]) -> None:
+        self._subscribers.append(callback)
+
+    def on_candle_closed(self, candle) -> List[ConfirmedSetup]:
+        symbol, tf = candle.symbol, candle.timeframe
+        if tf not in TRADING_TFS:
+            return []
+        key = (symbol, tf)
+        if key not in self._bull_fsm:
+            self._wire_symbol(symbol)
+
+        pois = self.poi_monitor.get_active_pois(symbol)
+        states = {poi.poi_id: self.poi_monitor.get_poi_state(symbol, poi.poi_id) for poi in pois}
+        interactions = self._interaction.detect(candle, pois, states)
+
+        bull_interactions = {i.poi_id: i for i in interactions if i.search_direction == SetupDirection.BULL}
+        bear_interactions = {i.poi_id: i for i in interactions if i.search_direction == SetupDirection.BEAR}
+
+        newly_confirmed: List[ConfirmedSetup] = []
+        newly_confirmed.extend(self._bull_fsm[key].on_candle_closed(candle, bull_interactions))
+        newly_confirmed.extend(self._bear_fsm[key].on_candle_closed(candle, bear_interactions))
+
+        for confirmed in newly_confirmed:
+            self._enrich(confirmed)
+            self._emit(confirmed)
+
+        if tf == "1m":
+            cascade_hits = self._cascade[symbol].on_1m_candle_closed(candle, bull_interactions, bear_interactions)
+            for confirmed in cascade_hits:
+                self._enrich(confirmed, already_scored=True)
+                self._emit(confirmed)
+
+        for confirmed in newly_confirmed:
+            if tf in ("5m", "15m"):
+                tick_size = self.symbol_registry.get_tick_size(symbol)
+                self._cascade[symbol].start_watch(confirmed, tick_size)
+
+        return newly_confirmed
+
+    def _enrich(self, confirmed: ConfirmedSetup, already_scored: bool = False) -> None:
+        if already_scored:
+            return
+        confirmed.engulfing = self._engulfing.candle2_engulfs_candle1(confirmed.c1, confirmed.c2)
+        confirmed.fvg_confirmation, confirmed.fvg_range = self._fvg_confirm.check(
+            confirmed.c1, confirmed.c3, confirmed.direction
+        )
+        confirmed.sl_price = (
+            min(confirmed.c1.low, confirmed.c2.low, confirmed.c3.low)
+            if confirmed.direction == SetupDirection.BULL
+            else max(confirmed.c1.high, confirmed.c2.high, confirmed.c3.high)
+        )
+
+    def _emit(self, confirmed: ConfirmedSetup) -> None:
+        if confirmed.event_id in self._seen_event_ids:
+            return
+        self._seen_event_ids.add(confirmed.event_id)
+        key = (confirmed.symbol, confirmed.timeframe)
+        self._confirmed_setups.setdefault(key, []).append(confirmed)
+        for callback in self._subscribers:
+            callback(confirmed)
+
+    def get_health(self, symbol: str) -> str:
+        for tf in TRADING_TFS:
+            if (symbol, tf) not in self._bull_fsm:
+                return "DOWN"
+        return "OK"
+
+----------------------------------------------------------------------------------------------------
+END FILE: setup_detection_monitor.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: setup_types.py
+FULL PATH: D:\QuantumTrade19\engines\workers\setup\setup_types.py
+----------------------------------------------------------------------------------------------------
+"""File 04 shared types: candle color, POI interaction, candle roles, pending/confirmed setups.
+
+PATH: engines/workers/setup/setup_types.py (NEW FILE)
+
+Single source of truth for ALL setup rules: 123Bull_Setup_Master_Prompt.md and
+123Bear_Setup_Master_Prompt.md. This module only defines shared data shapes used
+by every Tier 1 Worker in File 04 - it contains zero setup/FSM logic itself.
+"""
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass, field
+from enum import Enum
+from time import time
+from typing import Any, Dict, List, Optional
+
+
+class CandleColor(str, Enum):
+    GREEN = "Green"
+    RED = "Red"
+
+
+class InteractionType(str, Enum):
+    TOUCH = "Touch"
+    SWEEP = "Sweep"
+    CROSS = "Cross"
+
+
+class SetupDirection(str, Enum):
+    BULL = "123Bull"
+    BEAR = "123Bear"
+
+
+class CandleRole(str, Enum):
+    C1 = "Candle1"
+    C2 = "Candle2"
+    C3 = "Candle3"
+
+
+@dataclass
+class CandleRef:
+    """Identifies exactly one closed candle - the unit that gets locked once used
+    in a CONFIRMED setup. (symbol, timeframe, open_time) is unique per candle."""
+
+    symbol: str
+    timeframe: str
+    open_time: int
+
+    def key(self) -> tuple:
+        return (self.symbol, self.timeframe, self.open_time)
+
+
+@dataclass
+class Interaction:
+    """One closed candle's geometric relationship to one POI (Section 4)."""
+
+    poi_id: str
+    interaction_type: str  # InteractionType
+    is_retest: bool = False
+    retest_flipped: bool = False  # True == "double-cross flip" case (Scenario B, opposite direction)
+    search_direction: str = ""  # SetupDirection this interaction is eligible to feed
+
+
+@dataclass
+class PendingSetup:
+    """One in-flight Candle1/Candle2 (or Candle1-only) attempt for one POI, one
+    timeframe, one direction (Bull or Bear)."""
+
+    pending_id: str
+    symbol: str
+    timeframe: str
+    poi_id: str
+    direction: str  # SetupDirection
+    stage: str  # "SEARCHING_C2" | "WAITING_C3"
+    c1: Optional[Any] = None  # Candle
+    c2: Optional[Any] = None  # Candle
+    updated_at: float = field(default_factory=time)
+
+
+@dataclass
+class ConfirmedSetup:
+    """One CONFIRMED 3-candle setup. Emitted exactly once, with a unique event_id,
+    onto the internal event bus for Confidence Monitor / Execution Monitor."""
+
+    event_id: str
+    symbol: str
+    timeframe: str
+    poi_id: str
+    direction: str  # SetupDirection
+    c1: Any
+    c2: Any
+    c3: Any
+    confirmed_at: float
+    engulfing: bool = False
+    fvg_confirmation: bool = False
+    fvg_range: Optional[tuple] = None
+    sl_price: Optional[float] = None
+    is_mtf_cascade_result: bool = False
+    cascade_parent_event_id: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @staticmethod
+    def new_event_id() -> str:
+        return str(uuid.uuid4())
+
+----------------------------------------------------------------------------------------------------
+END FILE: setup_types.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: trading_panel_chart.py
+FULL PATH: D:\QuantumTrade19\ui\components\trading_panel_chart.py
+----------------------------------------------------------------------------------------------------
+"""Trading Panel interactive candlestick chart component.
+
+PATH: ui/components/trading_panel_chart.py  (REPLACE ENTIRE FILE)
+
+FIX (auto-theme chart background) - background now comes from
+AppState.trading_panel_bg_color (auto-follows the app's current theme,
+or an explicit override chosen via the right-click "Change Mode"
+submenu) instead of a hardcoded day/night pair of hex colors.
+"""
+from __future__ import annotations
+
+import reflex as rx
+
+from state.app_state import AppState
+from state.app_state_mixins.shared import TRADING_PANEL_CHART_ID
+from ui.components.kline_chart import kline_chart
+
+
+def trading_panel_chart() -> rx.Component:
+    """Render the interactive KLineCharts surface."""
+    return rx.box(
+        kline_chart(
+            data=AppState.trading_panel_candles,
+            data_version=AppState.trading_panel_data_version,
+            symbol=AppState.trading_panel_symbol_info,
+            period=AppState.trading_panel_period,
+            styles=AppState.trading_panel_styles,
+            poi_overlays=AppState.poi_chart_overlays,
+            poi_overlays_version=AppState.poi_chart_overlays_version,
+            poi_dots=AppState.poi_dots,
+            poi_dots_version=AppState.poi_dots_version,
+            chart_id=TRADING_PANEL_CHART_ID,
+            id=TRADING_PANEL_CHART_ID,
+            on_context_menu=AppState.open_trading_panel_menu,
+            style={
+                "width": "100%",
+                "height": "100%",
+                "min_height": "0",
+                "border_radius": "14px",
+                "border": "1px solid rgba(147, 173, 205, 0.18)",
+                "background": AppState.trading_panel_bg_color,
+            },
+        ),
+        width="100%",
+        height="100%",
+        min_height="0",
+        flex="1",
+    )
+
+----------------------------------------------------------------------------------------------------
+END FILE: trading_panel_chart.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: trading_panel.py
+FULL PATH: D:\QuantumTrade19\ui\pages\trading_panel.py
+----------------------------------------------------------------------------------------------------
+"""Trading Panel page - Futures-only chart foundation.
+
+PATH: ui/pages/trading_panel.py (REPLACE ENTIRE FILE)
+
+FIX (Bulk Controls renamed + re-scoped) - buttons now read "Hide Extras",
+"Show Extras", "Enable Default Strategy", "Disable All Strategy" and
+call the renamed/re-scoped AppState handlers (poi_hide_extras/
+poi_show_extras replace poi_show_all/poi_hide_all - see
+poi_settings_mixin.py for the new semantics).
+"""
+from __future__ import annotations
+
+import reflex as rx
+
+from state.app_state import AppState, TRADING_PANEL_TF_OPTIONS
+from ui.components.trading_panel_chart import trading_panel_chart
+from ui.theme.glass import GLASS_CARD_3XL_STYLE
+
+
+def _ohlc_pill(label: str, value) -> rx.Component:
+    return rx.hstack(
+        rx.text(label, font_size="0.7rem", color="var(--qt19-text-muted)"),
+        rx.text(value, font_size="0.82rem", font_weight="700"),
+        spacing="1",
+    )
+
+
+def _tf_buttons() -> rx.Component:
+    return rx.hstack(
+        *[
+            rx.button(
+                tf,
+                size="1",
+                variant=rx.cond(AppState.trading_panel_chart_tf == tf, "solid", "outline"),
+                on_click=AppState.set_trading_panel_chart_tf(tf),
+            )
+            for tf in TRADING_PANEL_TF_OPTIONS
+        ],
+        spacing="1",
+    )
+
+
+def _display_last_group() -> rx.Component:
+    return rx.hstack(
+        rx.text("Display Last:", font_size="0.78rem", color="var(--qt19-text-muted)"),
+        rx.input(
+            value=AppState.trading_panel_display_days_draft,
+            on_change=AppState.set_trading_panel_display_days_draft,
+            on_blur=AppState.commit_trading_panel_display_days,
+            on_key_down=AppState.handle_display_days_keydown,
+            width="60px",
+            size="1",
+        ),
+        rx.text("Days", font_size="0.78rem", color="var(--qt19-text-muted)"),
+        rx.text(
+            f"\u2022 QT19 DB: {AppState.trading_panel_local_days}d",
+            font_size="0.75rem", color="var(--qt19-text-muted)",
+        ),
+        spacing="2",
+        align_items="center",
+    )
+
+
+def _bulk_controls_toggle_button() -> rx.Component:
+    return rx.tooltip(
+        rx.icon_button(
+            rx.icon("list-checks", size=16),
+            on_click=AppState.toggle_trading_panel_bulk_controls,
+            variant=rx.cond(AppState.trading_panel_bulk_controls_visible, "solid", "outline"),
+            size="1",
+            border_radius="9999px",
+        ),
+        content="POI bulk controls",
+    )
+
+
+def _header() -> rx.Component:
+    return rx.box(
+        rx.hstack(
+            rx.select(
+                AppState.trading_panel_symbol_options,
+                value=AppState.trading_panel_symbol,
+                on_change=AppState.set_trading_panel_symbol,
+                width="170px",
+            ),
+            _tf_buttons(),
+            _display_last_group(),
+            _bulk_controls_toggle_button(),
+            rx.spacer(),
+            _ohlc_pill("O", AppState.trading_panel_current_open),
+            _ohlc_pill("H", AppState.trading_panel_current_high),
+            _ohlc_pill("L", AppState.trading_panel_current_low),
+            _ohlc_pill("C", AppState.trading_panel_current_close),
+            _ohlc_pill("Closes in", AppState.trading_panel_countdown_text),
+            rx.badge(AppState.ws_status, variant="soft"),
+            width="100%",
+            align_items="center",
+            spacing="4",
+            wrap="wrap",
+        ),
+        style={**GLASS_CARD_3XL_STYLE, "padding": "0.9rem 1.1rem"},
+        width="100%",
+        flex_shrink="0",
+    )
+
+
+def _bulk_controls_strip() -> rx.Component:
+    return rx.cond(
+        AppState.trading_panel_bulk_controls_visible,
+        rx.box(
+            rx.flex(
+                rx.text("POI Bulk Controls:", font_size="0.78rem", font_weight="700", color="var(--qt19-text-muted)"),
+                rx.button("Hide Extras", on_click=AppState.poi_hide_extras, size="1", variant="soft"),
+                rx.button("Show Extras", on_click=AppState.poi_show_extras, size="1", variant="soft"),
+                rx.button("Enable Default Strategy", on_click=AppState.poi_enable_default_strategy, size="1", variant="soft"),
+                rx.button("Disable All Strategy", on_click=AppState.poi_disable_all_strategy, size="1", variant="soft"),
+                spacing="2", align_items="center", wrap="wrap",
+            ),
+            style={**GLASS_CARD_3XL_STYLE, "padding": "0.6rem 1.1rem"},
+            width="100%",
+            flex_shrink="0",
+        ),
+    )
+
+
+def _chart_card() -> rx.Component:
+    return rx.box(
+        rx.box(
+            trading_panel_chart(),
+            on_double_click=AppState.reset_trading_panel_view,
+            width="100%",
+            height="100%",
+        ),
+        style={
+            **GLASS_CARD_3XL_STYLE,
+            "padding": "0.9rem",
+            "display": "flex",
+            "flex_direction": "column",
+            "height": "100%",
+        },
+        width="100%",
+        flex="1",
+        min_height="0",
+    )
+
+
+def trading_panel_page() -> rx.Component:
+    return rx.vstack(
+        _header(),
+        _bulk_controls_strip(),
+        _chart_card(),
+        spacing="3",
+        width="100%",
+        height="100%",
+        flex="1",
+        min_height="0",
+        overflow="hidden",
+    )
+
+----------------------------------------------------------------------------------------------------
+END FILE: trading_panel.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BUNDLE SUMMARY
+Files successfully added: 5
+Files skipped/failed: 0
+----------------------------------------------------------------------------------------------------
+
