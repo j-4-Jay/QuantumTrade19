@@ -1,6 +1,5 @@
 """File 04 - Setup Detection Monitor - Tier 2 Assembly.
-
-PATH: engines/monitors/setup_detection_monitor.py (NEW FILE)
+PATH: engines/monitors/setup_detection_monitor.py (REPLACE ENTIRE FILE)
 
 Wires the 7 Tier 1 Workers behind the exact interface locked in
 04_SetupDetectionMonitor_Prompt.md Section 3:
@@ -16,13 +15,16 @@ Exit Guard (File 11) to consume.
 Does NOT re-derive or alter File 03 POI/FVG/Order Block logic (consumed
 read-only via POIMonitor) or the locked 123Bull/123Bear rules (consumed via
 Bull123FSMWorker / Bear123FSMWorker, unmodified).
+
+(No wiring changes in this revision - only the internal FSM engine in
+_fsm_base.py changed. Replace this file only to keep the whole File 04
+module on one consistent revision.)
 """
 from __future__ import annotations
 
 from typing import Callable, Dict, List, Tuple
 
 from engines.workers.setup.setup_types import ConfirmedSetup, PendingSetup, SetupDirection
-from engines.workers.setup.candle_color_classifier_worker import CandleColorClassifierWorker
 from engines.workers.setup.candle_lock_registry import CandleLockRegistry
 from engines.workers.setup.poi_interaction_detector_worker import POIInteractionDetectorWorker
 from engines.workers.setup.engulfing_detector_worker import EngulfingDetectorWorker
@@ -46,7 +48,6 @@ class SetupDetectionMonitor:
         self.poi_monitor = poi_monitor
         self.symbol_registry = symbol_registry
 
-        self._color = CandleColorClassifierWorker()
         self._interaction = POIInteractionDetectorWorker()
         self._engulfing = EngulfingDetectorWorker()
         self._fvg_confirm = FVGConfirmationDetectorWorker()

@@ -1,6 +1,5 @@
 """File 04 - Setup Detection Monitor - Worker 7/7: MTF Cascade.
-
-PATH: engines/workers/setup/mtf_cascade_worker.py (NEW FILE)
+PATH: engines/workers/setup/mtf_cascade_worker.py (REPLACE ENTIRE FILE)
 
 Source of truth: 123Bull_Setup_Master_Prompt.md / 123Bear_Setup_Master_Prompt.md
 Section 12 (identical wording, mirrored direction):
@@ -24,6 +23,10 @@ Does not run its own copy of the Candle1/2/3 machine - wires one dedicated
 Bull123FSMWorker/Bear123FSMWorker pair scoped to the 1m timeframe (per the
 locked instruction to never re-derive that FSM), and only adds the
 cascade-specific timeout/proximity/extreme-break bookkeeping around it.
+
+(No logic changes in this revision - only Bull123FSMWorker/Bear123FSMWorker
+internals changed. Replace this file only to keep the whole File 04 module
+on one consistent revision.)
 """
 from __future__ import annotations
 
