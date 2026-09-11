@@ -1,6 +1,6 @@
 """File 04.1 - Trading Panel Setup Visualization - pure helper functions.
 
-PATH: engines/workers/setup/setup_visualization_helper.py (NEW FILE)
+PATH: engines/workers/setup/setup_visualization_helper.py (REPLACE ENTIRE FILE)
 
 Read-only formatting/aggregation ONLY. Every input is consumed exactly as
 returned by SetupDetectionMonitor.get_confirmed_setups(symbol, tf) /
@@ -10,6 +10,15 @@ alter any 123Bull/123Bear FSM logic, POI logic, or confidence logic.
 Produces dicts in the EXACT shape already consumed by
 ui/components/kline_chart.py's generic overlay renderer (kind="zone") and
 its poi_dots renderer - no new chart-side code required.
+
+FIX (File 04 Core Correction v1, cosmetic only) - chart labels were
+printing the raw Python enum repr (e.g. "SetupDirection.BULL \u2713"
+instead of "Bull \u2713"). Pre-existing bug, confirmed present before this
+thread's changes - NOT caused by the role-agnostic detection fix. Fixed
+here via the new `_direction_label()` helper, which is robust to whatever
+exact string/repr form `setup.direction` happens to be (raw value, enum
+repr, upper/lower case) - it only ever reads that value, never re-derives
+direction from FSM state. No detection logic anywhere in this file changed.
 """
 from __future__ import annotations
 
@@ -22,11 +31,22 @@ try:
 except Exception:  # pragma: no cover
     _NY_TZ = None
 
+
 _BULL_COLOR = "#16C784"
 _BEAR_COLOR = "#EA3943"
 _PENDING_COLOR = "#F5A623"
 _CONFIRMED_ZONE_OPACITY = 0.16
 _PENDING_ZONE_OPACITY = 0.08
+
+
+def _direction_label(direction_raw: Any) -> Tuple[str, bool]:
+    """Returns (clean_label, is_bull), robust to whatever exact form
+    setup.direction/pending.direction happens to be (a plain string like
+    'Bull'/'BULL', or a raw enum repr like 'SetupDirection.BULL'). Purely
+    cosmetic - reads the given value only, never touches FSM state."""
+    text = str(direction_raw or "").upper()
+    is_bull = "BULL" in text
+    return ("Bull" if is_bull else "Bear"), is_bull
 
 
 def _ms(candle_ts: float) -> int:
@@ -69,8 +89,7 @@ def build_setup_overlays_and_dots(
     dots: List[Dict] = []
 
     for setup in confirmed_setups:
-        direction = str(getattr(setup, "direction", ""))
-        is_bull = direction.endswith("Bull")
+        direction_label, is_bull = _direction_label(getattr(setup, "direction", ""))
         color = _BULL_COLOR if is_bull else _BEAR_COLOR
         c1, c2, c3 = setup.c1, setup.c2, setup.c3
         price_high = max(c1.high, c2.high, c3.high)
@@ -88,7 +107,7 @@ def build_setup_overlays_and_dots(
             "end_time": end_ms,
             "color": f"rgba({r},{g},{b},{_CONFIRMED_ZONE_OPACITY})",
             "dashed": False,
-            "label": f"{direction} \u2713",
+            "label": f"{direction_label} \u2713",
             "opacity": _CONFIRMED_ZONE_OPACITY,
         })
         dots.append({
@@ -102,7 +121,7 @@ def build_setup_overlays_and_dots(
         anchor_candle = pending.c2 if getattr(pending, "c2", None) is not None else pending.c1
         if anchor_candle is None:
             continue
-        direction = str(getattr(pending, "direction", ""))
+        direction_label, _ = _direction_label(getattr(pending, "direction", ""))
         r, g, b = _hex_to_rgb(_PENDING_COLOR)
         dots.append({
             "id": f"setup_pending_dot:{pending.pending_id}",
@@ -122,7 +141,7 @@ def build_setup_overlays_and_dots(
                 "end_time": _candle_close_ms(pending.c2, duration_ms),
                 "color": f"rgba({r},{g},{b},{_PENDING_ZONE_OPACITY})",
                 "dashed": True,
-                "label": f"{direction} \u2026",
+                "label": f"{direction_label} \u2026",
                 "opacity": _PENDING_ZONE_OPACITY,
             })
 
@@ -159,10 +178,10 @@ def build_setup_stats_rows(confirmed_setups: List[Any]) -> List[Dict]:
             sort_key,
             {"date": dt.strftime("%d-%m-%Y"), "confirmed_bull": 0, "confirmed_bear": 0, "failed_aborted": 0},
         )
-        direction = str(getattr(setup, "direction", ""))
-        if direction.endswith("Bull"):
+        _, is_bull = _direction_label(getattr(setup, "direction", ""))
+        if is_bull:
             row["confirmed_bull"] += 1
-        elif direction.endswith("Bear"):
+        else:
             row["confirmed_bear"] += 1
 
     rows = [row for _, row in sorted(by_date.items(), key=lambda kv: kv[0], reverse=True)]

@@ -57,6 +57,9 @@ QuantumTrade19/
 │   │   ├── v0.3.1_POIMatrixAndControls_Summary.md
 │   │   ├── v0.4.0-alpha_SetupDetectionMonitor_Summary.md
 │   │   └── v0.5.0_POIChartOverlayWiring_Summary.md
+│   ├── specs/
+│   │   ├── File_04_CoreCorrection_Spec_Lock_v1.md
+│   │   └── QuantumTrade19_Master_Roadmap_PostFile04_v1.md
 │   ├── CURRENT_STATUS.md
 │   ├── DECISIONS.md
 │   ├── DELIVERABLES.md
@@ -125,11 +128,13 @@ QuantumTrade19/
 │   │   │   ├── bull123_fsm_worker.py
 │   │   │   ├── candle_color_classifier_worker.py
 │   │   │   ├── candle_lock_registry.py
+│   │   │   ├── candle_reuse_settings.py
 │   │   │   ├── engulfing_detector_worker.py
 │   │   │   ├── fvg_confirmation_detector_worker.py
 │   │   │   ├── mtf_cascade_worker.py
 │   │   │   ├── poi_interaction_detector_worker.py
-│   │   │   └── setup_types.py
+│   │   │   ├── setup_types.py
+│   │   │   └── setup_visualization_helper.py
 │   │   ├── ui_experience/
 │   │   │   ├── __init__.py
 │   │   │   ├── animation_choreographer_worker.py
@@ -142,6 +147,11 @@ QuantumTrade19/
 │   ├── __init__.py
 │   └── desktop.ini
 ├── event_bus/
+├── Helper Files _ Personal/
+│   ├── 7_collect.from.projectFolder.bat
+│   ├── 7_collect.from.projectFolder.ps1
+│   ├── Replace_From_Downloads.bat
+│   └── Replace_From_Downloads.ps1
 ├── quantumtrade19/
 │   ├── docs/
 │   │   ├── build_log/
@@ -163,6 +173,7 @@ QuantumTrade19/
 │   │   ├── market_dashboard_mixin.py
 │   │   ├── poi_chart_mixin.py
 │   │   ├── poi_settings_mixin.py
+│   │   ├── setup_visualization_mixin.py
 │   │   ├── shared.py
 │   │   └── trading_panel_mixin.py
 │   ├── app_state_parts/
@@ -228,6 +239,8 @@ QuantumTrade19/
 │   │   ├── ThreadUploadBundle_v1_20260903_034123.txt
 │   │   ├── ThreadUploadBundle_v1_20260905_030701.txt
 │   │   ├── ThreadUploadBundle_v1_20260906_143847.txt
+│   │   ├── ThreadUploadBundle_v1_20260907_092433.txt
+│   │   ├── ThreadUploadBundle_v1_20260908_160039.txt
 │   │   ├── v0.3.3_thread_upload_bundle_20260825_093900.txt
 │   │   ├── v0.3.4_thread_upload_bundle_20260825_094633.txt
 │   │   ├── v0.4.8_thread_upload_bundle_20260830_173033.txt
@@ -257,6 +270,13 @@ QuantumTrade19/
 │   ├── v0.3.9_deep_history_source_bundle.txt
 │   ├── v0.3.9_market_data_monitor_bundle.txt
 │   ├── v0.4.0_TradingPanel_Polish_Tracker.md
+│   ├── v0.4.0-alpha_SetupDetectionMonitor_Tracker_v2.md
+│   ├── v0.4.0.1_File04.1_TradingPanelSetupVisualization_Tracker_v1.md
+│   ├── v0.4.0.1_File04.1_TradingPanelSetupVisualization_Tracker_v2.md
+│   ├── v0.4.0.2_File04_CoreCorrection_NewThread_Prompt_v1.txt
+│   ├── v0.4.0.2_File04_CoreCorrection_Tracker_v1.md
+│   ├── v0.4.0.3_File04_CoreCorrection_Tracker_v2.md
+│   ├── v0.4.0.3_File04_CoreCorrection_Tracker_v3.md
 │   ├── v0.4.1_TradingPanel_Polish_Tracker.md
 │   ├── v0.4.10_DeepHistoricalDataCard_FullControl_Tracker.md
 │   ├── v0.4.14_GapAutoHealEngine_Tracker.md
@@ -324,6 +344,7 @@ QuantumTrade19/
 ├── 6_Create_Thread_Upload_Bundle.ps1
 ├── 7_Create_PathFile_Upload_Bundle.ps1
 ├── AGENTS.md
+├── apply_file04_1_patches.py
 ├── CHANGELOG.md
 ├── CLAUDE.md
 ├── Fix_QuantumTrade19_Console.ps1

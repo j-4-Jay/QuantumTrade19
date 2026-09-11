@@ -1,11 +1,21 @@
-"""File 04 - Setup Detection Monitor automated test suite (REVISION 2).
+"""File 04 - Setup Detection Monitor automated test suite (REVISION 4).
 PATH: tests/test_setup_detection_monitor.py (REPLACE ENTIRE FILE)
 
-Updated after the real CoinDCX ETHUSDT 1m PDH/PDL check gate found two bugs
-in Revision 1 (see _fsm_base.py header). Result at delivery time: 26/26
-PASSING. If you still see 25/25, you are running the OLD engine files -
-replace ALL of _fsm_base.py, bull123_fsm_worker.py, bear123_fsm_worker.py,
-mtf_cascade_worker.py, setup_detection_monitor.py, and this file together.
+File 04 Recycle Touch-Gate Correction (this revision) vs REVISION 3:
+  - test_bull_case_3b / test_bear_case_3: UPDATED. Both previously fed the
+    recycled/failing candle with an EMPTY interactions dict (i.e. NOT
+    touched) and expected an immediate re-pair - that was the exact bug a
+    live chart exposed (chains drifting without ever re-touching the
+    POI). Updated to feed that candle as TOUCHED, which is the only
+    scenario where immediate re-pairing is still correct/allowed - this
+    preserves the original Scenario_06 -> Scenario_07 real-trade-validated
+    behavior exactly, just now made explicit that it depends on a touch.
+  - NEW: test_bull_case_3c_untouched_recycle_aborts_instead_of_drifting and
+    test_bear_case_3c_untouched_recycle_aborts_instead_of_drifting - direct
+    proof of the fix: the SAME scenario as above but with the candle NOT
+    touched now aborts to NONE instead of silently re-pairing.
+
+Everything else is UNCHANGED from REVISION 3 (29/29 passing at that lock).
 """
 from __future__ import annotations
 import sys, os
@@ -15,6 +25,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from engines.workers.setup.candle_color_classifier_worker import CandleColorClassifierWorker
 from engines.workers.setup.candle_lock_registry import CandleLockRegistry
+from engines.workers.setup.candle_reuse_settings import (
+    is_strict_candle_reuse_lock_enabled,
+    set_strict_candle_reuse_lock_enabled,
+)
 from engines.workers.setup.poi_interaction_detector_worker import POIInteractionDetectorWorker
 from engines.workers.setup.engulfing_detector_worker import EngulfingDetectorWorker
 from engines.workers.setup.fvg_confirmation_detector_worker import FVGConfirmationDetectorWorker
@@ -67,10 +81,25 @@ def test_interaction_scenario_b_retest_direction_and_flip():
     support = POI("p2", "S", "PDL", "support", "1D", price=100.0)
     inverse = POI("p3", "S", "INVERSE_FVG", "resistance", "1D", price_low=99.0, price_high=101.0)
     candle = Candle("S", "1m", 1, 102, 103, 99.5, 102.5)
-    r1 = d.detect(candle, [support], {"p2": StateRecord(state="Retesting")})[0]
-    assert r1.is_retest is True and r1.search_direction == SetupDirection.BULL
-    r2 = d.detect(candle, [inverse], {"p3": StateRecord(state="Retesting")})[0]
-    assert r2.retest_flipped is True and r2.search_direction == SetupDirection.BEAR
+
+    r1 = d.detect(candle, [support], {"p2": StateRecord(state="Retesting")})
+    assert {i.search_direction for i in r1} == {SetupDirection.BULL, SetupDirection.BEAR}
+    assert all(i.is_retest is True and i.poi_id == "p2" for i in r1)
+
+    r2 = d.detect(candle, [inverse], {"p3": StateRecord(state="Retesting")})
+    assert {i.search_direction for i in r2} == {SetupDirection.BULL, SetupDirection.BEAR}
+    assert all(i.retest_flipped is True and i.poi_id == "p3" for i in r2)
+
+
+def test_role_agnostic_single_touch_starts_both_bull_and_bear_chains():
+    d = POIInteractionDetectorWorker()
+    poi_support = POI("pS", "S", "PDL", "support", "1D", price=100.0)
+    poi_resistance = POI("pR", "S", "PDH", "resistance", "1D", price=100.0)
+    touch = Candle("S", "1m", 1, 98, 100, 97, 98)
+    for poi in (poi_support, poi_resistance):
+        result = d.detect(touch, [poi])
+        assert {i.search_direction for i in result} == {SetupDirection.BULL, SetupDirection.BEAR}
+        assert all(i.poi_id == poi.poi_id for i in result)
 
 
 def test_bull_case_1_direct_touch_confirm():
@@ -103,16 +132,35 @@ def test_bull_case_3_failed_c3_recycles_candle2_not_the_failing_candle():
     assert fsm.get_pending("S","1m") == []
 
 
-def test_bull_case_3b_failed_c3_of_opposite_color_immediately_becomes_new_c2():
+def test_bull_case_3b_failed_c3_of_opposite_color_touched_immediately_becomes_new_c2():
+    """UPDATED (Recycle Touch-Gate Correction): immediate re-pairing on
+    recycle now REQUIRES the incoming candle to have touched the POI.
+    This test feeds the failing candle as TOUCHED - the one case where
+    the original Scenario_06 -> Scenario_07 real-trade behavior still
+    applies exactly as before."""
     reg = CandleLockRegistry(); fsm = Bull123FSMWorker(reg)
     c1 = Candle("S","1m",20,100,101,95,96)
     c2 = Candle("S","1m",21,96,105,95,104)
     c3_fail_red = Candle("S","1m",22,104,104,90,91)  # RED -> fails, opposite color of c2
-    c4 = Candle("S","1m",24,115,130,114,125)
     fsm.on_candle_closed(c1, {}); fsm.on_candle_closed(c2, {"poi": None})
-    assert fsm.on_candle_closed(c3_fail_red, {}) == []
+    assert fsm.on_candle_closed(c3_fail_red, {"poi": None}) == []  # TOUCHED
     pending = fsm.get_pending("S","1m")
     assert len(pending) == 1 and pending[0].c1.open_time == 21 and pending[0].c2.open_time == 22
+
+
+def test_bull_case_3c_untouched_recycle_aborts_instead_of_drifting():
+    """NEW - direct proof of the Recycle Touch-Gate Correction: the SAME
+    scenario as 3b, but the failing candle did NOT touch the POI. Before
+    this fix, this silently re-paired anyway (the live-chart bug the user
+    found); now it correctly aborts to NONE instead of drifting away from
+    the original touch with no further verification."""
+    reg = CandleLockRegistry(); fsm = Bull123FSMWorker(reg)
+    c1 = Candle("S","1m",120,100,101,95,96)
+    c2 = Candle("S","1m",121,96,105,95,104)
+    c3_fail_red_untouched = Candle("S","1m",122,104,104,90,91)  # RED, opposite color, NOT touched
+    fsm.on_candle_closed(c1, {}); fsm.on_candle_closed(c2, {"poi": None})
+    assert fsm.on_candle_closed(c3_fail_red_untouched, {}) == []  # NOT touched (empty dict)
+    assert fsm.get_pending("S","1m") == []  # aborts completely, no silent re-pair
 
 
 def test_bull_case_4_wrong_color_next_candle_after_anchor_aborts():
@@ -155,16 +203,30 @@ def test_bear_case_2_same_color_chain_extends_then_confirms():
     assert len(r) == 1 and (r[0].c1.open_time, r[0].c2.open_time, r[0].c3.open_time) == (11,12,13)
 
 
-def test_bear_case_3_failed_c3_recycles_candle2_immediately_as_new_c1():
-    """Direct mirror of the validated Scenario_06 -> Scenario_07 real trace."""
+def test_bear_case_3_failed_c3_recycles_candle2_touched_immediately_as_new_c1():
+    """UPDATED (Recycle Touch-Gate Correction): direct mirror of the
+    validated Scenario_06 -> Scenario_07 real trace, now with the failing
+    candle explicitly TOUCHED - the one case where immediate re-pairing
+    is still allowed."""
     reg = CandleLockRegistry(); fsm = Bear123FSMWorker(reg)
     c1 = Candle("S","1m",20,100,105,99,104)
     c2 = Candle("S","1m",21,104,105,90,92)
     c3_fail = Candle("S","1m",22,92,110,91,108)  # GREEN -> opposite color of c2(red) -> immediately new c2
     fsm.on_candle_closed(c1, {}); fsm.on_candle_closed(c2, {"poi": None})
-    assert fsm.on_candle_closed(c3_fail, {}) == []
+    assert fsm.on_candle_closed(c3_fail, {"poi": None}) == []  # TOUCHED
     pending = fsm.get_pending("S","1m")
     assert len(pending) == 1 and pending[0].c1.open_time == 21 and pending[0].c2.open_time == 22
+
+
+def test_bear_case_3c_untouched_recycle_aborts_instead_of_drifting():
+    """NEW - Bear mirror of the Recycle Touch-Gate Correction proof."""
+    reg = CandleLockRegistry(); fsm = Bear123FSMWorker(reg)
+    c1 = Candle("S","1m",120,100,105,99,104)
+    c2 = Candle("S","1m",121,104,105,90,92)
+    c3_fail_untouched = Candle("S","1m",122,92,110,91,108)  # GREEN, opposite color, NOT touched
+    fsm.on_candle_closed(c1, {}); fsm.on_candle_closed(c2, {"poi": None})
+    assert fsm.on_candle_closed(c3_fail_untouched, {}) == []  # NOT touched
+    assert fsm.get_pending("S","1m") == []
 
 
 def test_bear_case_4_wrong_color_next_candle_after_anchor_aborts():
@@ -300,7 +362,9 @@ def test_assembly_get_pending_setups_reports_in_flight_chain():
     c1 = Candle("S","5m",1,105,106,100,101); c2 = Candle("S","5m",2,101,110,100,109)
     monitor.on_candle_closed(c1); monitor.on_candle_closed(c2)
     pending = monitor.get_pending_setups("S","5m")
-    assert len(pending) == 1 and pending[0].stage == "WAITING_C3"
+    assert len(pending) == 2
+    assert all(p.stage == "WAITING_C3" for p in pending)
+    assert {p.direction for p in pending} == {SetupDirection.BULL, SetupDirection.BEAR}
 
 
 def test_assembly_5m_confirmation_starts_cascade_watch():
@@ -312,6 +376,37 @@ def test_assembly_5m_confirmation_starts_cascade_watch():
     assert len(result) == 1
     watches = monitor._cascade["S"].get_active_watches("S")
     assert len(watches) == 1 and watches[0].trigger_tf == "5m"
+
+
+def test_strict_candle_reuse_lock_off_default_allows_reuse():
+    set_strict_candle_reuse_lock_enabled(False)
+    assert is_strict_candle_reuse_lock_enabled() is False
+
+    reg = CandleLockRegistry()
+    fsm = Bull123FSMWorker(reg)
+    c1 = Candle("S","1m",70,100,101,95,96)
+    fsm.on_candle_closed(c1, {"poi": None})       # touched -> ANCHOR(c1)
+    reg.lock_all([c1])                             # simulate c1 already used in a previously confirmed setup
+    c2 = Candle("S","1m",71,96,105,95,104); c3 = Candle("S","1m",72,104,110,103,106)
+    fsm.on_candle_closed(c2, {})                   # opposite color -> WAITING_C3(c1, c2)
+    r = fsm.on_candle_closed(c3, {})
+    assert len(r) == 1  # OFF -> reuse allowed, confirms anyway
+
+
+def test_strict_candle_reuse_lock_on_preserves_no_reuse_behavior():
+    set_strict_candle_reuse_lock_enabled(True)
+    try:
+        reg = CandleLockRegistry()
+        fsm = Bull123FSMWorker(reg)
+        c1 = Candle("S","1m",80,100,101,95,96)
+        fsm.on_candle_closed(c1, {"poi": None})
+        reg.lock_all([c1])
+        c2 = Candle("S","1m",81,96,105,95,104); c3 = Candle("S","1m",82,104,110,103,106)
+        fsm.on_candle_closed(c2, {})
+        r = fsm.on_candle_closed(c3, {})
+        assert r == []  # ON -> locked c1 blocks confirmation
+    finally:
+        set_strict_candle_reuse_lock_enabled(False)  # restore default for other tests
 
 
 if __name__ == "__main__":

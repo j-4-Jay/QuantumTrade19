@@ -1,6 +1,6 @@
 """File 04 - Setup Detection Monitor - Worker 2/7: POI Interaction Detector.
 
-PATH: engines/workers/setup/poi_interaction_detector_worker.py (NEW FILE)
+PATH: engines/workers/setup/poi_interaction_detector_worker.py (REPLACE ENTIRE FILE)
 
 Source of truth: 123Bull_Setup_Master_Prompt.md / 123Bear_Setup_Master_Prompt.md
 Section 4 (Touch/Sweep/Cross) and Section 5 (Scenario A / Scenario B retest,
@@ -28,13 +28,37 @@ For a price-RANGE POI (FVG / Inverse FVG / Order Block), the "level" used is
 the zone edge nearer to the candle's open price, and "reached" means the
 candle's [low, high] overlaps [price_low, price_high] at all.
 
-Scenario A vs Scenario B (including the double-cross flip) is NOT re-derived
-here - it is read directly off the already-locked File 03 output:
+============================================================================
+FILE 04 CORE CORRECTION v1 (this revision) - ROLE-AGNOSTIC DIRECTION
+============================================================================
+REVISION 2 removes the role->direction gating that REVISION 1 incorrectly
+applied here. REVISION 1 read poi.role ("support"/"resistance") and emitted
+ONE Interaction with a single search_direction, meaning a "resistance" POI
+could only ever feed Bear123FSMWorker and a "support" POI could only ever
+feed Bull123FSMWorker. That was an implementation assumption made while
+wiring File 04, NOT a requirement of the 123Bull/123Bear master prompts, and
+it is REJECTED per File_04_CoreCorrection_Spec_Lock_v1.md Section 2.
+
+Corrected rule: every closed candle's interaction with EVERY active POI -
+regardless of that POI's role (support/resistance) or type (PDH/PDL/4H
+High/4H Low/FVG/etc.) - now feeds BOTH the Bull123FSMWorker AND the
+Bear123FSMWorker for that (symbol, timeframe, poi_id). Implemented here by
+emitting TWO Interaction records per touched POI (one BULL, one BEAR) with
+identical is_retest/retest_flipped/interaction_type - this requires ZERO
+changes to SetupDetectionMonitor.on_candle_closed()'s existing split:
+    bull_interactions = {i.poi_id: i for i in interactions if i.search_direction == SetupDirection.BULL}
+    bear_interactions = {i.poi_id: i for i in interactions if i.search_direction == SetupDirection.BEAR}
+because both dict comprehensions now naturally pick up their own entry for
+the SAME poi_id whenever a touch occurs.
+
+Scenario A vs Scenario B (including the double-cross flip) is UNCHANGED -
+it is still read directly off the already-locked File 03 output and does
+NOT depend on direction:
     - POIStateRecord.state == "Retesting" -> Scenario-B retest.
     - poi.poi_type == "INVERSE_FVG"       -> already the flipped zone
       (InverseFVGDetectorWorker, File 03, performed the flip).
-    - poi.role == "support"    -> feeds the 123Bull search.
-    - poi.role == "resistance" -> feeds the 123Bear search.
+poi.role is NO LONGER read here at all - it has zero influence on
+123Bull/123Bear detection eligibility, exactly as locked.
 """
 from __future__ import annotations
 
@@ -55,20 +79,22 @@ class POIInteractionDetectorWorker:
                 continue
             state_record = states.get(poi.poi_id)
             is_retest = bool(state_record and state_record.state == "Retesting")
-            role = getattr(poi, "role", "") or ""
-            direction = SetupDirection.BULL if role == "support" else (
-                SetupDirection.BEAR if role == "resistance" else ""
-            )
             retest_flipped = is_retest and str(poi.poi_type) == "INVERSE_FVG"
-            found.append(
-                Interaction(
-                    poi_id=poi.poi_id,
-                    interaction_type=itype,
-                    is_retest=is_retest,
-                    retest_flipped=retest_flipped,
-                    search_direction=direction,
+
+            # Role-agnostic (File 04 Core Correction v1): this SAME touch
+            # feeds BOTH directions for the SAME poi_id, regardless of
+            # poi.role or poi.poi_type. Role-based direction gating is
+            # REMOVED entirely from the 123Bull/123Bear pipeline.
+            for direction in (SetupDirection.BULL, SetupDirection.BEAR):
+                found.append(
+                    Interaction(
+                        poi_id=poi.poi_id,
+                        interaction_type=itype,
+                        is_retest=is_retest,
+                        retest_flipped=retest_flipped,
+                        search_direction=direction,
+                    )
                 )
-            )
         return found
 
     def _classify_interaction(self, candle, poi) -> Optional[str]:

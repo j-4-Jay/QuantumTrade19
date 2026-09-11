@@ -1,0 +1,46 @@
+Continue QuantumTrade19. Build Track 7 (Custom POI Levels) + Track 4
+(1/2/3 badges + persistent confirmed callouts).
+
+Design is FULLY LOCKED - do not re-discuss scope. Follow
+File_04.1b_CustomPOI_And_Callouts_Spec_Lock_v1.md exactly (uploaded this
+thread). QuantumTrade19_Master_Roadmap_PostFile04_v1.md is also uploaded
+for context on what comes after this thread - do not build any of it now.
+
+File 04 Core Correction is LOCKED (v0.4.0.3) - do not reopen it. Its
+tracker is uploaded for continuity only.
+
+Summary of what to build in THIS thread only:
+
+PART A - Custom POI Levels (Track 7):
+1. Exactly 5 user-created Custom POI slots, each behaving as a full POI
+   for 123Bull/123Bear detection (role-agnostic, same as any real POI),
+   but active ONLY from its own creation timestamp forward - no
+   historical requirement ever.
+2. Popup (reachable from a Settings card AND a Trading Panel chart
+   button) with: Name, Price (smart default = current live price, plus a
+   bidirectional nudge-slider synced to the numeric box), Color,
+   Thickness, Transparency.
+3. Double-click the line on the chart re-opens the same popup pre-filled,
+   even if the line is locked.
+4. Manual drag-to-reposition on the chart; a lock icon near the label
+   disables ONLY the drag gesture, never the popup edit path.
+5. Delete capability; all 5 slots persist across restarts.
+
+PART B - "1/2/3" in-progress badges + persistent confirmed callouts
+(Track 4, full spec already locked in the roadmap file, Part B section of
+the spec-lock file points to it - do not duplicate, read the roadmap
+file's Track 4 section directly for the authoritative detail: UID
+format, confidence placeholder, callout anchors, badge visibility rules,
+confirmed-callout visual design, placement rule, SQLite persistence via a
+new SetupStoreWorker).
+
+Required files to inspect/fetch at build time (ask the user to upload if
+not already available): poi_monitor.py, poi_types.py, poi_chart_mixin.py,
+kline_chart.py, trading_panel_chart.py.
+
+Follow the mandatory pipeline: build -> check -> debug if needed ->
+re-check -> lock -> proceed. Provide complete downloadable replacement
+files with exact Windows paths under D:\QuantumTrade19\, and a versioned
+tracker in tracker_files\. Treat the user as a beginner: tell them exactly
+which file to save at which exact path and what to do next at every step,
+without lengthy explanations unless something is critical to understand.

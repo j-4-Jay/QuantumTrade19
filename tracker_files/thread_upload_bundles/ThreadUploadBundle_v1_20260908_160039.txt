@@ -1,0 +1,1549 @@
+﻿----------------------------------------------------------------------------------------------------
+QUANTUMTRADE19 - THREAD UPLOAD BUNDLE (v1)
+Created: 20260908_160039
+Project root: D:\QuantumTrade19
+Total files requested: 6
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: poi_interaction_detector_worker.py
+FULL PATH: D:\QuantumTrade19\engines\workers\setup\poi_interaction_detector_worker.py
+----------------------------------------------------------------------------------------------------
+"""File 04 - Setup Detection Monitor - Worker 2/7: POI Interaction Detector.
+
+PATH: engines/workers/setup/poi_interaction_detector_worker.py (NEW FILE)
+
+Source of truth: 123Bull_Setup_Master_Prompt.md / 123Bear_Setup_Master_Prompt.md
+Section 4 (Touch/Sweep/Cross) and Section 5 (Scenario A / Scenario B retest,
+including the double-cross flip).
+
+IMPLEMENTATION NOTE: Section 4 describes Touch/Sweep/Cross in words, not as a
+formula. This worker turns that wording into a deterministic, self-contained
+per-candle rule using each closed candle's own OPEN as "the side it came from"
+and CLOSE as "the side it left on":
+
+    reached      = candle's [low, high] range touches the POI level/zone
+    open_side     = which side of the level the candle OPENED on
+    close_side    = which side of the level the candle CLOSED on
+    overshoot     = how far past the level the wick travelled beyond a bare touch
+                    (measured on the wick facing the level: high-side if the
+                    candle approaches from below, low-side if from above)
+
+    - not reached                          -> no interaction
+    - open_side == close_side (same side)
+        - overshoot <= 0 (wick reaches exactly the level, no further) -> TOUCH
+        - overshoot >  0 (wick genuinely pokes through then returns)  -> SWEEP
+    - open_side != close_side (closed on the far/opposite side)       -> CROSS
+
+For a price-RANGE POI (FVG / Inverse FVG / Order Block), the "level" used is
+the zone edge nearer to the candle's open price, and "reached" means the
+candle's [low, high] overlaps [price_low, price_high] at all.
+
+Scenario A vs Scenario B (including the double-cross flip) is NOT re-derived
+here - it is read directly off the already-locked File 03 output:
+    - POIStateRecord.state == "Retesting" -> Scenario-B retest.
+    - poi.poi_type == "INVERSE_FVG"       -> already the flipped zone
+      (InverseFVGDetectorWorker, File 03, performed the flip).
+    - poi.role == "support"    -> feeds the 123Bull search.
+    - poi.role == "resistance" -> feeds the 123Bear search.
+"""
+from __future__ import annotations
+
+from typing import List, Optional
+
+from engines.workers.setup.setup_types import Interaction, InteractionType, SetupDirection
+
+
+class POIInteractionDetectorWorker:
+    def detect(self, candle, pois: List[object], states: Optional[dict] = None) -> List[Interaction]:
+        states = states or {}
+        found: List[Interaction] = []
+        for poi in pois:
+            if not poi.active:
+                continue
+            itype = self._classify_interaction(candle, poi)
+            if itype is None:
+                continue
+            state_record = states.get(poi.poi_id)
+            is_retest = bool(state_record and state_record.state == "Retesting")
+            role = getattr(poi, "role", "") or ""
+            direction = SetupDirection.BULL if role == "support" else (
+                SetupDirection.BEAR if role == "resistance" else ""
+            )
+            retest_flipped = is_retest and str(poi.poi_type) == "INVERSE_FVG"
+            found.append(
+                Interaction(
+                    poi_id=poi.poi_id,
+                    interaction_type=itype,
+                    is_retest=is_retest,
+                    retest_flipped=retest_flipped,
+                    search_direction=direction,
+                )
+            )
+        return found
+
+    def _classify_interaction(self, candle, poi) -> Optional[str]:
+        if poi.is_range():
+            return self._classify_zone(candle, poi.price_low, poi.price_high)
+        return self._classify_line(candle, poi.price)
+
+    @staticmethod
+    def _classify_line(candle, level: float) -> Optional[str]:
+        if level is None:
+            return None
+        reached = candle.low <= level <= candle.high
+        if not reached:
+            return None
+        open_side = "above" if candle.open > level else ("below" if candle.open < level else "on")
+        close_side = "above" if candle.close > level else ("below" if candle.close < level else "on")
+        if open_side == "on" or close_side == "on":
+            return InteractionType.TOUCH
+        if open_side == close_side:
+            overshoot = (candle.high - level) if open_side == "below" else (level - candle.low)
+            return InteractionType.TOUCH if overshoot <= 0 else InteractionType.SWEEP
+        return InteractionType.CROSS
+
+    @staticmethod
+    def _classify_zone(candle, price_low: float, price_high: float) -> Optional[str]:
+        reached = candle.low <= price_high and candle.high >= price_low
+        if not reached:
+            return None
+        level = price_low if abs(candle.open - price_low) <= abs(candle.open - price_high) else price_high
+        return POIInteractionDetectorWorker._classify_line(candle, level)
+
+----------------------------------------------------------------------------------------------------
+END FILE: poi_interaction_detector_worker.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: _fsm_base.py
+FULL PATH: D:\QuantumTrade19\engines\workers\setup\_fsm_base.py
+----------------------------------------------------------------------------------------------------
+"""File 04 - shared internal base for the Candle1/2/3 role-assignment machine.
+PATH: engines/workers/setup/_fsm_base.py (REPLACE ENTIRE FILE)
+
+REVISION 2 - corrected against real hand-verified CoinDCX ETHUSDT 1m PDH/PDL
+examples (the File 04 check gate). Revision 1 had TWO bugs, both found and
+fixed from the user's own manual trace:
+
+BUG 1 (fixed): Revision 1 required Candle1's color to be hard-locked per
+direction (RED for Bull, GREEN for Bear). The real trace (Scenario_04) shows
+a GREEN candle can become the anchor "Candle1" in what starts as a
+Bull-flavoured search. Direction is NOT decided when the anchor forms - it is
+only decided once Candle2's color is known (Candle3 must match Candle2's
+color, and the "close above high" test only makes sense if Candle2/3 are
+Green; "close below low" only if Red). So the anchor/pairing machinery is
+color-AGNOSTIC; only the final confirmation test is direction-specific.
+
+BUG 2 (fixed): Revision 1 recycled the FAILING Candle3 as the new Candle1 on
+a failed confirmation. The real trace (Scenario_06 -> Scenario_07) proves the
+correct recycle target is the OLD CANDLE2, not the failing Candle3 - and the
+failing Candle3 itself is then immediately re-tested as the new Candle2
+against that recycled anchor (zero delay, same candle). Section 6 step 5's
+"recycle the POI-touching candle" means Candle2 - the one guaranteed to have
+touched (Candle1 never has to).
+
+Both bugs were re-verified numerically against real ETHUSDT prices
+(01:43-01:59, 07-09-2026, PDH=2513.64) - all 7 hand-traced scenarios matched
+exactly, including 2 confirmed Bull setups, 1 confirmed Bear setup, and 4
+clean abort/recycle paths. Locked at v0.4.0-alpha.
+
+============================================================================
+FINAL ALGORITHM (validated against 7 real hand-traced examples)
+============================================================================
+State per (symbol, timeframe, poi_id): NONE | ANCHOR(c1) | WAITING_C3(c1, c2).
+Candles are processed strictly in closing order - consecutive-candle
+adjacency (Section 6.6) falls out naturally because every closed candle is
+fed through once, in order.
+
+NONE:
+    - candle doesn't touch the POI -> stay NONE (Section 6 step 1).
+    - candle touches:
+        - look at the immediately preceding closed candle P (need NOT have
+          touched - Section 6 step 3's "Candle1 doesn't need to touch").
+        - if P exists, is not already LOCKED, and color(P) != color(X):
+              -> WAITING_C3(c1=P, c2=X)   [Scenario A/B direct hit]
+        - else (P missing/locked/same color):
+              -> ANCHOR(X)   [X touched, so it independently qualifies -
+                 Section 6 step 4: "this same candle... because it already
+                 touched the POI"]
+
+ANCHOR(A) - A is guaranteed to have touched the POI at some point:
+    - X is the very next candle (Section 6.6 consecutiveness).
+    - X is a doji (no color) -> ABORT to NONE (validated: Scenario_01/04 -
+      an unusable next candle kills the whole attempt, it does not "wait").
+    - color(X) != color(A):
+          -> WAITING_C3(c1=A, c2=X)   (A already touched - X need not)
+    - color(X) == color(A):
+          - X touched -> ANCHOR(X)   (chain extends forward - Scenario_04)
+          - X did NOT touch -> ABORT to NONE (validated: Scenario_01)
+
+WAITING_C3(c1, c2):
+    - CONFIRMS if this direction's specific rule matches (color(c2)/color(X)
+      both correct for that direction AND the extreme test passes) AND none
+      of c1/c2/X are already locked by a different setup -> emit
+      ConfirmedSetup, lock all 3, reset to NONE.
+    - Otherwise (failed test OR one of the 3 already got locked elsewhere):
+          new_anchor = c2  (RECYCLE CANDLE2, NOT the failing candle - Bug 2)
+          - X is a doji -> ANCHOR(new_anchor), wait for the next real candle.
+          - color(X) != color(new_anchor) and new_anchor not locked:
+                -> WAITING_C3(c1=new_anchor, c2=X)   (immediate re-pairing,
+                   validated: Scenario_06 -> Scenario_07, zero delay)
+          - color(X) == color(new_anchor):
+                - X touched -> ANCHOR(X)
+                - X did not touch -> ABORT to NONE
+
+Both Bull123FSMWorker and Bear123FSMWorker run this EXACT SAME color-agnostic
+chain independently (each keeps its own state), sharing only the
+CandleLockRegistry. They only differ in `_confirms_extreme`, which is the
+ONLY direction-specific rule left (Section 6 step 5 + Section 1's fixed
+color pattern). This is intentionally redundant (both track the same pairs)
+rather than one shared chain object, because a single physical chain
+genuinely does flip between "could become Bull" and "could become Bear"
+candidate framing as it recycles (Scenario_06/07) - running two independent,
+identical trackers that only diverge at the confirmation step is the
+simplest way to keep this file 100% consistent with Bear123FSMWorker while
+still being one clean, testable engine.
+============================================================================
+"""
+from __future__ import annotations
+
+import time
+import uuid
+from typing import Dict, List, Optional, Tuple
+
+from engines.workers.setup.candle_color_classifier_worker import CandleColorClassifierWorker
+from engines.workers.setup.candle_lock_registry import CandleLockRegistry
+from engines.workers.setup.setup_types import ConfirmedSetup, PendingSetup
+
+_ANCHOR = "ANCHOR"
+_WAITING_C3 = "WAITING_C3"
+
+
+class _Base123FSMWorker:
+    direction: str = ""
+
+    def __init__(self, lock_registry: CandleLockRegistry) -> None:
+        self._lock_registry = lock_registry
+        self._classifier = CandleColorClassifierWorker()
+        self._pending: Dict[Tuple[str, str, str], PendingSetup] = {}
+        self._last_candle: Dict[Tuple[str, str], object] = {}
+
+    # ------------------------------------------------------------------ #
+    # Public interface
+    # ------------------------------------------------------------------ #
+
+    def on_candle_closed(self, candle, interactions_by_poi: Dict[str, object]) -> List[ConfirmedSetup]:
+        tf_key = (candle.symbol, candle.timeframe)
+        prev_candle = self._last_candle.get(tf_key)
+
+        confirmed: List[ConfirmedSetup] = []
+        touched_poi_ids = set(interactions_by_poi.keys())
+        active_poi_ids = {k[2] for k in self._pending if k[0] == candle.symbol and k[1] == candle.timeframe}
+        for poi_id in touched_poi_ids | active_poi_ids:
+            result = self._step(candle, poi_id, touched=poi_id in touched_poi_ids, prev_candle=prev_candle)
+            if result is not None:
+                confirmed.append(result)
+
+        self._last_candle[tf_key] = candle
+        return confirmed
+
+    def get_pending(self, symbol: str, timeframe: str) -> List[PendingSetup]:
+        return [p for k, p in self._pending.items() if k[0] == symbol and k[1] == timeframe]
+
+    # ------------------------------------------------------------------ #
+    # Core machine (Section 6)
+    # ------------------------------------------------------------------ #
+
+    def _step(self, candle, poi_id: str, touched: bool, prev_candle) -> Optional[ConfirmedSetup]:
+        key = (candle.symbol, candle.timeframe, poi_id)
+        color = self._classifier.classify(candle)
+        pending = self._pending.get(key)
+
+        if pending is None:
+            self._step_none(candle, key, touched, color, prev_candle)
+            return None
+        if pending.stage == _ANCHOR:
+            return self._step_anchor(candle, key, pending, touched, color)
+        if pending.stage == _WAITING_C3:
+            return self._step_waiting_c3(candle, key, pending, touched, color)
+        return None  # pragma: no cover
+
+    def _step_none(self, candle, key, touched: bool, color, prev_candle) -> None:
+        if not touched or color is None:
+            return
+        prev_color = self._classifier.classify(prev_candle) if prev_candle is not None else None
+        prev_locked = prev_candle is not None and self._lock_registry.is_locked(
+            prev_candle.symbol, prev_candle.timeframe, prev_candle.open_time
+        )
+        if prev_candle is not None and prev_color is not None and not prev_locked and color != prev_color:
+            self._pending[key] = self._new_pending(candle, key[2], stage=_WAITING_C3, c1=prev_candle, c2=candle)
+        else:
+            self._pending[key] = self._new_pending(candle, key[2], stage=_ANCHOR, c1=candle)
+
+    def _step_anchor(self, candle, key, pending: PendingSetup, touched: bool, color) -> None:
+        anchor = pending.c1
+        if color is None:
+            del self._pending[key]
+            return None
+        anchor_color = self._classifier.classify(anchor)
+        if color != anchor_color:
+            pending.c2 = candle
+            pending.stage = _WAITING_C3
+            return None
+        if touched:
+            pending.c1 = candle  # extend the chain forward
+        else:
+            del self._pending[key]
+        return None
+
+    def _step_waiting_c3(self, candle, key, pending: PendingSetup, touched: bool, color) -> Optional[ConfirmedSetup]:
+        c1, c2 = pending.c1, pending.c2
+        if color is not None and self._confirms_extreme(candle, c2):
+            if not self._lock_registry.any_locked([c1, c2, candle]):
+                self._lock_registry.lock_all([c1, c2, candle])
+                del self._pending[key]
+                return self._build_confirmed(key[2], c1, c2, candle)
+
+        # Failure path (Section 6 step 5): recycle CANDLE2, not this candle.
+        new_anchor = c2
+        anchor_color = self._classifier.classify(new_anchor)
+        anchor_locked = self._lock_registry.is_locked(new_anchor.symbol, new_anchor.timeframe, new_anchor.open_time)
+        if color is None:
+            self._pending[key] = self._new_pending(candle, key[2], stage=_ANCHOR, c1=new_anchor)
+        elif color != anchor_color and not anchor_locked:
+            self._pending[key] = self._new_pending(candle, key[2], stage=_WAITING_C3, c1=new_anchor, c2=candle)
+        elif touched:
+            self._pending[key] = self._new_pending(candle, key[2], stage=_ANCHOR, c1=candle)
+        else:
+            del self._pending[key]
+        return None
+
+    def _confirms_extreme(self, c3, c2) -> bool:
+        raise NotImplementedError
+
+    def _build_confirmed(self, poi_id: str, c1, c2, c3) -> ConfirmedSetup:
+        return ConfirmedSetup(
+            event_id=ConfirmedSetup.new_event_id(),
+            symbol=c3.symbol, timeframe=c3.timeframe, poi_id=poi_id,
+            direction=self.direction, c1=c1, c2=c2, c3=c3,
+            confirmed_at=time.time(),
+        )
+
+    def _new_pending(self, candle, poi_id: str, stage: str, c1, c2=None) -> PendingSetup:
+        return PendingSetup(
+            pending_id=str(uuid.uuid4()), symbol=candle.symbol, timeframe=candle.timeframe,
+            poi_id=poi_id, direction=self.direction, stage=stage, c1=c1, c2=c2,
+        )
+
+----------------------------------------------------------------------------------------------------
+END FILE: _fsm_base.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: candle_lock_registry.py
+FULL PATH: D:\QuantumTrade19\engines\workers\setup\candle_lock_registry.py
+----------------------------------------------------------------------------------------------------
+"""File 04 shared support: global candle-lock registry.
+
+PATH: engines/workers/setup/candle_lock_registry.py (NEW FILE)
+
+Enforces the locked no-reuse rule from 123Bull_Setup_Master_Prompt.md Section 6.7
+and 123Bear_Setup_Master_Prompt.md Section 6.7: once a candle is part of a
+CONFIRMED setup, it can never be reused as Candle1/2/3 in any other setup search -
+Bull or Bear, same POI or a different one, same timeframe only.
+
+One single instance of this registry must be shared across Bull123_FSM_Worker and
+Bear123_FSM_Worker for the SAME (symbol, timeframe).
+"""
+from __future__ import annotations
+
+from typing import Set, Tuple
+
+CandleKey = Tuple[str, str, int]  # (symbol, timeframe, open_time)
+
+
+class CandleLockRegistry:
+    def __init__(self) -> None:
+        self._locked: Set[CandleKey] = set()
+
+    @staticmethod
+    def _key(symbol: str, timeframe: str, open_time: int) -> CandleKey:
+        return (symbol, timeframe, open_time)
+
+    def is_locked(self, symbol: str, timeframe: str, open_time: int) -> bool:
+        return self._key(symbol, timeframe, open_time) in self._locked
+
+    def any_locked(self, candles) -> bool:
+        return any(self.is_locked(c.symbol, c.timeframe, c.open_time) for c in candles)
+
+    def lock_all(self, candles) -> None:
+        for c in candles:
+            self._locked.add(self._key(c.symbol, c.timeframe, c.open_time))
+
+    def locked_count(self) -> int:
+        return len(self._locked)
+
+----------------------------------------------------------------------------------------------------
+END FILE: candle_lock_registry.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: setup_visualization_mixin.py
+FULL PATH: D:\QuantumTrade19\state\app_state_mixins\setup_visualization_mixin.py
+----------------------------------------------------------------------------------------------------
+"""File 04.1 - Trading Panel Setup Visualization - executable AppState mixin.
+
+TARGET PATH: D:\\QuantumTrade19\\state\\app_state_mixins\\setup_visualization_mixin.py
+NEW FILE - place alongside the other files in state/app_state_mixins/.
+
+Read-only against SetupDetectionMonitor (File 04, LOCKED at v0.4.0-alpha):
+only calls _engine.get_confirmed_setups(symbol, tf) / _engine.get_pending_setups(symbol, tf).
+Does NOT re-derive 123Bull/123Bear FSM logic, POI logic, or add new Worker logic.
+
+Overlays/dots are built by engines/workers/setup/setup_visualization_helper.py
+(pure functions) and then COMBINED with the existing POI overlays/dots via
+combined_chart_overlays / combined_chart_dots / combined_chart_overlays_version
+- this is what lets ui/components/trading_panel_chart.py feed BOTH POI and
+setup markers into kline_chart.py's existing generic renderer with ZERO
+changes to kline_chart.py itself.
+
+DEPENDENCY NOTE (read before wiring): this mixin calls
+    _engine.get_confirmed_setups(symbol, tf)
+    _engine.get_pending_setups(symbol, tf)
+on MasterAppEngine. If MasterAppEngine does not yet expose these two flat
+proxy methods (the same pattern used for get_active_pois/get_poi_state when
+File 03's POI Monitor was wired onto the chart in v0.5.0), add:
+
+    def get_confirmed_setups(self, symbol, tf):
+        return self.<your_setup_detection_monitor_attribute>.get_confirmed_setups(symbol, tf)
+
+    def get_pending_setups(self, symbol, tf):
+        return self.<your_setup_detection_monitor_attribute>.get_pending_setups(symbol, tf)
+
+to D:\\QuantumTrade19\\engines\\masters\\master_app_engine.py, matching whatever
+attribute name already holds your SetupDetectionMonitor instance.
+"""
+from __future__ import annotations
+
+import reflex as rx
+
+from state.app_state_mixins.shared import engine as _engine
+from engines.workers.setup.setup_visualization_helper import (
+    build_setup_overlays_and_dots,
+    build_setup_stats_rows,
+)
+
+_DEFAULT_LOOKBACK_DAYS = "5"
+_MIN_LOOKBACK_DAYS = 1
+_MAX_LOOKBACK_DAYS = 90
+_SETUP_VIZ_POLL_INTERVAL_SECONDS = 3.0
+
+
+class SetupVisualizationMixin(rx.State, mixin=True):
+    # --- "Detect setups from last N days" - persisted per symbol+timeframe,
+    # same pattern as trading_panel_display_days_input/draft (03.1) ---
+    setup_detect_lookback_days_map: dict[str, str] = {}
+    setup_detect_lookback_days_draft: str = _DEFAULT_LOOKBACK_DAYS
+
+    # --- Setup chart markers (confirmed candle-highlight + Candle3 icon,
+    # pending subtle marker) ---
+    setup_chart_overlays: list[dict] = []
+    setup_chart_overlays_version: int = 0
+    setup_dots: list[dict] = []
+    setup_dots_version: int = 0
+
+    # --- Compact setup-stats panel: date-wise confirmed Bull/Bear/failed ---
+    setup_stats_rows: list[dict] = []
+
+    _setup_viz_poll_running: bool = False
+
+    def _setup_viz_key(self) -> str:
+        return f"{self.trading_panel_symbol}|{self.trading_panel_chart_tf}"
+
+    def load_setup_detect_lookback(self) -> None:
+        """Call this alongside load_poi_settings()/on_load() whenever the
+        Trading Panel symbol or chart timeframe changes, so the saved N
+        for THIS symbol+timeframe is restored (mirrors 03.1's Display Last
+        X Days restore in core_shell_mixin.py's on_load())."""
+        settings = _engine.security.persistence.load()
+        stored_map = settings.get("setup_detect_lookback_days_map", {})
+        self.setup_detect_lookback_days_map = stored_map
+        key = self._setup_viz_key()
+        self.setup_detect_lookback_days_draft = stored_map.get(key, _DEFAULT_LOOKBACK_DAYS)
+        self.refresh_setup_visualization()
+
+    def set_setup_detect_lookback_draft(self, value: str) -> None:
+        self.setup_detect_lookback_days_draft = value
+
+    def commit_setup_detect_lookback_days(self) -> None:
+        try:
+            parsed = int(self.setup_detect_lookback_days_draft)
+        except ValueError:
+            parsed = int(_DEFAULT_LOOKBACK_DAYS)
+        parsed = max(_MIN_LOOKBACK_DAYS, min(_MAX_LOOKBACK_DAYS, parsed))
+        self.setup_detect_lookback_days_draft = str(parsed)
+        key = self._setup_viz_key()
+        self.setup_detect_lookback_days_map = {**self.setup_detect_lookback_days_map, key: str(parsed)}
+        _engine.security.persistence.save({
+            "setup_detect_lookback_days_map": dict(self.setup_detect_lookback_days_map)
+        })
+        self.refresh_setup_visualization()
+
+    def handle_setup_lookback_keydown(self, key: str) -> None:
+        if key == "Enter":
+            self.commit_setup_detect_lookback_days()
+
+    def _current_lookback_days(self) -> int:
+        try:
+            return max(_MIN_LOOKBACK_DAYS, min(_MAX_LOOKBACK_DAYS, int(self.setup_detect_lookback_days_draft)))
+        except ValueError:
+            return int(_DEFAULT_LOOKBACK_DAYS)
+
+    def refresh_setup_visualization(self) -> None:
+        """Read-only against SetupDetectionMonitor. Filters to the last
+        `_current_lookback_days()` days by confirmed_at / pending
+        updated_at, purely for what gets drawn/counted - never touches
+        FSM state itself."""
+        symbol = self.trading_panel_symbol
+        tf = self.trading_panel_chart_tf
+        try:
+            confirmed = list(_engine.get_confirmed_setups(symbol, tf) or [])
+        except Exception:
+            confirmed = []
+        try:
+            pending = list(_engine.get_pending_setups(symbol, tf) or [])
+        except Exception:
+            pending = []
+
+        cutoff_ts = __import__("time").time() - self._current_lookback_days() * 86400
+        confirmed = [c for c in confirmed if getattr(c, "confirmed_at", 0) >= cutoff_ts]
+        pending = [p for p in pending if getattr(p, "updated_at", 0) >= cutoff_ts]
+
+        overlays, dots = build_setup_overlays_and_dots(confirmed, pending, tf)
+        self.setup_chart_overlays = overlays
+        self.setup_chart_overlays_version += 1
+        self.setup_dots = dots
+        self.setup_dots_version += 1
+        self.setup_stats_rows = build_setup_stats_rows(confirmed)
+
+    @rx.var
+    def combined_chart_overlays(self) -> list[dict]:
+        return list(self.poi_chart_overlays) + list(self.setup_chart_overlays)
+
+    @rx.var
+    def combined_chart_overlays_version(self) -> int:
+        return self.poi_chart_overlays_version + self.setup_chart_overlays_version
+
+    @rx.var
+    def combined_chart_dots(self) -> list[dict]:
+        return list(self.poi_dots) + list(self.setup_dots)
+
+    @rx.var
+    def combined_chart_dots_version(self) -> int:
+        return self.poi_dots_version + self.setup_dots_version
+
+    @rx.var
+    def setup_stats_totals(self) -> dict:
+        bull = sum(row.get("confirmed_bull", 0) for row in self.setup_stats_rows)
+        bear = sum(row.get("confirmed_bear", 0) for row in self.setup_stats_rows)
+        failed = sum(row.get("failed_aborted", 0) for row in self.setup_stats_rows)
+        return {"confirmed_bull": bull, "confirmed_bear": bear, "failed_aborted": failed}
+
+    @rx.event(background=True)
+    async def poll_setup_visualization(self):
+        async with self:
+            if self._setup_viz_poll_running:
+                return
+            self._setup_viz_poll_running = True
+        try:
+            while True:
+                async with self:
+                    if self.active_tab != "Trading Panel":
+                        self._setup_viz_poll_running = False
+                        return
+                    self.refresh_setup_visualization()
+                await __import__("asyncio").sleep(_SETUP_VIZ_POLL_INTERVAL_SECONDS)
+        finally:
+            async with self:
+                self._setup_viz_poll_running = False
+
+----------------------------------------------------------------------------------------------------
+END FILE: setup_visualization_mixin.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: test_setup_detection_monitor.py
+FULL PATH: D:\QuantumTrade19\tests\test_setup_detection_monitor.py
+----------------------------------------------------------------------------------------------------
+"""File 04 - Setup Detection Monitor automated test suite (REVISION 2).
+PATH: tests/test_setup_detection_monitor.py (REPLACE ENTIRE FILE)
+
+Updated after the real CoinDCX ETHUSDT 1m PDH/PDL check gate found two bugs
+in Revision 1 (see _fsm_base.py header). Result at delivery time: 26/26
+PASSING. If you still see 25/25, you are running the OLD engine files -
+replace ALL of _fsm_base.py, bull123_fsm_worker.py, bear123_fsm_worker.py,
+mtf_cascade_worker.py, setup_detection_monitor.py, and this file together.
+"""
+from __future__ import annotations
+import sys, os
+from dataclasses import dataclass
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from engines.workers.setup.candle_color_classifier_worker import CandleColorClassifierWorker
+from engines.workers.setup.candle_lock_registry import CandleLockRegistry
+from engines.workers.setup.poi_interaction_detector_worker import POIInteractionDetectorWorker
+from engines.workers.setup.engulfing_detector_worker import EngulfingDetectorWorker
+from engines.workers.setup.fvg_confirmation_detector_worker import FVGConfirmationDetectorWorker
+from engines.workers.setup.bull123_fsm_worker import Bull123FSMWorker
+from engines.workers.setup.bear123_fsm_worker import Bear123FSMWorker
+from engines.workers.setup.mtf_cascade_worker import MTFCascadeWorker
+from engines.workers.setup.setup_types import SetupDirection, InteractionType
+from engines.monitors.setup_detection_monitor import SetupDetectionMonitor
+
+
+@dataclass
+class Candle:
+    symbol: str; timeframe: str; open_time: int
+    open: float; high: float; low: float; close: float
+    close_time: int = 0; volume: float = 1.0; is_closed: bool = True
+
+
+@dataclass
+class POI:
+    poi_id: str; symbol: str; poi_type: str; role: str; source_tf: str
+    price: float = None; price_high: float = None; price_low: float = None; active: bool = True
+    def is_range(self): return self.price_high is not None and self.price_low is not None
+
+
+@dataclass
+class StateRecord:
+    state: str
+
+
+def test_color_classifier():
+    assert CandleColorClassifierWorker.classify(Candle("S","1m",1,100,105,99,103)) == "Green"
+    assert CandleColorClassifierWorker.classify(Candle("S","1m",2,103,104,95,96)) == "Red"
+    assert CandleColorClassifierWorker.classify(Candle("S","1m",3,100,101,99,100)) is None
+
+
+def test_interaction_touch_sweep_cross_line():
+    d = POIInteractionDetectorWorker()
+    poi = POI("p1", "S", "PDH", "resistance", "1D", price=100.0)
+    touch = Candle("S", "1m", 1, 98, 100, 97, 98)
+    assert d.detect(touch, [poi])[0].interaction_type == InteractionType.TOUCH
+    sweep = Candle("S", "1m", 2, 98, 102, 97, 99)
+    assert d.detect(sweep, [poi])[0].interaction_type == InteractionType.SWEEP
+    cross = Candle("S", "1m", 3, 98, 105, 97, 104)
+    assert d.detect(cross, [poi])[0].interaction_type == InteractionType.CROSS
+    assert d.detect(Candle("S", "1m", 4, 80, 85, 79, 84), [poi]) == []
+
+
+def test_interaction_scenario_b_retest_direction_and_flip():
+    d = POIInteractionDetectorWorker()
+    support = POI("p2", "S", "PDL", "support", "1D", price=100.0)
+    inverse = POI("p3", "S", "INVERSE_FVG", "resistance", "1D", price_low=99.0, price_high=101.0)
+    candle = Candle("S", "1m", 1, 102, 103, 99.5, 102.5)
+    r1 = d.detect(candle, [support], {"p2": StateRecord(state="Retesting")})[0]
+    assert r1.is_retest is True and r1.search_direction == SetupDirection.BULL
+    r2 = d.detect(candle, [inverse], {"p3": StateRecord(state="Retesting")})[0]
+    assert r2.retest_flipped is True and r2.search_direction == SetupDirection.BEAR
+
+
+def test_bull_case_1_direct_touch_confirm():
+    reg = CandleLockRegistry(); fsm = Bull123FSMWorker(reg)
+    c1 = Candle("S","1m",1,100,101,95,96); c2 = Candle("S","1m",2,96,105,95,104); c3 = Candle("S","1m",3,104,110,103,106)
+    fsm.on_candle_closed(c1, {}); fsm.on_candle_closed(c2, {"poi": None})
+    r = fsm.on_candle_closed(c3, {})
+    assert len(r) == 1 and (r[0].c1.open_time, r[0].c2.open_time, r[0].c3.open_time) == (1,2,3)
+
+
+def test_bull_case_2_same_color_chain_extends_then_confirms():
+    reg = CandleLockRegistry(); fsm = Bull123FSMWorker(reg)
+    cA = Candle("S","1m",10,100,101,95,96); cB = Candle("S","1m",11,96,97,90,91)
+    cC = Candle("S","1m",12,91,105,90,104); cD = Candle("S","1m",13,104,110,103,106)
+    fsm.on_candle_closed(cA, {"poi": None}); fsm.on_candle_closed(cB, {"poi": None})
+    fsm.on_candle_closed(cC, {})
+    r = fsm.on_candle_closed(cD, {})
+    assert len(r) == 1 and (r[0].c1.open_time, r[0].c2.open_time, r[0].c3.open_time) == (11,12,13)
+
+
+def test_bull_case_3_failed_c3_recycles_candle2_not_the_failing_candle():
+    """Validated directly against the user's real Scenario_06 -> Scenario_07 trace."""
+    reg = CandleLockRegistry(); fsm = Bull123FSMWorker(reg)
+    c1 = Candle("S","1m",20,100,101,95,96)
+    c2 = Candle("S","1m",21,96,105,95,104)
+    c3_fail = Candle("S","1m",22,104,104.5,103,104.2)  # green, close 104.2 < c2.high(105) -> fails
+    fsm.on_candle_closed(c1, {}); fsm.on_candle_closed(c2, {"poi": None})
+    assert fsm.on_candle_closed(c3_fail, {}) == []
+    # same color as c2 (green) but c3_fail did NOT touch -> chain aborts entirely
+    assert fsm.get_pending("S","1m") == []
+
+
+def test_bull_case_3b_failed_c3_of_opposite_color_immediately_becomes_new_c2():
+    reg = CandleLockRegistry(); fsm = Bull123FSMWorker(reg)
+    c1 = Candle("S","1m",20,100,101,95,96)
+    c2 = Candle("S","1m",21,96,105,95,104)
+    c3_fail_red = Candle("S","1m",22,104,104,90,91)  # RED -> fails, opposite color of c2
+    c4 = Candle("S","1m",24,115,130,114,125)
+    fsm.on_candle_closed(c1, {}); fsm.on_candle_closed(c2, {"poi": None})
+    assert fsm.on_candle_closed(c3_fail_red, {}) == []
+    pending = fsm.get_pending("S","1m")
+    assert len(pending) == 1 and pending[0].c1.open_time == 21 and pending[0].c2.open_time == 22
+
+
+def test_bull_case_4_wrong_color_next_candle_after_anchor_aborts():
+    reg = CandleLockRegistry(); fsm = Bull123FSMWorker(reg)
+    c1 = Candle("S","1m",30,100,101,95,96)
+    fsm.on_candle_closed(c1, {"poi": None})
+    c2_same_notouch = Candle("S","1m",31,96,97,94,95)
+    r = fsm.on_candle_closed(c2_same_notouch, {})
+    assert r == [] and fsm.get_pending("S","1m") == []
+
+
+def test_bull_case_5_no_reuse_across_two_setups():
+    reg = CandleLockRegistry(); fsm = Bull123FSMWorker(reg)
+    c1 = Candle("S","1m",40,100,101,95,96); c2 = Candle("S","1m",41,96,105,95,104); c3 = Candle("S","1m",42,104,110,103,106)
+    fsm.on_candle_closed(c1, {}); fsm.on_candle_closed(c2, {"poiA": None})
+    r = fsm.on_candle_closed(c3, {})
+    assert len(r) == 1
+    assert reg.is_locked("S","1m",40) and reg.is_locked("S","1m",41) and reg.is_locked("S","1m",42)
+    c4 = Candle("S","1m",43,106,107,100,101)
+    fsm.on_candle_closed(c4, {"poiB": None})
+    pending = fsm.get_pending("S","1m")
+    assert any(p.poi_id == "poiB" for p in pending)
+
+
+def test_bear_case_1_direct_touch_confirm():
+    reg = CandleLockRegistry(); fsm = Bear123FSMWorker(reg)
+    g1 = Candle("S","1m",1,100,105,99,104); r2 = Candle("S","1m",2,104,105,90,92); r3 = Candle("S","1m",3,92,93,80,85)
+    fsm.on_candle_closed(g1, {}); fsm.on_candle_closed(r2, {"poi": None})
+    r = fsm.on_candle_closed(r3, {})
+    assert len(r) == 1 and r[0].direction == SetupDirection.BEAR
+
+
+def test_bear_case_2_same_color_chain_extends_then_confirms():
+    reg = CandleLockRegistry(); fsm = Bear123FSMWorker(reg)
+    gA = Candle("S","1m",10,100,110,99,108); gB = Candle("S","1m",11,108,115,107,112)
+    rC = Candle("S","1m",12,112,113,95,96); rD = Candle("S","1m",13,96,97,80,85)
+    fsm.on_candle_closed(gA, {"poi": None}); fsm.on_candle_closed(gB, {"poi": None})
+    fsm.on_candle_closed(rC, {})
+    r = fsm.on_candle_closed(rD, {})
+    assert len(r) == 1 and (r[0].c1.open_time, r[0].c2.open_time, r[0].c3.open_time) == (11,12,13)
+
+
+def test_bear_case_3_failed_c3_recycles_candle2_immediately_as_new_c1():
+    """Direct mirror of the validated Scenario_06 -> Scenario_07 real trace."""
+    reg = CandleLockRegistry(); fsm = Bear123FSMWorker(reg)
+    c1 = Candle("S","1m",20,100,105,99,104)
+    c2 = Candle("S","1m",21,104,105,90,92)
+    c3_fail = Candle("S","1m",22,92,110,91,108)  # GREEN -> opposite color of c2(red) -> immediately new c2
+    fsm.on_candle_closed(c1, {}); fsm.on_candle_closed(c2, {"poi": None})
+    assert fsm.on_candle_closed(c3_fail, {}) == []
+    pending = fsm.get_pending("S","1m")
+    assert len(pending) == 1 and pending[0].c1.open_time == 21 and pending[0].c2.open_time == 22
+
+
+def test_bear_case_4_wrong_color_next_candle_after_anchor_aborts():
+    reg = CandleLockRegistry(); fsm = Bear123FSMWorker(reg)
+    g1 = Candle("S","1m",30,100,110,99,108)
+    fsm.on_candle_closed(g1, {"poi": None})
+    g2_notouch = Candle("S","1m",31,108,112,107,110)
+    r = fsm.on_candle_closed(g2_notouch, {})
+    assert r == [] and fsm.get_pending("S","1m") == []
+
+
+def test_bear_case_5_no_reuse_across_two_setups():
+    reg = CandleLockRegistry(); fsm = Bear123FSMWorker(reg)
+    g1 = Candle("S","1m",40,100,110,99,108); r2 = Candle("S","1m",41,108,109,90,92); r3 = Candle("S","1m",42,92,93,80,85)
+    fsm.on_candle_closed(g1, {}); fsm.on_candle_closed(r2, {"poi": None})
+    r = fsm.on_candle_closed(r3, {})
+    assert len(r) == 1
+    assert reg.is_locked("S","1m",40) and reg.is_locked("S","1m",41) and reg.is_locked("S","1m",42)
+
+
+def test_bull_and_bear_never_share_a_confirmed_candle():
+    reg = CandleLockRegistry(); bull = Bull123FSMWorker(reg); bear = Bear123FSMWorker(reg)
+    c1 = Candle("S","5m",1,100,101,95,96); c2 = Candle("S","5m",2,96,105,95,104); c3 = Candle("S","5m",3,104,110,103,106)
+    bull.on_candle_closed(c1, {}); bull.on_candle_closed(c2, {"poi": None})
+    confirmed = bull.on_candle_closed(c3, {})
+    assert len(confirmed) == 1 and reg.locked_count() == 3
+    assert reg.is_locked("S","5m",1) and reg.is_locked("S","5m",2) and reg.is_locked("S","5m",3)
+
+
+def test_timeframes_never_share_state():
+    reg1m = CandleLockRegistry(); reg5m = CandleLockRegistry()
+    fsm1m = Bull123FSMWorker(reg1m); fsm5m = Bull123FSMWorker(reg5m)
+    fsm1m.on_candle_closed(Candle("S","1m",1,100,101,95,96), {"poi": None})
+    assert fsm1m.get_pending("S","1m") != [] and fsm5m.get_pending("S","5m") == []
+
+
+def test_engulfing_detector():
+    c1 = Candle("S","1m",1,100,101,98,99); c2_engulf = Candle("S","1m",2,98,103,97,102); c2_no = Candle("S","1m",3,99.5,100.2,99,99.8)
+    assert EngulfingDetectorWorker.candle2_engulfs_candle1(c1, c2_engulf) is True
+    assert EngulfingDetectorWorker.candle2_engulfs_candle1(c1, c2_no) is False
+
+
+def test_fvg_confirmation_detector():
+    c1 = Candle("S","1m",1,100,101,95,96); c3_gap = Candle("S","1m",3,104,110,103,106); c3_no_gap = Candle("S","1m",3,100,102,99,101)
+    ok, rng = FVGConfirmationDetectorWorker.check(c1, c3_gap, SetupDirection.BULL)
+    assert ok is True and rng == (101, 103)
+    ok2, rng2 = FVGConfirmationDetectorWorker.check(c1, c3_no_gap, SetupDirection.BULL)
+    assert ok2 is False and rng2 is None
+
+
+def _make_confirmed_htf(symbol, tf, event_id="parent-1"):
+    from engines.workers.setup.setup_types import ConfirmedSetup
+    c1 = Candle(symbol, tf, 100, 100, 101, 95, 96); c2 = Candle(symbol, tf, 101, 96, 105, 95, 104); c3 = Candle(symbol, tf, 102, 104, 110, 103, 106)
+    return ConfirmedSetup(event_id=event_id, symbol=symbol, timeframe=tf, poi_id="poiZ", direction=SetupDirection.BULL,
+                           c1=c1, c2=c2, c3=c3, confirmed_at=1000.0, sl_price=95.0)
+
+
+def test_cascade_success_tightens_to_1m_sl():
+    reg = CandleLockRegistry(); cascade = MTFCascadeWorker(Bull123FSMWorker(reg), Bear123FSMWorker(reg))
+    watch = cascade.start_watch(_make_confirmed_htf("S","15m"), tick_size=0.1)
+    assert watch is not None and watch.status == "WATCHING"
+    c1 = Candle("S","1m",100000,100,101,96,97, close_time=1010000)
+    c2 = Candle("S","1m",100060,97,105,96,104, close_time=1070000)
+    c3 = Candle("S","1m",100120,104,110,103,106, close_time=1130000)
+    cascade.on_1m_candle_closed(c1, {}, {})
+    cascade.on_1m_candle_closed(c2, {"poiZ": None}, {})
+    r3 = cascade.on_1m_candle_closed(c3, {}, {})
+    assert len(r3) == 1 and r3[0].is_mtf_cascade_result is True
+    assert r3[0].cascade_parent_event_id == "parent-1"
+    assert cascade.get_active_watches("S") == []
+
+
+def test_cascade_cancels_on_timeout():
+    reg = CandleLockRegistry(); cascade = MTFCascadeWorker(Bull123FSMWorker(reg), Bear123FSMWorker(reg))
+    cascade.start_watch(_make_confirmed_htf("S","15m"), tick_size=0.1)
+    late = Candle("S","1m",999999,100,101,99,100, close_time=int((1000.0+20*60)*1000))
+    assert cascade.on_1m_candle_closed(late, {}, {}) == []
+    assert cascade.get_watch_history("S")[0].status == "CANCELLED_TIMEOUT"
+
+
+def test_cascade_cancels_on_proximity_breach():
+    reg = CandleLockRegistry(); cascade = MTFCascadeWorker(Bull123FSMWorker(reg), Bear123FSMWorker(reg), proximity_ticks=5)
+    cascade.start_watch(_make_confirmed_htf("S","15m"), tick_size=0.1)
+    far = Candle("S","1m",100000,100,101,99,200, close_time=1010000)
+    assert cascade.on_1m_candle_closed(far, {}, {}) == []
+    assert cascade.get_watch_history("S")[0].status == "CANCELLED_PROXIMITY"
+
+
+def test_cascade_cancels_on_htf_extreme_break():
+    reg = CandleLockRegistry(); cascade = MTFCascadeWorker(Bull123FSMWorker(reg), Bear123FSMWorker(reg))
+    cascade.start_watch(_make_confirmed_htf("S","15m"), tick_size=0.1)
+    breaking = Candle("S","1m",100000,96,97,93.5,94, close_time=1010000)
+    assert cascade.on_1m_candle_closed(breaking, {}, {}) == []
+    assert cascade.get_watch_history("S")[0].status == "CANCELLED_HTF_BREAK"
+
+
+def test_cascade_never_falls_back_to_wider_stop():
+    reg = CandleLockRegistry(); cascade = MTFCascadeWorker(Bull123FSMWorker(reg), Bear123FSMWorker(reg))
+    cascade.start_watch(_make_confirmed_htf("S","15m"), tick_size=0.1)
+    late = Candle("S","1m",999999,100,101,99,100, close_time=int((1000.0+20*60)*1000))
+    cascade.on_1m_candle_closed(late, {}, {})
+    another = Candle("S","1m",999998+60,100,105,99,104, close_time=int((1000.0+21*60)*1000))
+    r = cascade.on_1m_candle_closed(another, {"poiZ": None}, {})
+    assert r == [] and cascade.get_watch_history("S")[0].status == "CANCELLED_TIMEOUT"
+
+
+class _FakePOIMonitor:
+    def __init__(self, poi): self._poi = poi
+    def get_active_pois(self, symbol): return [self._poi]
+    def get_poi_state(self, symbol, poi_id): return None
+
+class _FakeSymbolRegistry:
+    def get_active_symbols(self): return ["S"]
+    def get_tick_size(self, symbol): return 0.1
+
+
+def test_assembly_emits_confirmed_event_exactly_once_with_unique_id():
+    poi = POI("poiA", "S", "PDL", "support", "1D", price=100.0)
+    monitor = SetupDetectionMonitor(_FakePOIMonitor(poi), _FakeSymbolRegistry())
+    received = []
+    monitor.subscribe(lambda ev: received.append(ev))
+    c1 = Candle("S","1m",1,105,106,100,101); c2 = Candle("S","1m",2,101,110,100,109); c3 = Candle("S","1m",3,109,115,108,111)
+    monitor.on_candle_closed(c1); monitor.on_candle_closed(c2)
+    result = monitor.on_candle_closed(c3)
+    assert len(result) == 1 and len(received) == 1
+    assert received[0].event_id == result[0].event_id
+    assert len(monitor.get_confirmed_setups("S","1m")) == 1
+
+
+def test_assembly_get_pending_setups_reports_in_flight_chain():
+    poi = POI("poiB", "S", "PDL", "support", "1D", price=100.0)
+    monitor = SetupDetectionMonitor(_FakePOIMonitor(poi), _FakeSymbolRegistry())
+    c1 = Candle("S","5m",1,105,106,100,101); c2 = Candle("S","5m",2,101,110,100,109)
+    monitor.on_candle_closed(c1); monitor.on_candle_closed(c2)
+    pending = monitor.get_pending_setups("S","5m")
+    assert len(pending) == 1 and pending[0].stage == "WAITING_C3"
+
+
+def test_assembly_5m_confirmation_starts_cascade_watch():
+    poi = POI("poiC", "S", "PDL", "support", "1D", price=100.0)
+    monitor = SetupDetectionMonitor(_FakePOIMonitor(poi), _FakeSymbolRegistry())
+    c1 = Candle("S","5m",1,105,106,100,101); c2 = Candle("S","5m",2,101,110,100,109); c3 = Candle("S","5m",3,109,115,108,111)
+    monitor.on_candle_closed(c1); monitor.on_candle_closed(c2)
+    result = monitor.on_candle_closed(c3)
+    assert len(result) == 1
+    watches = monitor._cascade["S"].get_active_watches("S")
+    assert len(watches) == 1 and watches[0].trigger_tf == "5m"
+
+
+if __name__ == "__main__":
+    current_module = sys.modules[__name__]
+    test_fns = [obj for name, obj in vars(current_module).items() if name.startswith("test_") and callable(obj)]
+    passed, failed = 0, []
+    for fn in test_fns:
+        try:
+            fn(); passed += 1
+        except AssertionError as e:
+            failed.append((fn.__name__, str(e)))
+        except Exception as e:
+            failed.append((fn.__name__, f"{type(e).__name__}: {e}"))
+    print(f"PASSED: {passed}/{len(test_fns)}")
+    for name, err in failed:
+        print(f"FAILED: {name} -> {err}")
+
+----------------------------------------------------------------------------------------------------
+END FILE: test_setup_detection_monitor.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BEGIN FILE: poi_settings_mixin.py
+FULL PATH: D:\QuantumTrade19\state\app_state_mixins\poi_settings_mixin.py
+----------------------------------------------------------------------------------------------------
+"""Executable AppState mixin: POI Engine & Chart Visibility settings.
+
+PATH: state/app_state_mixins/poi_settings_mixin.py  (REPLACE ENTIRE FILE)
+
+FIX (Bulk Controls redefined per explicit clarification) - renamed and
+re-scoped from blanket "everything" operations to operations scoped to
+whatever is CURRENTLY on the chart:
+
+  poi_hide_extras() [was poi_hide_all] - captures every POI type
+    currently Display=True (into _poi_hidden_by_extras) THEN turns
+    Display off for exactly those - not a blanket "set everything
+    False" (which would discard the memory of what was actually shown).
+
+  poi_show_extras() [was poi_show_all] - restores Display=True ONLY for
+    the types captured by the most recent poi_hide_extras() call, then
+    clears that memory. Calling it without a prior Hide is a no-op.
+
+  poi_enable_default_strategy() - Strategy now goes True for the UNION
+    of the locked default set (PDH/PDL/4H_HIGH/4H_LOW) AND every POI
+    type CURRENTLY Display=True (i.e. "already attached to the chart") -
+    everything else resets to False.
+
+  poi_disable_all_strategy() - now only iterates POI types CURRENTLY
+    Display=True ("present on chart") and turns their Strategy off -
+    types not currently shown are left untouched, not force-reset.
+"""
+from __future__ import annotations
+
+import asyncio
+import reflex as rx
+
+from state.app_state_mixins.shared import (
+    _engine,
+    POI_DEFAULT_STRATEGY_TYPES,
+    POI_LINE_TF_LABELS,
+    POI_LINE_TF_ORDER,
+    POI_LINE_TYPE_MAP,
+    POI_ZONE_TYPES,
+)
+
+_DEFAULT_TF_COLOR = {
+    "1m": "#38BDF8", "5m": "#38BDF8", "15m": "#38BDF8",
+    "1H": "#32CD32", "4H": "#FFFFFF",
+    "1D": "#FFA500", "1W": "#FFFF00", "1M": "#DC143C",
+}
+_DEFAULT_CUSTOM_LINE_COLORS = ["#22C55E", "#F97316", "#38BDF8"]
+_DEFAULT_TF_DISPLAY = {tf: (tf in ("1D", "4H")) for tf in POI_LINE_TF_ORDER}
+_DEFAULT_TF_VERTICAL_STYLE = {tf: "solid" for tf in POI_LINE_TF_ORDER}
+_DEFAULT_TF_VERTICAL_OPACITY = {tf: 50 for tf in POI_LINE_TF_ORDER}
+_DEFAULT_ZONE_SOURCE_TF = {"1m": True, "5m": False, "15m": True, "1H": False, "4H": False, "1D": False, "1W": False, "1M": False}
+
+_ZONE_TYPE_KEYS = [t for t, _ in POI_ZONE_TYPES]
+_DEFAULT_ZONE_COLOR = {
+    "RESISTANCE_FLIP": "#EF4444",
+    "SUPPORT_FLIP": "#22C55E",
+    "FVG": "#3B82F6",
+    "INVERSE_FVG": "#A855F7",
+    "ORDER_BLOCK": "#F59E0B",
+}
+_DEFAULT_ZONE_MAX_COUNT = {t: 5 for t in _ZONE_TYPE_KEYS}
+_DEFAULT_ZONE_OPACITY = {t: 30 for t in _ZONE_TYPE_KEYS}
+
+
+def _default_custom_lines() -> list[dict]:
+    return [
+        {"enabled": False, "hour12": 8, "minute": 30, "meridiem": "AM", "color": _DEFAULT_CUSTOM_LINE_COLORS[i], "name": ""}
+        for i in range(3)
+    ]
+
+
+class PoiSettingsMixin(rx.State, mixin=True):
+    def load_poi_settings(self) -> None:
+        if self.poi_settings_loaded:
+            if self.active_tab == "Trading Panel":
+                self.refresh_poi_chart_overlays()
+            return
+
+        settings = _engine.get_poi_settings()
+        self.poi_display_enabled = settings.get("display_enabled", {})
+        self.poi_strategy_enabled = settings.get("strategy_enabled", {})
+        self.poi_zone_source_tf_enabled = settings.get("zone_source_tf_enabled", {})
+        self.poi_timezone_mode = settings.get("timezone_mode", "NY")
+
+        visual = _engine.security.persistence.load().get("poi_visual_settings", {})
+        self.poi_show_labels = visual.get("show_labels", True)
+        self.poi_show_tooltips = visual.get("show_tooltips", True)
+        self.poi_line_transparency = visual.get("line_transparency", 100)
+        self.poi_show_source_tf_badge = visual.get("show_source_tf_badge", True)
+        self.poi_show_logical_id = visual.get("show_logical_id", False)
+        self.poi_reduced_motion = visual.get("reduced_motion", False)
+        self.poi_high_line_style = visual.get("high_line_style", "solid")
+        self.poi_high_line_thickness = visual.get("high_line_thickness", 2)
+        self.poi_low_line_style = visual.get("low_line_style", "solid")
+        self.poi_low_line_thickness = visual.get("low_line_thickness", 1)
+
+        tf_settings = _engine.security.persistence.load().get("poi_tf_settings", {})
+        self.poi_tf_color = tf_settings.get("color", dict(_DEFAULT_TF_COLOR))
+        self.poi_tf_vertical_enabled = tf_settings.get("vertical_enabled", dict(_DEFAULT_TF_DISPLAY))
+        self.poi_tf_droplet_enabled = tf_settings.get("droplet_enabled", dict(_DEFAULT_TF_DISPLAY))
+        self.poi_tf_vertical_style = tf_settings.get("vertical_style", dict(_DEFAULT_TF_VERTICAL_STYLE))
+        self.poi_tf_vertical_opacity = tf_settings.get("vertical_opacity", dict(_DEFAULT_TF_VERTICAL_OPACITY))
+        self.poi_tf_display_enabled = {
+            tf: self.poi_display_enabled.get(POI_LINE_TYPE_MAP[tf][0], False)
+            for tf in POI_LINE_TF_ORDER
+        }
+        self.poi_tf_strategy_enabled = {
+            tf: self.poi_strategy_enabled.get(POI_LINE_TYPE_MAP[tf][0], False)
+            for tf in POI_LINE_TF_ORDER
+        }
+
+        zone_settings = _engine.security.persistence.load().get("poi_zone_settings", {})
+        self.poi_zone_max_count = zone_settings.get("max_count", dict(_DEFAULT_ZONE_MAX_COUNT))
+        self.poi_zone_color = zone_settings.get("color", dict(_DEFAULT_ZONE_COLOR))
+        self.poi_zone_type_opacity = zone_settings.get("opacity", dict(_DEFAULT_ZONE_OPACITY))
+
+        custom = _engine.security.persistence.load().get("poi_custom_lines_v2")
+        if custom and len(custom) == 3 and "hour12" in custom[0]:
+            self.poi_custom_lines = custom
+        else:
+            self.poi_custom_lines = _default_custom_lines()
+
+        self._poi_hidden_by_extras = _engine.security.persistence.load().get("poi_hidden_by_extras", {})
+
+        self.poi_settings_loaded = True
+        if self.active_tab == "Trading Panel":
+            self.refresh_poi_chart_overlays()
+
+    def _sync_tf_dicts_from_flat(self) -> None:
+        """Rebuilds poi_tf_display_enabled/poi_tf_strategy_enabled from
+        the flat per-type dicts - call after any bulk mutation of
+        poi_display_enabled/poi_strategy_enabled that isn't already
+        going through the per-TF setters."""
+        self.poi_tf_display_enabled = {
+            tf: self.poi_display_enabled.get(POI_LINE_TYPE_MAP[tf][0], False)
+            for tf in POI_LINE_TF_ORDER
+        }
+        self.poi_tf_strategy_enabled = {
+            tf: self.poi_strategy_enabled.get(POI_LINE_TYPE_MAP[tf][0], False)
+            for tf in POI_LINE_TF_ORDER
+        }
+
+    @rx.event(background=True)
+    async def toggle_poi_display(self, poi_type: str, checked: bool):
+        async with self:
+            self.poi_display_enabled = {**self.poi_display_enabled, poi_type: checked}
+            self.poi_backend_busy = True
+            if self.active_tab == "Trading Panel":
+                self.refresh_poi_chart_overlays()
+        try:
+            await asyncio.to_thread(_engine.set_poi_display_enabled, poi_type, checked)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+
+    @rx.event(background=True)
+    async def toggle_poi_strategy(self, poi_type: str, checked: bool):
+        async with self:
+            self.poi_strategy_enabled = {**self.poi_strategy_enabled, poi_type: checked}
+            self.poi_backend_busy = True
+        try:
+            await asyncio.to_thread(_engine.set_poi_strategy_enabled, poi_type, checked)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+
+    @rx.event(background=True)
+    async def toggle_poi_zone_source_tf(self, timeframe: str, checked: bool):
+        async with self:
+            self.poi_zone_source_tf_enabled = {**self.poi_zone_source_tf_enabled, timeframe: checked}
+            self.poi_backend_busy = True
+            if self.active_tab == "Trading Panel":
+                self.refresh_poi_chart_overlays()
+        try:
+            await asyncio.to_thread(_engine.set_poi_zone_source_tf_enabled, timeframe, checked)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+
+    @rx.event(background=True)
+    async def set_poi_timezone_mode(self, mode: str | list[str]):
+        resolved = mode[0] if isinstance(mode, list) else mode
+        async with self:
+            self.poi_timezone_mode = resolved
+            self.poi_backend_busy = True
+            if self.active_tab == "Trading Panel":
+                self.refresh_poi_chart_overlays()
+        try:
+            await asyncio.to_thread(_engine.set_poi_timezone_mode, resolved)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+                if self.active_tab == "Trading Panel":
+                    self.refresh_poi_chart_overlays()
+
+    def reset_poi_timezone_default(self):
+        return type(self).set_poi_timezone_mode("NY")
+
+    @rx.event(background=True)
+    async def toggle_poi_tf_display(self, tf: str, checked: bool):
+        high_type, low_type = POI_LINE_TYPE_MAP[tf]
+        async with self:
+            self.poi_tf_display_enabled = {**self.poi_tf_display_enabled, tf: checked}
+            self.poi_display_enabled = {**self.poi_display_enabled, high_type: checked, low_type: checked}
+            self.poi_backend_busy = True
+            if self.active_tab == "Trading Panel":
+                self.refresh_poi_chart_overlays()
+
+        def _apply():
+            _engine.set_poi_display_enabled(high_type, checked)
+            _engine.set_poi_display_enabled(low_type, checked)
+        try:
+            await asyncio.to_thread(_apply)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+
+    @rx.event(background=True)
+    async def toggle_poi_tf_strategy(self, tf: str, checked: bool):
+        high_type, low_type = POI_LINE_TYPE_MAP[tf]
+        async with self:
+            self.poi_tf_strategy_enabled = {**self.poi_tf_strategy_enabled, tf: checked}
+            self.poi_strategy_enabled = {**self.poi_strategy_enabled, high_type: checked, low_type: checked}
+            self.poi_backend_busy = True
+
+        def _apply():
+            _engine.set_poi_strategy_enabled(high_type, checked)
+            _engine.set_poi_strategy_enabled(low_type, checked)
+        try:
+            await asyncio.to_thread(_apply)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+
+    def _save_poi_tf_settings(self) -> None:
+        _engine.security.persistence.save({
+            "poi_tf_settings": {
+                "color": dict(self.poi_tf_color),
+                "vertical_enabled": dict(self.poi_tf_vertical_enabled),
+                "droplet_enabled": dict(self.poi_tf_droplet_enabled),
+                "vertical_style": dict(self.poi_tf_vertical_style),
+                "vertical_opacity": dict(self.poi_tf_vertical_opacity),
+            }
+        })
+        if self.active_tab == "Trading Panel":
+            self.refresh_poi_chart_overlays()
+
+    def set_poi_tf_color(self, tf: str, color: str) -> None:
+        self.poi_tf_color = {**self.poi_tf_color, tf: color}
+        self._save_poi_tf_settings()
+
+    def toggle_poi_tf_vertical(self, tf: str, checked: bool) -> None:
+        self.poi_tf_vertical_enabled = {**self.poi_tf_vertical_enabled, tf: checked}
+        self._save_poi_tf_settings()
+
+    def toggle_poi_tf_droplet(self, tf: str, checked: bool) -> None:
+        self.poi_tf_droplet_enabled = {**self.poi_tf_droplet_enabled, tf: checked}
+        self._save_poi_tf_settings()
+
+    def set_poi_tf_vertical_style(self, tf: str, value: str | list[str]) -> None:
+        resolved = value[0] if isinstance(value, list) else value
+        self.poi_tf_vertical_style = {**self.poi_tf_vertical_style, tf: resolved}
+        self._save_poi_tf_settings()
+
+    def set_poi_tf_vertical_opacity(self, tf: str, value: list[float]) -> None:
+        self.poi_tf_vertical_opacity = {**self.poi_tf_vertical_opacity, tf: int(value[0])}
+        self._save_poi_tf_settings()
+
+    @rx.event(background=True)
+    async def reset_poi_lines_defaults(self):
+        async with self:
+            self.poi_tf_display_enabled = dict(_DEFAULT_TF_DISPLAY)
+            self.poi_tf_strategy_enabled = dict(_DEFAULT_TF_DISPLAY)
+            self.poi_tf_color = dict(_DEFAULT_TF_COLOR)
+            self.poi_tf_vertical_enabled = dict(_DEFAULT_TF_DISPLAY)
+            self.poi_tf_droplet_enabled = dict(_DEFAULT_TF_DISPLAY)
+            self.poi_tf_vertical_style = dict(_DEFAULT_TF_VERTICAL_STYLE)
+            self.poi_tf_vertical_opacity = dict(_DEFAULT_TF_VERTICAL_OPACITY)
+            for tf in POI_LINE_TF_ORDER:
+                high_type, low_type = POI_LINE_TYPE_MAP[tf]
+                enabled = _DEFAULT_TF_DISPLAY[tf]
+                self.poi_display_enabled = {**self.poi_display_enabled, high_type: enabled, low_type: enabled}
+                self.poi_strategy_enabled = {**self.poi_strategy_enabled, high_type: enabled, low_type: enabled}
+            self.poi_backend_busy = True
+            self._save_poi_tf_settings()
+
+        def _apply():
+            for tf in POI_LINE_TF_ORDER:
+                high_type, low_type = POI_LINE_TYPE_MAP[tf]
+                enabled = _DEFAULT_TF_DISPLAY[tf]
+                _engine.set_poi_display_enabled(high_type, enabled)
+                _engine.set_poi_display_enabled(low_type, enabled)
+                _engine.set_poi_strategy_enabled(high_type, enabled)
+                _engine.set_poi_strategy_enabled(low_type, enabled)
+        try:
+            await asyncio.to_thread(_apply)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+
+    def reset_poi_horizontal_style_defaults(self) -> None:
+        self.poi_high_line_style = "solid"
+        self.poi_high_line_thickness = 2
+        self.poi_low_line_style = "solid"
+        self.poi_low_line_thickness = 1
+        self._save_poi_visual_settings()
+
+    @rx.event(background=True)
+    async def reset_poi_zone_matrix_defaults(self):
+        async with self:
+            self.poi_zone_source_tf_enabled = dict(_DEFAULT_ZONE_SOURCE_TF)
+            self.poi_backend_busy = True
+            if self.active_tab == "Trading Panel":
+                self.refresh_poi_chart_overlays()
+
+        def _apply():
+            for tf, enabled in _DEFAULT_ZONE_SOURCE_TF.items():
+                _engine.set_poi_zone_source_tf_enabled(tf, enabled)
+        try:
+            await asyncio.to_thread(_apply)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+
+    def _save_poi_zone_settings(self) -> None:
+        _engine.security.persistence.save({
+            "poi_zone_settings": {
+                "max_count": dict(self.poi_zone_max_count),
+                "color": dict(self.poi_zone_color),
+                "opacity": dict(self.poi_zone_type_opacity),
+            }
+        })
+        if self.active_tab == "Trading Panel":
+            self.refresh_poi_chart_overlays()
+
+    def set_poi_zone_max_count(self, zone_type: str, value: str) -> None:
+        try:
+            count = max(1, min(50, int(value)))
+        except ValueError:
+            return
+        self.poi_zone_max_count = {**self.poi_zone_max_count, zone_type: count}
+        self._save_poi_zone_settings()
+
+    def set_poi_zone_color(self, zone_type: str, value: str) -> None:
+        self.poi_zone_color = {**self.poi_zone_color, zone_type: value}
+        self._save_poi_zone_settings()
+
+    def set_poi_zone_type_opacity(self, zone_type: str, value: list[float]) -> None:
+        self.poi_zone_type_opacity = {**self.poi_zone_type_opacity, zone_type: int(value[0])}
+        self._save_poi_zone_settings()
+
+    @rx.event(background=True)
+    async def reset_poi_zone_types_defaults(self):
+        async with self:
+            zone_types = [t for t, _ in POI_ZONE_TYPES]
+            self.poi_display_enabled = {**self.poi_display_enabled, **{t: False for t in zone_types}}
+            self.poi_strategy_enabled = {**self.poi_strategy_enabled, **{t: False for t in zone_types}}
+            self.poi_zone_max_count = dict(_DEFAULT_ZONE_MAX_COUNT)
+            self.poi_zone_color = dict(_DEFAULT_ZONE_COLOR)
+            self.poi_zone_type_opacity = dict(_DEFAULT_ZONE_OPACITY)
+            self.poi_backend_busy = True
+            self._save_poi_zone_settings()
+            if self.active_tab == "Trading Panel":
+                self.refresh_poi_chart_overlays()
+
+        def _apply():
+            for t in zone_types:
+                _engine.set_poi_display_enabled(t, False)
+                _engine.set_poi_strategy_enabled(t, False)
+        try:
+            await asyncio.to_thread(_apply)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+
+    def reset_poi_custom_lines_defaults(self) -> None:
+        self.poi_custom_lines = _default_custom_lines()
+        self._save_custom_lines()
+
+    def reset_poi_visual_controls_defaults(self) -> None:
+        self.poi_show_labels = True
+        self.poi_show_tooltips = True
+        self.poi_show_source_tf_badge = True
+        self.poi_show_logical_id = False
+        self.poi_reduced_motion = False
+        self._save_poi_visual_settings()
+
+    def _save_custom_lines(self) -> None:
+        _engine.security.persistence.save({"poi_custom_lines_v2": self.poi_custom_lines})
+        if self.active_tab == "Trading Panel":
+            self.refresh_poi_chart_overlays()
+
+    def toggle_custom_line_enabled(self, index: int, checked: bool) -> None:
+        lines = [dict(x) for x in self.poi_custom_lines]
+        lines[index]["enabled"] = checked
+        self.poi_custom_lines = lines
+        self._save_custom_lines()
+
+    def set_custom_line_hour(self, index: int, value: str) -> None:
+        lines = [dict(x) for x in self.poi_custom_lines]
+        try:
+            lines[index]["hour12"] = max(1, min(12, int(value)))
+        except ValueError:
+            return
+        self.poi_custom_lines = lines
+        self._save_custom_lines()
+
+    def set_custom_line_minute(self, index: int, value: str) -> None:
+        lines = [dict(x) for x in self.poi_custom_lines]
+        try:
+            lines[index]["minute"] = max(0, min(59, int(value)))
+        except ValueError:
+            return
+        self.poi_custom_lines = lines
+        self._save_custom_lines()
+
+    def set_custom_line_meridiem(self, index: int, value: str | list[str]) -> None:
+        resolved = value[0] if isinstance(value, list) else value
+        lines = [dict(x) for x in self.poi_custom_lines]
+        lines[index]["meridiem"] = resolved
+        self.poi_custom_lines = lines
+        self._save_custom_lines()
+
+    def set_custom_line_color(self, index: int, value: str) -> None:
+        lines = [dict(x) for x in self.poi_custom_lines]
+        lines[index]["color"] = value
+        self.poi_custom_lines = lines
+        self._save_custom_lines()
+
+    def set_custom_line_name(self, index: int, value: str) -> None:
+        lines = [dict(x) for x in self.poi_custom_lines]
+        lines[index]["name"] = value
+        self.poi_custom_lines = lines
+        self._save_custom_lines()
+
+    def _save_poi_visual_settings(self) -> None:
+        _engine.security.persistence.save({
+            "poi_visual_settings": {
+                "show_labels": self.poi_show_labels,
+                "show_tooltips": self.poi_show_tooltips,
+                "line_transparency": self.poi_line_transparency,
+                "show_source_tf_badge": self.poi_show_source_tf_badge,
+                "show_logical_id": self.poi_show_logical_id,
+                "reduced_motion": self.poi_reduced_motion,
+                "high_line_style": self.poi_high_line_style,
+                "high_line_thickness": self.poi_high_line_thickness,
+                "low_line_style": self.poi_low_line_style,
+                "low_line_thickness": self.poi_low_line_thickness,
+            }
+        })
+        if self.active_tab == "Trading Panel":
+            self.refresh_poi_chart_overlays()
+
+    def toggle_poi_show_labels(self, checked: bool) -> None:
+        self.poi_show_labels = checked
+        self._save_poi_visual_settings()
+
+    def toggle_poi_show_tooltips(self, checked: bool) -> None:
+        self.poi_show_tooltips = checked
+        self._save_poi_visual_settings()
+
+    def toggle_poi_show_source_tf_badge(self, checked: bool) -> None:
+        self.poi_show_source_tf_badge = checked
+        self._save_poi_visual_settings()
+
+    def toggle_poi_show_logical_id(self, checked: bool) -> None:
+        self.poi_show_logical_id = checked
+        self._save_poi_visual_settings()
+
+    def toggle_poi_reduced_motion(self, checked: bool) -> None:
+        self.poi_reduced_motion = checked
+        self._save_poi_visual_settings()
+
+    def set_poi_line_transparency(self, value: list[float]) -> None:
+        self.poi_line_transparency = int(value[0])
+        self._save_poi_visual_settings()
+
+    def set_poi_high_line_style(self, value: str | list[str]) -> None:
+        resolved = value[0] if isinstance(value, list) else value
+        self.poi_high_line_style = resolved
+        self._save_poi_visual_settings()
+
+    def set_poi_high_line_thickness(self, value: list[float]) -> None:
+        self.poi_high_line_thickness = int(value[0])
+        self._save_poi_visual_settings()
+
+    def set_poi_low_line_style(self, value: str | list[str]) -> None:
+        resolved = value[0] if isinstance(value, list) else value
+        self.poi_low_line_style = resolved
+        self._save_poi_visual_settings()
+
+    def set_poi_low_line_thickness(self, value: list[float]) -> None:
+        self.poi_low_line_thickness = int(value[0])
+        self._save_poi_visual_settings()
+
+    # --- Bulk controls (renamed + re-scoped: operate on what is
+    # CURRENTLY on the chart, not blanket-all) ---
+    @rx.event(background=True)
+    async def poi_hide_extras(self):
+        """Hide Extras: remembers every POI type currently Display=True,
+        then hides exactly those - not a blanket reset of every possible
+        type. "Extras" means the objects currently shown on the chart
+        beyond the candles/price line themselves."""
+        async with self:
+            currently_shown = {t: True for t, v in self.poi_display_enabled.items() if v}
+            self._poi_hidden_by_extras = currently_shown
+            self.poi_display_enabled = {**self.poi_display_enabled, **{t: False for t in currently_shown}}
+            self._sync_tf_dicts_from_flat()
+            self.poi_backend_busy = True
+            _engine.security.persistence.save({"poi_hidden_by_extras": currently_shown})
+            if self.active_tab == "Trading Panel":
+                self.refresh_poi_chart_overlays()
+
+        def _apply():
+            for t in currently_shown:
+                _engine.set_poi_display_enabled(t, False)
+        try:
+            await asyncio.to_thread(_apply)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+
+    @rx.event(background=True)
+    async def poi_show_extras(self):
+        """Show Extras: restores Display=True ONLY for the POI types
+        that the most recent Hide Extras click actually hid - a no-op if
+        nothing was hidden."""
+        async with self:
+            to_restore = dict(self._poi_hidden_by_extras)
+            if not to_restore:
+                return
+            self.poi_display_enabled = {**self.poi_display_enabled, **to_restore}
+            self._sync_tf_dicts_from_flat()
+            self._poi_hidden_by_extras = {}
+            self.poi_backend_busy = True
+            _engine.security.persistence.save({"poi_hidden_by_extras": {}})
+            if self.active_tab == "Trading Panel":
+                self.refresh_poi_chart_overlays()
+
+        def _apply():
+            for t in to_restore:
+                _engine.set_poi_display_enabled(t, True)
+        try:
+            await asyncio.to_thread(_apply)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+
+    @rx.event(background=True)
+    async def poi_enable_default_strategy(self):
+        """Strategy = True for the union of the locked default set
+        (PDH/PDL/4H_HIGH/4H_LOW) AND every POI type currently
+        Display=True (already attached to the chart) - everything else
+        resets to False."""
+        async with self:
+            currently_shown = {t for t, v in self.poi_display_enabled.items() if v}
+            target = set(POI_DEFAULT_STRATEGY_TYPES) | currently_shown
+            all_types = list(self.poi_strategy_enabled.keys())
+            self.poi_strategy_enabled = {t: (t in target) for t in all_types}
+            self._sync_tf_dicts_from_flat()
+            self.poi_backend_busy = True
+
+        def _apply():
+            for t in all_types:
+                _engine.set_poi_strategy_enabled(t, t in target)
+        try:
+            await asyncio.to_thread(_apply)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+
+    @rx.event(background=True)
+    async def poi_disable_all_strategy(self):
+        """Strategy = False ONLY for POI types currently Display=True
+        ("present on chart") - types not currently shown are left
+        untouched."""
+        async with self:
+            currently_shown = [t for t, v in self.poi_display_enabled.items() if v]
+            self.poi_strategy_enabled = {**self.poi_strategy_enabled, **{t: False for t in currently_shown}}
+            self._sync_tf_dicts_from_flat()
+            self.poi_backend_busy = True
+
+        def _apply():
+            for t in currently_shown:
+                _engine.set_poi_strategy_enabled(t, False)
+        try:
+            await asyncio.to_thread(_apply)
+        finally:
+            async with self:
+                self.poi_backend_busy = False
+
+    def poi_reset_chart_filters(self) -> None:
+        pass
+
+    @rx.var
+    def poi_tf_card_rows(self) -> list[dict]:
+        return [{
+            "tf": tf,
+            "label": POI_LINE_TF_LABELS[tf],
+            "display": self.poi_tf_display_enabled.get(tf, False),
+            "strategy": self.poi_tf_strategy_enabled.get(tf, False),
+            "color": self.poi_tf_color.get(tf, _DEFAULT_TF_COLOR.get(tf, "#38BDF8")),
+            "vertical_enabled": self.poi_tf_vertical_enabled.get(tf, False),
+            "droplet_enabled": self.poi_tf_droplet_enabled.get(tf, False),
+            "vertical_style": self.poi_tf_vertical_style.get(tf, "solid"),
+            "vertical_opacity": self.poi_tf_vertical_opacity.get(tf, 50),
+        } for tf in POI_LINE_TF_ORDER]
+
+    @rx.var
+    def poi_zone_type_rows(self) -> list[dict]:
+        return [{
+            "type": t, "label": label,
+            "display": self.poi_display_enabled.get(t, False),
+            "strategy": self.poi_strategy_enabled.get(t, False),
+            "color": self.poi_zone_color.get(t, _DEFAULT_ZONE_COLOR.get(t, "#3B82F6")),
+            "max_count": self.poi_zone_max_count.get(t, 5),
+            "opacity": self.poi_zone_type_opacity.get(t, 30),
+        } for t, label in POI_ZONE_TYPES]
+
+    @rx.var
+    def poi_zone_source_tf_rows(self) -> list[dict]:
+        return [{"tf": tf, "enabled": self.poi_zone_source_tf_enabled.get(tf, False)} for tf in POI_LINE_TF_ORDER]
+
+----------------------------------------------------------------------------------------------------
+END FILE: poi_settings_mixin.py
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+BUNDLE SUMMARY
+Files successfully added: 6
+Files skipped/failed: 0
+----------------------------------------------------------------------------------------------------
+

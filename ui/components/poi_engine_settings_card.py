@@ -7,6 +7,11 @@ is not guaranteed to compile as boolean negation on a dict-indexed Var in
 every Reflex version; replaced with the always-safe
 `rx.cond(row["display"], False, True)` pattern for the disabled= prop on
 every merged sub-control.
+
+FIX (File 04 Core Correction v1) - added poi_setup_detection_card(), a new
+card exposing the "Strict Candle Reuse Lock" Settings toggle (default
+OFF) that _fsm_base.py reads live. This is the ONLY change in this
+revision - every other card/function below is UNCHANGED from r2.
 """
 from __future__ import annotations
 import reflex as rx
@@ -306,5 +311,33 @@ def poi_visual_controls_card() -> rx.Component:
         rx.hstack(rx.checkbox(checked=AppState.poi_show_source_tf_badge, on_change=AppState.toggle_poi_show_source_tf_badge), rx.text("Show source TF badge", font_size="0.78rem"), spacing="2"),
         rx.hstack(rx.checkbox(checked=AppState.poi_show_logical_id, on_change=AppState.toggle_poi_show_logical_id), rx.text("Show logical ID in tooltip", font_size="0.78rem"), spacing="2"),
         rx.hstack(rx.checkbox(checked=AppState.poi_reduced_motion, on_change=AppState.toggle_poi_reduced_motion), rx.text("Reduced motion", font_size="0.78rem"), spacing="2"),
+        spacing="3", width="100%", style=GLASS_CARD_3XL_STYLE,
+    )
+
+
+def poi_setup_detection_card() -> rx.Component:
+    """NEW (File 04 Core Correction v1). Strict Candle Reuse Lock toggle,
+    default OFF. Backend already fully wired: reads/writes
+    AppState.strict_candle_reuse_lock_enabled, which persists via
+    _engine.security.persistence and mirrors live into
+    engines/workers/setup/candle_reuse_settings.py, read fresh by
+    _fsm_base.py on every Candle1/2/3 confirmation check."""
+    return rx.vstack(
+        rx.heading("Setup Detection (File 04)", size="4"),
+        rx.text(
+            "OFF (default): every candle that touches a POI runs the full Candle1/2/3 test, "
+            "even if it (or a neighbor) already belongs to a previously confirmed setup. "
+            "ON: a candle used in a confirmed setup can never be reused in another setup on "
+            "that symbol/timeframe again.",
+            font_size="0.78rem", color="var(--qt19-text-muted)",
+        ),
+        rx.hstack(
+            rx.checkbox(
+                checked=AppState.strict_candle_reuse_lock_enabled,
+                on_change=AppState.toggle_strict_candle_reuse_lock,
+            ),
+            rx.text("Strict Candle Reuse Lock", font_size="0.78rem"),
+            spacing="2", align_items="center",
+        ),
         spacing="3", width="100%", style=GLASS_CARD_3XL_STYLE,
     )

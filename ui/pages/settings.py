@@ -5,6 +5,11 @@ PATH: ui/pages/settings.py (REPLACE ENTIRE FILE)
 FIX (merged cards) - poi_vertical_markers_card import/usage REMOVED - its
 settings are now inside poi_lines_card() per-TF. Grid updated accordingly
 (one fewer full-row card).
+
+FIX (File 04 Core Correction v1) - added poi_setup_detection_card import
+and placed it in the "Trading Defaults" tab grid, exposing the new
+"Strict Candle Reuse Lock" Settings toggle. This is the ONLY change in
+this revision - everything else below is UNCHANGED.
 """
 from __future__ import annotations
 import reflex as rx
@@ -19,7 +24,9 @@ from ui.components.poi_engine_settings_card import (
     poi_zone_types_card,
     poi_custom_lines_card,
     poi_visual_controls_card,
+    poi_setup_detection_card,
 )
+
 
 _SCROLL_CONTENT_STYLE = {
     "overflow_y": "auto",
@@ -255,6 +262,7 @@ def _trading_tab() -> rx.Component:
         rx.box(poi_zone_types_card(), style=_full_row, width="100%"),
         poi_custom_lines_card(),
         poi_visual_controls_card(),
+        poi_setup_detection_card(),
         _coming_soon_card("Signal Bias Filter", "Market-aware auto-disable rules for filters."),
         _coming_soon_card("Paper Trading", "Paper/Live toggle defaults and simulator settings."),
         columns=rx.breakpoints(initial="1", sm="1", md="2", lg="3"),

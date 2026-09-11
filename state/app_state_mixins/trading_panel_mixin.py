@@ -139,11 +139,13 @@ class TradingPanelMixin(rx.State, mixin=True):
         engine.security.persistence.save({"trading_panel_symbol": value})
         self.load_trading_panel_display_days()
         self.refresh_trading_panel_chart()
+        self.on_trading_panel_symbol_or_tf_changed()
 
     def set_trading_panel_chart_tf(self, value: str) -> None:
         self.trading_panel_chart_tf = value
         engine.security.persistence.save({"trading_panel_chart_tf": value})
         self.refresh_trading_panel_chart()
+        self.on_trading_panel_symbol_or_tf_changed()
 
     def set_trading_panel_display_days_draft(self, value: str) -> None:
         self.trading_panel_display_days_draft = value

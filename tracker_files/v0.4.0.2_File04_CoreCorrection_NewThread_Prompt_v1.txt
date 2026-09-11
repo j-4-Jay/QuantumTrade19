@@ -1,0 +1,52 @@
+Continue QuantumTrade19. Build the File 04 Core Correction.
+
+Design is FULLY LOCKED - do not re-discuss scope. Follow
+File_04_CoreCorrection_Spec_Lock_v1.md exactly (uploaded this thread).
+QuantumTrade19_Master_Roadmap_PostFile04_v1.md is also uploaded for
+context on what comes AFTER this thread - do not build any of it now.
+
+Summary of what to build in THIS thread only:
+
+1. Remove role-based (support/resistance) direction gating from
+   engines/workers/setup/poi_interaction_detector_worker.py. Every POI
+   touch must feed BOTH Bull123FSMWorker and Bear123FSMWorker for the
+   same poi_id, regardless of the POI's role or type. Scenario-B
+   retest/double-cross-flip logic stays exactly as-is - only the base
+   role->direction restriction is removed.
+
+2. Add a new Settings toggle "Strict Candle Reuse Lock" (default OFF).
+   When OFF, engines/workers/setup/_fsm_base.py's _step_waiting_c3()
+   must skip the CandleLockRegistry.any_locked() check entirely (treat
+   it as always False). When ON, restore today's exact no-reuse
+   behavior. Must be readable live, not baked in at construction -
+   match the existing Settings-toggle pattern already used elsewhere
+   (e.g. poi_display_enabled/poi_strategy_enabled).
+
+3. Bundled visualization safety fix in
+   state/app_state_mixins/setup_visualization_mixin.py: force-filter
+   overlays/dots to the exact currently-selected (symbol, timeframe)
+   pair, and trigger an IMMEDIATE refresh_setup_visualization() call on
+   any symbol or timeframe switch, instead of waiting for the next ~3s
+   poll tick.
+
+Required check gate before re-locking File 04 (see spec Section 6):
+- All existing File 04 automated tests still pass (update any that
+  hard-coded a role->direction assumption).
+- New test: one POI touch starts BOTH a Bull pending chain and a Bear
+  pending chain simultaneously for the same poi_id.
+- New test: Strict Candle Reuse Lock OFF allows candle reuse; ON
+  preserves today's no-reuse behavior.
+- User re-validates live on a real chart that 123Bear now forms where it
+  previously didn't.
+- User confirms no stale/wrong-timeframe setup marker appears when
+  switching symbol/timeframe.
+
+Do not touch Dashboard/Journal/Alerts pages. Do not build the Scanner,
+the persistent setup store/3D callouts, or the multi-window workspace in
+this thread - those are separate future threads per the locked build
+order in the roadmap file.
+
+Follow the mandatory pipeline: build -> check -> debug if needed ->
+re-check -> lock -> proceed. Provide complete downloadable replacement
+files with exact Windows paths under D:\QuantumTrade19\, and a versioned
+tracker in tracker_files\.
