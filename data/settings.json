@@ -1,0 +1,230 @@
+{
+  "theme_key": "blue-night",
+  "sound_master_on": true,
+  "dnd_on": false,
+  "paper_mode": true,
+  "run_on_startup": false,
+  "totp_enabled": false,
+  "telegram_notify_enabled": false,
+  "discord_notify_enabled": false,
+  "transition_effects_enabled": [
+    "dissolve",
+    "zoom-in",
+    "slide-up",
+    "flip-x",
+    "blur-in"
+  ],
+  "transition_mode": "shuffle",
+  "tab_transition_effects_enabled": [
+    "slide-left"
+  ],
+  "tab_transition_mode": "single",
+  "per_symbol_settings": {},
+  "chart_coverage_cache_B-ETH_USDT_1m": {
+    "date": "2026-10-19",
+    "local_days": 0,
+    "broker_days": "Not checked yet"
+  },
+  "active_tab": "Trading Panel",
+  "settings_active_subtab": "trading",
+  "chart_coverage_cache_B-BTC_USDT_5m": {
+    "date": "2026-10-08",
+    "local_days": 0,
+    "broker_days": "Not checked yet"
+  },
+  "trading_panel_chart_tf": "5m",
+  "chart_coverage_cache_B-BTC_USDT_1m": {
+    "date": "2026-10-10",
+    "local_days": 0,
+    "broker_days": "Not checked yet"
+  },
+  "sidebar_stage": "icons",
+  "trading_panel_symbol": "B-ETH_USDT",
+  "chart_coverage_cache_B-XAU_USDT_1m": {
+    "date": "2026-10-10",
+    "local_days": 0,
+    "broker_days": "Not checked yet"
+  },
+  "poi_hidden_by_extras": {},
+  "trading_panel_follow_live": true,
+  "chart_coverage_cache_B-XAU_USDT_15m": {
+    "date": "2026-10-10",
+    "local_days": 0,
+    "broker_days": "Not checked yet"
+  },
+  "chart_coverage_cache_B-ETH_USDT_5m": {
+    "date": "2026-10-19",
+    "local_days": 0,
+    "broker_days": "Not checked yet"
+  },
+  "poi_tf_settings": {
+    "color": {
+      "1m": "#38BDF8",
+      "5m": "#38BDF8",
+      "15m": "#38BDF8",
+      "1H": "#32CD32",
+      "4H": "#FFFFFF",
+      "1D": "#FFA500",
+      "1W": "#FFFF00",
+      "1M": "#DC143C"
+    },
+    "vertical_enabled": {
+      "1m": false,
+      "5m": false,
+      "15m": false,
+      "1H": false,
+      "4H": true,
+      "1D": true,
+      "1W": false,
+      "1M": false
+    },
+    "droplet_enabled": {
+      "1m": false,
+      "5m": false,
+      "15m": false,
+      "1H": false,
+      "4H": true,
+      "1D": true,
+      "1W": false,
+      "1M": false
+    },
+    "vertical_style": {
+      "1m": "solid",
+      "5m": "solid",
+      "15m": "solid",
+      "1H": "solid",
+      "4H": "solid",
+      "1D": "solid",
+      "1W": "solid",
+      "1M": "solid"
+    },
+    "vertical_opacity": {
+      "1m": 50,
+      "5m": 50,
+      "15m": 50,
+      "1H": 50,
+      "4H": 50,
+      "1D": 50,
+      "1W": 50,
+      "1M": 50
+    }
+  },
+  "trading_panel_bg_mode": "auto",
+  "candle_style": {
+    "mode": "solid",
+    "up_color": "#004229",
+    "down_color": "#470004",
+    "no_change_color": "#8B98AA",
+    "up_border_color": "#00ffaa",
+    "down_border_color": "#ff0015",
+    "up_wick_color": "#16C784",
+    "down_wick_color": "#EA3943"
+  },
+  "chart_coverage_cache_B-XAU_USDT_5m": {
+    "date": "2026-10-08",
+    "local_days": 0,
+    "broker_days": "Not checked yet"
+  },
+  "chart_coverage_cache_B-BTC_USDT_15m": {
+    "date": "2026-10-08",
+    "local_days": 0,
+    "broker_days": "Not checked yet"
+  },
+  "poi_custom_lines_v2": [
+    {
+      "enabled": true,
+      "hour12": 8,
+      "minute": 30,
+      "meridiem": "AM",
+      "color": "#22C55E",
+      "name": ""
+    },
+    {
+      "enabled": false,
+      "hour12": 8,
+      "minute": 30,
+      "meridiem": "AM",
+      "color": "#F97316",
+      "name": ""
+    },
+    {
+      "enabled": false,
+      "hour12": 8,
+      "minute": 30,
+      "meridiem": "AM",
+      "color": "#38BDF8",
+      "name": ""
+    }
+  ],
+  "poi_engine_settings": {
+    "display_enabled": {
+      "P1M_HIGH": false,
+      "P1M_LOW": false,
+      "P5M_HIGH": false,
+      "P5M_LOW": false,
+      "P15M_HIGH": false,
+      "P15M_LOW": false,
+      "P1H_HIGH": false,
+      "P1H_LOW": false,
+      "4H_HIGH": true,
+      "4H_LOW": true,
+      "PDH": true,
+      "PDL": true,
+      "1W_HIGH": false,
+      "1W_LOW": false,
+      "1M_HIGH": false,
+      "1M_LOW": false,
+      "RESISTANCE_FLIP": false,
+      "SUPPORT_FLIP": false,
+      "FVG": false,
+      "ORDER_BLOCK": false,
+      "INVERSE_FVG": false
+    },
+    "strategy_enabled": {
+      "P1M_HIGH": false,
+      "P1M_LOW": false,
+      "P5M_HIGH": false,
+      "P5M_LOW": false,
+      "P15M_HIGH": false,
+      "P15M_LOW": false,
+      "P1H_HIGH": false,
+      "P1H_LOW": false,
+      "4H_HIGH": true,
+      "4H_LOW": true,
+      "PDH": true,
+      "PDL": true,
+      "1W_HIGH": false,
+      "1W_LOW": false,
+      "1M_HIGH": false,
+      "1M_LOW": false,
+      "RESISTANCE_FLIP": false,
+      "SUPPORT_FLIP": false,
+      "FVG": false,
+      "ORDER_BLOCK": false,
+      "INVERSE_FVG": false
+    },
+    "zone_source_tf_enabled": {
+      "1m": true,
+      "5m": false,
+      "15m": true,
+      "1H": false,
+      "4H": false,
+      "1D": false,
+      "1W": false,
+      "1M": false
+    },
+    "timezone_mode": "NY"
+  },
+  "chart_display_days_B-BTC_USDT": 5,
+  "chart_coverage_pending_B-BTC_USDT_1m": false,
+  "chart_coverage_pending_B-BTC_USDT_5m": false,
+  "chart_coverage_pending_B-BTC_USDT_15m": false,
+  "chart_coverage_cache_B-ETH_USDT_15m": {
+    "date": "2026-10-19",
+    "local_days": 0,
+    "broker_days": "Not checked yet"
+  },
+  "trading_panel_grid_enabled": false,
+  "trading_panel_crosshair_enabled": true,
+  "trading_panel_crosshair_opacity": 49
+}
