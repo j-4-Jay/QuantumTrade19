@@ -15,4 +15,16 @@ logs/
 .pytest_cache/
 data/historical/*.db
 data/historical/manifests/
+.venv/
+node_modules/
+Clutter/
+New_Thread__Bundle/
+Debug/Backups/
+Debug/Restore_Maintenance/
+Debug/Project_Operations.config.json
+Debug/Ops_State.json
+Debug/Ops_Log.md
+Debug/relay_state.json
+Debug/ops.lock
+Debug/ops_run.lock
 logs/
