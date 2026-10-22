@@ -4,7 +4,7 @@
   "dnd_on": false,
   "paper_mode": true,
   "run_on_startup": false,
-  "totp_enabled": false,
+  "totp_enabled": true,
   "telegram_notify_enabled": false,
   "discord_notify_enabled": false,
   "transition_effects_enabled": [
@@ -21,27 +21,27 @@
   "tab_transition_mode": "single",
   "per_symbol_settings": {},
   "chart_coverage_cache_B-ETH_USDT_1m": {
-    "date": "2026-10-19",
+    "date": "2026-10-23",
     "local_days": 0,
     "broker_days": "Not checked yet"
   },
   "active_tab": "Trading Panel",
   "settings_active_subtab": "trading",
   "chart_coverage_cache_B-BTC_USDT_5m": {
-    "date": "2026-10-08",
+    "date": "2026-10-23",
     "local_days": 0,
     "broker_days": "Not checked yet"
   },
   "trading_panel_chart_tf": "5m",
   "chart_coverage_cache_B-BTC_USDT_1m": {
-    "date": "2026-10-10",
+    "date": "2026-10-23",
     "local_days": 0,
     "broker_days": "Not checked yet"
   },
   "sidebar_stage": "icons",
-  "trading_panel_symbol": "B-ETH_USDT",
+  "trading_panel_symbol": "B-BTC_USDT",
   "chart_coverage_cache_B-XAU_USDT_1m": {
-    "date": "2026-10-10",
+    "date": "2026-10-22",
     "local_days": 0,
     "broker_days": "Not checked yet"
   },
@@ -53,7 +53,7 @@
     "broker_days": "Not checked yet"
   },
   "chart_coverage_cache_B-ETH_USDT_5m": {
-    "date": "2026-10-19",
+    "date": "2026-10-23",
     "local_days": 0,
     "broker_days": "Not checked yet"
   },
@@ -126,7 +126,7 @@
     "broker_days": "Not checked yet"
   },
   "chart_coverage_cache_B-BTC_USDT_15m": {
-    "date": "2026-10-08",
+    "date": "2026-10-23",
     "local_days": 0,
     "broker_days": "Not checked yet"
   },
@@ -220,7 +220,7 @@
   "chart_coverage_pending_B-BTC_USDT_5m": false,
   "chart_coverage_pending_B-BTC_USDT_15m": false,
   "chart_coverage_cache_B-ETH_USDT_15m": {
-    "date": "2026-10-19",
+    "date": "2026-10-23",
     "local_days": 0,
     "broker_days": "Not checked yet"
   },

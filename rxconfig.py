@@ -29,7 +29,7 @@ from pathlib import Path
 _PROJECT_ROOT = Path(__file__).resolve().parent
 os.chdir(_PROJECT_ROOT)
 
-_EXCLUDED_RELATIVE_NAMES = ["data", "logs", ".web", "tracker_files"]
+_EXCLUDED_RELATIVE_NAMES = ["data", "logs", ".web", "tracker_files", "Debug"]
 
 for _name in _EXCLUDED_RELATIVE_NAMES:
     (_PROJECT_ROOT / _name).mkdir(parents=True, exist_ok=True)

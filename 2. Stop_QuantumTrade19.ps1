@@ -14,7 +14,7 @@ foreach ($port in @($frontendPort, $backendPort)) {
         $procId = $conn.OwningProcess
         if ($procId) {
             Write-Host "Stopping process on port $port (PID $procId)..." -ForegroundColor Yellow
-            Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+taskkill /PID $procId /T /F | Out-Null
             $stopped = $true
         }
     }
