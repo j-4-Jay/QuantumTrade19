@@ -39,9 +39,21 @@ def load_core():
     return core
 
 
+def load_colors():
+    try:
+        path = os.path.join(ROOT, "4c. Watch_Colors.py")
+        spec = importlib.util.spec_from_file_location("po_colors_quiet", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.wrap
+    except Exception:
+        return lambda run: run
+
+
 def main():
     core = load_core()
     core.cmd_run = make_quiet_run(core.cmd_run)
+    core.cmd_run = load_colors()(core.cmd_run)
     sys.argv = [sys.argv[0], "watch"]
     return core.main()
 

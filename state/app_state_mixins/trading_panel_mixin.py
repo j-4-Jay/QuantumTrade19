@@ -189,6 +189,18 @@ class TradingPanelMixin(rx.State, mixin=True):
     def toggle_trading_panel_grid(self) -> None:
         self.trading_panel_grid_enabled = not self.trading_panel_grid_enabled
         engine.security.persistence.save({"trading_panel_grid_enabled": self.trading_panel_grid_enabled})
+    def toggle_trading_panel_candles(self) -> None:
+        symbol = self.trading_panel_symbol
+        hidden = list(self.trading_panel_candles_hidden_symbols)
+        if symbol in hidden:
+            hidden.remove(symbol)
+        else:
+            hidden.append(symbol)
+        self.trading_panel_candles_hidden_symbols = hidden
+
+    @rx.var
+    def trading_panel_candles_visible(self) -> bool:
+        return self.trading_panel_symbol not in self.trading_panel_candles_hidden_symbols
 
     def toggle_trading_panel_follow_live(self) -> None:
         self.trading_panel_follow_live = not self.trading_panel_follow_live
@@ -566,6 +578,8 @@ class TradingPanelMixin(rx.State, mixin=True):
             "style": self.trading_panel_crosshair_style,
         }
         candle_type = _CANDLE_TYPE_MAP.get(self.candle_style_mode, "candle_solid")
+        hide_candles = self.trading_panel_symbol in self.trading_panel_candles_hidden_symbols
+        clear_color = "rgba(0,0,0,0)"
         return {
             "grid": {
                 "show": grid_show,
@@ -575,15 +589,15 @@ class TradingPanelMixin(rx.State, mixin=True):
             "candle": {
                 "type": candle_type,
                 "bar": {
-                    "upColor": self.candle_up_color,
-                    "downColor": self.candle_down_color,
-                    "noChangeColor": self.candle_no_change_color,
-                    "upBorderColor": self.candle_up_border_color,
-                    "downBorderColor": self.candle_down_border_color,
-                    "noChangeBorderColor": self.candle_no_change_color,
-                    "upWickColor": self.candle_up_wick_color,
-                    "downWickColor": self.candle_down_wick_color,
-                    "noChangeWickColor": self.candle_no_change_color,
+                    "upColor": clear_color if hide_candles else self.candle_up_color,
+                    "downColor": clear_color if hide_candles else self.candle_down_color,
+                    "noChangeColor": clear_color if hide_candles else self.candle_no_change_color,
+                    "upBorderColor": clear_color if hide_candles else self.candle_up_border_color,
+                    "downBorderColor": clear_color if hide_candles else self.candle_down_border_color,
+                    "noChangeBorderColor": clear_color if hide_candles else self.candle_no_change_color,
+                    "upWickColor": clear_color if hide_candles else self.candle_up_wick_color,
+                    "downWickColor": clear_color if hide_candles else self.candle_down_wick_color,
+                    "noChangeWickColor": clear_color if hide_candles else self.candle_no_change_color,
                 },
             },
             "xAxis": {"axisLine": {"color": grid_color}, "tickLine": {"color": grid_color}, "tickText": {"color": foreground}},

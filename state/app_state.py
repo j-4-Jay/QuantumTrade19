@@ -223,6 +223,7 @@ class AppState(
     trading_panel_display_days_draft: str = "5"
     trading_panel_chart_theme: str = "night"
     trading_panel_grid_enabled: bool = False
+    trading_panel_candles_hidden_symbols: list[str] = []
     trading_panel_candles: list[dict] = []
     trading_panel_data_version: int = 0
     trading_panel_current_open: str = "--"

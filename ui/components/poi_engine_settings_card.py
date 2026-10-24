@@ -273,9 +273,9 @@ def _custom_line_row(index: int) -> rx.Component:
             spacing="2", align_items="center", width="100%",
         ),
         rx.hstack(
-            rx.input(value=line["hour12"].to_string(), on_blur=lambda v: AppState.set_custom_line_hour(index, v), placeholder="HH", width="54px", size="1", type_="number"),
+            rx.input(default_value=line["hour12"].to_string(), key=line["hour12"].to_string(), on_blur=lambda v: AppState.set_custom_line_hour(index, v), placeholder="HH", width="54px", size="1", type_="number"),
             rx.text(":", font_size="0.9rem"),
-            rx.input(value=line["minute"].to_string(), on_blur=lambda v: AppState.set_custom_line_minute(index, v), placeholder="MM", width="54px", size="1", type_="number"),
+            rx.input(default_value=line["minute"].to_string(), key=line["minute"].to_string(), on_blur=lambda v: AppState.set_custom_line_minute(index, v), placeholder="MM", width="54px", size="1", type_="number"),
             rx.segmented_control.root(
                 rx.segmented_control.item("AM", value="AM"),
                 rx.segmented_control.item("PM", value="PM"),
@@ -284,7 +284,7 @@ def _custom_line_row(index: int) -> rx.Component:
             rx.text("(New York time)", font_size="0.68rem", color="var(--qt19-text-muted)"),
             spacing="2", align_items="center", width="100%",
         ),
-        rx.input(value=line["name"], on_blur=lambda v: AppState.set_custom_line_name(index, v), placeholder="Optional name shown on chart (else shows the time)", width="100%", size="1"),
+        rx.input(default_value=line["name"], key=line["name"], on_blur=lambda v: AppState.set_custom_line_name(index, v), placeholder="Optional name shown on chart (else shows the time)", width="100%", size="1"),
         spacing="2", width="100%", padding="0.5rem 0.6rem",
         style={"background": "rgba(255,255,255,0.03)", "border": "1px solid var(--qt19-glass-border)", "border_radius": "0.6rem"},
     )
