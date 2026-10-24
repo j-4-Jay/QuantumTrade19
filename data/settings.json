@@ -32,7 +32,7 @@
     "local_days": 0,
     "broker_days": "Not checked yet"
   },
-  "trading_panel_chart_tf": "5m",
+  "trading_panel_chart_tf": "1m",
   "chart_coverage_cache_B-BTC_USDT_1m": {
     "date": "2026-10-23",
     "local_days": 0,
@@ -111,7 +111,7 @@
   },
   "trading_panel_bg_mode": "auto",
   "candle_style": {
-    "mode": "solid",
+    "mode": "down_hollow",
     "up_color": "#004229",
     "down_color": "#470004",
     "no_change_color": "#8B98AA",
