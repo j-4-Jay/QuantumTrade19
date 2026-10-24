@@ -112,18 +112,26 @@ class HistoricalDataLoaderWorker:
         cursor_start = start_ms
         while cursor_start < end_ms:
             cursor_end = min(cursor_start + max_span_ms, end_ms)
-            resp = self._http_get(
-                FUTURES_CANDLESTICKS_URL,
-                params={
-                    "pair": pair,
-                    "from": cursor_start // 1000,   # SECONDS -- ms silently returns empty data
-                    "to": cursor_end // 1000,
-                    "resolution": resolution,
-                    "pcode": PCODE_FUTURES,
-                },
-                timeout=10,
-            )
-            resp.raise_for_status()
+            resp = None
+            for attempt in range(3):
+                try:
+                    resp = self._http_get(
+                        FUTURES_CANDLESTICKS_URL,
+                        params={
+                            "pair": pair,
+                            "from": cursor_start // 1000,   # SECONDS -- ms silently returns empty data
+                            "to": cursor_end // 1000,
+                            "resolution": resolution,
+                            "pcode": PCODE_FUTURES,
+                        },
+                        timeout=15,
+                    )
+                    resp.raise_for_status()
+                    break
+                except Exception:
+                    if attempt == 2:
+                        raise
+                    time.sleep(1.5 * (attempt + 1))
             body = resp.json() or {}
             batch = body.get("data") or []
             rows.extend(batch)

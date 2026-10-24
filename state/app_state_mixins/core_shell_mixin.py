@@ -70,9 +70,19 @@ class CoreShellMixin(rx.State, mixin=True):
         self.trading_panel_display_days_input = str(saved_days)
         self.trading_panel_display_days_draft = str(saved_days)
 
-        _engine.ensure_market_data_started()
+        market_data_ok = True
+        try:
+            _engine.ensure_market_data_started()
+        except Exception as exc:
+            market_data_ok = False
+            import logging
+            logging.getLogger("qt19.on_load").warning(
+                "Market data start-up failed (refresh the page to try again): %s", exc
+            )
         self.refresh_symbol_rows()
 
+        if not market_data_ok:
+            return []
         background_tasks = [type(self).start_poi_monitor_background, type(self).poll_deep_history_cards]
         if self.active_tab == "Trading Panel":
             self.refresh_trading_panel_chart()
