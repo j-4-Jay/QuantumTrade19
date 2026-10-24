@@ -4,7 +4,7 @@
   "dnd_on": false,
   "paper_mode": true,
   "run_on_startup": false,
-  "totp_enabled": true,
+  "totp_enabled": false,
   "telegram_notify_enabled": false,
   "discord_notify_enabled": false,
   "transition_effects_enabled": [
@@ -39,7 +39,7 @@
     "broker_days": "Not checked yet"
   },
   "sidebar_stage": "icons",
-  "trading_panel_symbol": "B-BTC_USDT",
+  "trading_panel_symbol": "B-ETH_USDT",
   "chart_coverage_cache_B-XAU_USDT_1m": {
     "date": "2026-10-24",
     "local_days": 0,
@@ -53,7 +53,7 @@
     "broker_days": "Not checked yet"
   },
   "chart_coverage_cache_B-ETH_USDT_5m": {
-    "date": "2026-10-23",
+    "date": "2026-10-24",
     "local_days": 0,
     "broker_days": "Not checked yet"
   },
@@ -115,8 +115,8 @@
     "up_color": "#16C784",
     "down_color": "#EA3943",
     "no_change_color": "#8B98AA",
-    "up_border_color": "#5CFFC8",
-    "down_border_color": "#FF7B86",
+    "up_border_color": "#042f21",
+    "down_border_color": "#2a0407",
     "up_wick_color": "#16C784",
     "down_wick_color": "#EA3943"
   },

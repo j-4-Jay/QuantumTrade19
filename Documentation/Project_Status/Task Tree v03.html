@@ -1,0 +1,149 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>QuantumTrade19 - Task Tree v03</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+*{box-sizing:border-box}body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#0f1724;color:#e8edf5}
+header{padding:12px 22px 14px;background:#16233a;border-bottom:1px solid #2a3a57}
+h1{margin:0 0 10px;font-size:20px}
+.hrow{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.seg{display:inline-flex;border:1px solid #4a6aa0;border-radius:999px;padding:3px;background:#0b1220}
+.seg a{padding:8px 18px;border-radius:999px;font-size:13px;color:#9fb0cc;text-decoration:none;cursor:pointer;white-space:nowrap}
+.seg a:hover{color:#fff;background:#1f3355}.seg a.on{background:#2f6fd6;color:#fff;font-weight:600;cursor:default}
+.upd{border:2px solid #f0c060;background:#ffe9a8;color:#1a1400;border-radius:8px;padding:6px 12px;font-size:13px;white-space:pre}
+.upd small{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:#6b5200}.upd b{font-family:Consolas,monospace}
+.desc{font-size:12px;color:#9fb0cc;flex:1;min-width:260px}
+.err{display:none;margin:10px 22px 0;background:#2a0d12;border:1px solid #6b1c27;color:#ffb3bd;border-radius:10px;padding:10px 14px;font-size:13px}
+.cards{display:flex;gap:12px;padding:14px 22px;flex-wrap:wrap}
+.card{background:#16233a;border:1px solid #2a3a57;border-radius:12px;padding:10px 14px;min-width:190px}
+.card b{font-size:22px}.card small{display:block;color:#9fb0cc}
+.bar{height:8px;background:#2a3a57;border-radius:6px;overflow:hidden;margin-top:6px}.bar i{display:block;height:100%}
+.tools{padding:0 22px 10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+input,select,button{background:#16233a;color:#e8edf5;border:1px solid #2a3a57;border-radius:8px;padding:7px 10px;font-size:13px}
+button{cursor:pointer}button:hover{background:#1f3355}.tools label{font-size:12px;color:#9fb0cc}
+main{display:flex;gap:14px;padding:0 22px 24px;align-items:flex-start}
+#tree{flex:1.3;min-width:0}#panel{flex:1;position:sticky;top:10px;background:#16233a;border:1px solid #2a3a57;border-radius:12px;padding:14px;max-height:calc(100vh - 30px);overflow:auto}
+.n{margin-left:18px;border-left:1px dashed #2a3a57}.row{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:8px;cursor:pointer;position:relative}
+.row:hover{background:#1c2c48}.row.sel{background:#223a63}
+.tg{width:16px;color:#9fb0cc;user-select:none}.ty{font-size:10px;padding:1px 6px;border-radius:8px;background:#2a3a57;color:#c9d6ec;white-space:nowrap}
+.id{font-size:11px;color:#7f93b5}.tt{flex:1;font-size:14px}.bd{font-size:11px;padding:2px 8px;border-radius:10px;color:#101826;white-space:nowrap;font-weight:600}
+.pc{width:70px}.pc .bar{margin:0}.pct{font-size:11px;color:#9fb0cc;width:34px;text-align:right}
+.tip{display:none;position:absolute;left:40px;top:100%;z-index:5;background:#0b1220;border:1px solid #4a6aa0;border-radius:8px;padding:8px 10px;max-width:420px;font-size:12px;color:#dbe6fa;box-shadow:0 6px 20px #0008}
+.row:hover .tip{display:block}
+h2{font-size:16px;margin:0 0 4px}h3{font-size:12px;color:#9fb0cc;margin:12px 0 4px;text-transform:uppercase;letter-spacing:.05em}
+.chip{display:inline-block;margin:2px 4px 2px 0;padding:2px 8px;border-radius:10px;background:#223a63;font-size:12px;cursor:pointer}
+.ai{font-size:10px;background:#5b4a1a;color:#ffe08a;padding:1px 6px;border-radius:8px;margin-left:6px}
+a{color:#7fb2ff}.chk{display:block;margin:4px 0;font-size:13px}
+textarea{width:100%;height:90px;background:#0b1220;color:#e8edf5;border:1px solid #2a3a57;border-radius:8px;margin-top:6px;font-size:12px}
+</style></head><body>
+<header><h1>QuantumTrade19 - Task Tree v03</h1><div class="hrow">
+<div class="seg"><a id="segS"></a><a id="segT"></a></div>
+<div class="upd"><small>Last updated</small><b id="updv">-</b></div>
+<div class="desc">Fast-track plan, paper-first order. This version reads its structure and titles from the CSV, so new tasks show up here without a new Task Tree file. Only the order of the stages is fixed in this file: FT-0, then FT-C (Step 0.5), then Step 1 to Step 7. Task Tree v01 and v02 are kept as history.</div></div></header>
+<div class="err" id="err"></div>
+<div class="cards" id="cards"></div>
+<div class="tools"><input id="q" placeholder="Search title, ID or text..." oninput="draw()"><select id="fs" onchange="draw()"></select><select id="ft" onchange="draw()"></select>
+<button onclick="setAll(true)">Expand all</button><button onclick="setAll(false)">Collapse all</button>
+<label><input type="checkbox" id="auto" checked> auto-refresh 5 s</label><label>or <input type="file" id="file" accept=".csv"></label></div>
+<main><div id="tree"></div><div id="panel"><h2>Select a line</h2><p>Hover a line for a one-line meaning. Click it for the full explanation, what it includes, ideas, evidence and checks.</p></div></main>
+<script>
+var MODE="tree";var CSV_NAME="QT19_Project_Status.csv";var STATUS_PAGE="QT19_Project_Status.html";
+var STAGE_ORDER=["FT-0","FT-C","FT-3","FT-2","FT-4","FT-6","FT-5","FT-1","FT-7"];
+var COL={"LOCKED":"#7fe0a0","NO LOCK RECORD":"#ffd27a","REOPENED":"#ff9a9a","DESIGN LOCKED":"#9cc2ff","NOT_STARTED":"#c4ccd8","DEFERRED":"#d3b6ff","SUGGESTED":"#ffe08a","DECIDED":"#7fe0d6","OPEN":"#ffb37a","IN_PROGRESS":"#ffe08a","PENDING":"#ffd27a","ROLLUP":"#c4ccd8"};
+var WORK={"Sub-phase":1,"Plan":1,"Fix":1,"Track":1,"Task":1};
+var DATA=[],by={},kids={},open={},sel=null,lastText=null,pickedFile=null;
+function $(i){return document.getElementById(i);}
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];});}
+function parseCSV(t){var rows=[],r=[],c='',q=false;for(var i=0;i<t.length;i++){var ch=t[i];if(q){if(ch=='"'){if(t[i+1]=='"'){c+='"';i++}else q=false}else c+=ch}else{if(ch=='"')q=true;else if(ch==','){r.push(c);c=''}else if(ch=='\n'){r.push(c);rows.push(r);r=[];c=''}else if(ch!='\r')c+=ch}}if(c.length||r.length){r.push(c);rows.push(r)}
+ var h=rows.shift().map(function(x){return x.trim()});return rows.filter(function(x){return x.length>1}).map(function(x){var o={};h.forEach(function(k,i){o[k]=(x[i]||'')});return o})}
+function fmt(d){function p(n){return String(n).padStart(2,'0')}var h=d.getHours(),ap=h>=12?'PM':'AM';h=h%12||12;return p(d.getDate())+'-'+p(d.getMonth()+1)+'-'+d.getFullYear()+'   '+p(h)+':'+p(d.getMinutes())+':'+p(d.getSeconds())+' '+ap;}
+function treeRows(rows){
+ var byId={},kidsOf={};
+ rows.forEach(function(r){byId[r.id]=r;(kidsOf[r.parent]=kidsOf[r.parent]||[]).push(r);});
+ var out=[];
+ function add(id){var r=byId[id];if(!r)return;out.push(r);var ks=(kidsOf[id]||[]).map(function(k,i){return {k:k,i:i}});
+  if(id=="FT"){ks.sort(function(a,b){var ra=STAGE_ORDER.indexOf(a.k.id),rb=STAGE_ORDER.indexOf(b.k.id);ra=ra<0?100+a.i:ra;rb=rb<0?100+b.i:rb;return ra-rb;});}
+  ks.forEach(function(x){add(x.k.id);});}
+ add("FT");return out;}
+function build(rows){
+ if(MODE=="tree"){DATA=treeRows(rows);}
+ else DATA=rows;
+ by={};kids={};DATA.forEach(function(r){by[r.id]=r;kids[r.id]=[];});DATA.forEach(function(r){if(r.parent&&kids[r.parent])kids[r.parent].push(r.id);});}
+function leavesOf(id,out){var k=kids[id];if(!k.length){if(WORK[by[id].type])out.push(by[id]);return out;}
+ k.forEach(function(c){leavesOf(c,out);});return out;}
+function statIds(ids){var L=[];ids.forEach(function(i){leavesOf(i,L)});var n=L.length;
+ var docs=L.filter(function(r){return r.docs=="LOCKED"}).length,jay=L.filter(function(r){return r.jay=="LOCKED"}).length;
+ var built=L.filter(function(r){return ["LOCKED","NO LOCK RECORD","REOPENED"].indexOf(r.docs)>-1}).length;
+ var prog=L.filter(function(r){return r.docs=="IN_PROGRESS"}).length;return {n:n,docs:docs,jay:jay,built:built,prog:prog};}
+function stat(id){return statIds([id]);}
+function rollup(id){var r=by[id];if(r.docs)return r.docs;var s=stat(id);if(!s.n)return "—";if(s.docs==s.n)return "LOCKED";if(s.built==0&&!s.prog)return "NOT_STARTED";return "IN_PROGRESS";}
+function badge(t){return '<span class="bd" style="background:'+(COL[t]||"#c4ccd8")+'">'+esc(t)+'</span>';}
+function matches(id,q,fs,ft){var r=by[id];var t=(r.id+" "+r.title+" "+r.explain+" "+r.area).toLowerCase();
+ var ok=(!q||t.indexOf(q)>-1)&&(!fs||(r.docs||rollup(id))==fs)&&(!ft||r.type==ft);
+ if(ok)return true;return kids[id].some(function(c){return matches(c,q,fs,ft)});}
+function node(id,q,fs,ft){if(!matches(id,q,fs,ft))return "";var r=by[id],k=kids[id],isO=open[id]||!!q||!!fs||!!ft;
+ var s=stat(id),pct=s.n?Math.round(100*s.docs/s.n):0;
+ var h='<div class="row'+(sel==id?' sel':'')+'" onclick="pick(\''+id+'\')"><span class="tg" onclick="event.stopPropagation();tog(\''+id+'\')">'+(k.length?(isO?'▼':'▶'):'•')+'</span>'
+ +'<span class="ty">'+esc(r.type)+'</span><span class="id">'+esc(r.id)+'</span><span class="tt">'+esc(r.title)+'</span>'
+ +(s.n&&k.length?'<span class="pc"><div class="bar"><i style="width:'+pct+'%;background:#7fe0a0"></i></div></span><span class="pct">'+pct+'%</span>':'')
++'<span class="bd" style="background:'+(COL[r.docs||rollup(id)]||"#c4ccd8")+'">Docs: '+esc(r.docs||rollup(id))+'</span>'+(r.jay&&r.jay!="\u2014"?'<span class="bd" style="background:'+(COL[r.jay]||"#c4ccd8")+'">Jay: '+esc(r.jay)+'</span>':"")+'<span class="tip">'+esc(r.explain||r.title)+'</span></div>';
+ if(k.length&&isO)h+='<div class="n">'+k.map(function(c){return node(c,q,fs,ft)}).join("")+'</div>';return h;}
+function root(){return MODE=="tree"?"FT":"QT19";}
+function draw(){var q=$('q').value.toLowerCase(),fs=$('fs').value,ft=$('ft').value;$('tree').innerHTML=node(root(),q,fs,ft)||'<p>No match.</p>';}
+function tog(id){open[id]=!open[id];draw();}
+function setAll(v){DATA.forEach(function(r){open[r.id]=v});draw();}
+function pick(id){sel=id;open[id]=true;var r=by[id],s=stat(id);
+ var h='<h2>'+esc(r.title)+(r.by=="AI"?'<span class="ai">AI draft</span>':'')+'</h2><div>'+esc(r.type)+' · '+esc(r.id)+' · area: '+esc(r.area)+'</div><h3>What it is</h3><div>'+esc(r.explain)+'</div>';
+ h+='<h3>Status</h3><div>Documents say: '+badge(r.docs||rollup(id))+' &nbsp; Jay: '+badge(r.jay||"—")+' <small>(set by '+esc(r.by)+(r.date?', '+esc(r.date):'')+')</small></div>';
+ if(s.n)h+='<div style="margin-top:6px">Work items below: '+s.n+' · docs say built: '+s.docs+' · Jay-confirmed: '+s.jay+'</div>';
+ var inc=kids[id].filter(function(c){return by[c].type!="Improvement"&&by[c].type!="Check"});
+ if(inc.length)h+='<h3>Includes</h3>'+inc.map(function(c){return '<span class="chip" onclick="pick(\''+c+'\')">'+esc(by[c].title.substr(0,48))+'</span>'}).join("");
+ if(r.depends)h+='<h3>Depends on</h3>'+r.depends.split(",").map(function(c){return by[c]?'<span class="chip" onclick="pick(\''+c+'\')">'+esc(by[c].title.substr(0,48))+'</span>':esc(c)}).join("");
+ var im=kids[id].filter(function(c){return by[c].type=="Improvement"});
+ if(im.length)h+='<h3>Ideas (suggested)</h3><ul>'+im.map(function(c){return '<li>'+esc(by[c].title)+' - '+esc(by[c].explain)+'</li>'}).join("")+'</ul>';
+ var ck=kids[id].filter(function(c){return by[c].type=="Check"});
+ if(ck.length){h+='<h3>Check in the software</h3>'+ck.map(function(c){return '<label class="chk"><input type="checkbox" data-id="'+c+'"> '+esc(by[c].title)+'</label>'}).join("")
+  +'<button onclick="verd(\''+id+'\')">Copy my verdicts</button><textarea id="vt" placeholder="Verdicts appear here. Paste them to the AI. Ticks are not saved by this page."></textarea>';}
+ if(r.evidence)h+='<h3>Evidence</h3><div>'+esc(r.evidence)+'</div>';
+ $('panel').innerHTML=h;draw();}
+function verd(id){var t="VERDICT for "+id+" ("+new Date().toLocaleString()+")\n";
+ document.querySelectorAll('#panel input[type=checkbox]').forEach(function(c){t+=(c.checked?"PASS ":"FAIL/NOT DONE ")+c.dataset.id+": "+by[c.dataset.id].title+"\n"});
+ var a=$('vt');a.value=t;a.select();try{document.execCommand('copy')}catch(e){}}
+function cards(){var h;
+ if(MODE=="tree"){var s=stat("FT"),pj=s.n?Math.round(100*s.jay/s.n):0;
+  h='<div class="card"><small>Tasks locked (Jay-confirmed)</small><b>'+pj+'%</b><div class="bar"><i style="width:'+pj+'%;background:#7fe0a0"></i></div></div>'
+  +'<div class="card"><small>Tasks in total</small><b>'+s.n+'</b></div><div class="card"><small>In progress</small><b>'+s.prog+'</b></div>'
+  +'<div class="card"><small>Stages</small><b>'+kids["FT"].filter(function(c){return by[c].type=="Stage"}).length+'</b></div>'
+  +'<div class="card"><small>Open decisions</small><b>'+DATA.filter(function(r){return r.type=="Decision"&&r.docs=="OPEN"}).length+'</b></div>';}
+ else{var ids=kids["QT19"].filter(function(c){return c!="FT"&&c!="TOOL"}),s=statIds(ids);
+  var pd=s.n?Math.round(100*s.docs/s.n):0,pj=s.n?Math.round(100*s.jay/s.n):0;
+  h='<div class="card"><small>Documents say built (work items)</small><b>'+pd+'%</b><div class="bar"><i style="width:'+pd+'%;background:#ffd27a"></i></div></div>'
+  +'<div class="card"><small>Jay-confirmed in the software</small><b>'+pj+'%</b><div class="bar"><i style="width:'+pj+'%;background:#7fe0a0"></i></div></div>'
+  +'<div class="card"><small>Built items checked by Jay</small><b>'+s.jay+' of '+s.built+'</b></div>'
+  +'<div class="card"><small>Work items in total</small><b>'+s.n+'</b><small>fast-track plan and tooling counted elsewhere</small></div>'
+  +'<div class="card"><small>Suggested ideas</small><b>'+DATA.filter(function(r){return r.type=="Improvement"}).length+'</b><small>0 approved</small></div>';}
+ $('cards').innerHTML=h;}
+function filters(){var fs=$('fs'),ft=$('ft');if(fs.options.length>1)return;
+ fs.innerHTML='<option value="">All statuses</option>'+Object.keys(COL).map(function(k){return '<option>'+k+'</option>'}).join("");
+ var ty={};DATA.forEach(function(r){ty[r.type]=1});ft.innerHTML='<option value="">All types</option>'+Object.keys(ty).map(function(k){return '<option>'+k+'</option>'}).join("");}
+function apply(text,mtime){
+ if(text===lastText){if(mtime)$('updv').textContent=fmt(mtime);return;}
+ var first=lastText===null;lastText=text;build(parseCSV(text));
+ $('err').style.display='none';filters();cards();
+ if(first){open[root()]=true;if(MODE=="status")open["PH1"]=true;}
+ draw();if(sel&&by[sel])pick(sel);
+ if(mtime)$('updv').textContent=fmt(mtime);}
+function go(){fetch(CSV_NAME+'?t='+Date.now(),{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);
+  var lm=r.headers.get('Last-Modified');return r.text().then(function(t){apply(t,lm?new Date(lm):null)})}).catch(function(e){
+  if(lastText===null){$('err').style.display='block';$('err').innerHTML='Cannot read the CSV ('+esc(e.message)+'). Open this page with <b>4c. Open_Project_Status.bat</b> (double-clicking the HTML file blocks it), or use the "Load CSV file" button.';}});}
+function latestTree(){return fetch('./?t='+Date.now(),{cache:'no-store'}).then(function(r){return r.text()}).then(function(t){
+  var best=null,bn=-1,re=/href="([^"]*Task(?:%20| )Tree(?:%20| )v(\d+)\.html)"/gi,m;
+  while((m=re.exec(t))){var n=parseInt(m[2],10);if(n>bn){bn=n;best=m[1];}}
+  return best||"Task%20Tree%20v03.html";}).catch(function(){return "Task%20Tree%20v03.html";});}
+function init(){
+ var on=MODE=="tree";
+ $('segS').className=on?'':'on';$('segT').className=on?'on':'';
+ $('segS').textContent=on?'Click to view Project Status':'● Viewing Project Status';
+ $('segT').textContent=on?'● Viewing Task Tree':'Click to view Task Tree';
+ if(on){$('segS').href=STATUS_PAGE;$('segT').removeAttribute('href');}
+ else{$('segS').removeAttribute('href');$('segT').href='Task%20Tree%20v03.html';latestTree().then(function(u){$('segT').href=u;});}
+ $('file').onchange=function(e){var f=e.target.files[0];if(!f)return;pickedFile=f;f.text().then(function(t){apply(t,new Date(f.lastModified))})};
+ go();setInterval(function(){if($('auto').checked&&!pickedFile)go()},5000);}
+init();
+</script></body></html>
