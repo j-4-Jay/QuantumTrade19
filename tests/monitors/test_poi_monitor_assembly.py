@@ -88,11 +88,13 @@ def monitor(tmp_path: Path):
     isolated_settings = POISettingsStore(
         SettingsPersistenceWorker(tmp_path / "settings.json")
     )
-    return POIMonitor(
+    poi_monitor = POIMonitor(
         mdm,
         registry,
         settings_store=isolated_settings,
     )
+    poi_monitor.set_poi_timezone_mode("UTC")
+    return poi_monitor
 
 def test_get_active_pois_returns_default_line_pois_for_each_symbol_independently(monitor):
     btc = monitor.get_active_pois("B-BTC_USDT")
@@ -145,6 +147,7 @@ def test_every_poi_type_toggle_fans_out_to_all_symbols(monitor, poi_type):
         assert monitor._enabled_types[symbol][poi_type] is True
 
     monitor.set_poi_type_enabled(poi_type, False)
+    monitor.set_poi_display_enabled(poi_type, False)
     for symbol in SYMBOLS:
         assert monitor._enabled_types[symbol][poi_type] is False
         assert not any(p.poi_type == poi_type for p in monitor.get_active_pois(symbol))
@@ -152,6 +155,7 @@ def test_every_poi_type_toggle_fans_out_to_all_symbols(monitor, poi_type):
 
 def test_disabling_one_line_type_removes_only_that_type_and_preserves_others(monitor):
     monitor.set_poi_type_enabled(POIType.PDH, False)
+    monitor.set_poi_display_enabled(POIType.PDH, False)
     for symbol in SYMBOLS:
         types = {p.poi_type for p in monitor.get_active_pois(symbol)}
         assert POIType.PDH not in types

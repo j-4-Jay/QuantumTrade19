@@ -1,0 +1,25 @@
+{
+ "symbols": {
+  "B-BTC_USDT": [
+   {
+    "created_ts": 1793054040.9070692,
+    "number": 1,
+    "price": 79915.8,
+    "rev": 1,
+    "style": {},
+    "uid": "4392be198e95",
+    "updated_ts": 1793054040.9070692
+   },
+   {
+    "created_ts": 1793054104.115624,
+    "number": 2,
+    "price": 80102.6,
+    "rev": 3,
+    "style": {},
+    "uid": "ec412f9f90c4",
+    "updated_ts": 1793054104.115624
+   }
+  ]
+ },
+ "version": 1
+}

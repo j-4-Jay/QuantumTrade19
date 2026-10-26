@@ -2,7 +2,7 @@
 
 PATH: engines/workers/poi/independent_poi_persistence.py (NEW FILE)
 
-The lines are kept in config/independent_pois.json. That file travels by git, so
+The lines are kept in sync_data/independent_pois.json. That file travels by git, so
 Home and Office get the same lines. It holds prices and styles only, no secrets.
 The "Allow live use" switch is NEVER saved and is always OFF after loading.
 A file that cannot be read (for example a git merge conflict) is moved aside as
@@ -28,7 +28,7 @@ FILE_VERSION = 1
 
 
 def default_path() -> Path:
-    return Path(__file__).resolve().parents[3] / "data" / "independent_pois.json"
+    return Path(__file__).resolve().parents[3] / "sync_data" / "independent_pois.json"
 
 
 def save_lines(path, lines_by_symbol: Dict[str, List[IndependentLine]]) -> None:

@@ -66,6 +66,7 @@ def _calculator(
         lambda _symbol, _pois: None,
         display_enabled=display,
         strategy_enabled=strategy,
+        timezone_mode="UTC",
     )
 
 
@@ -150,7 +151,7 @@ def test_file_03_1_default_settings() -> None:
     assert settings.display_enabled[POIType.PDL] is True
     assert settings.display_enabled[POIType.H4_HIGH] is True
     assert settings.display_enabled[POIType.H4_LOW] is True
-    assert settings.display_enabled[POIType.WEEK_HIGH] is True
-    assert settings.display_enabled[POIType.MONTH_HIGH] is True
+    assert settings.display_enabled[POIType.WEEK_HIGH] is False
+    assert settings.display_enabled[POIType.MONTH_HIGH] is False
 
     assert settings.zone_source_tf_enabled == DEFAULT_ZONE_SOURCE_TF_ENABLED

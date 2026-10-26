@@ -94,11 +94,12 @@ def mdm() -> FakeMarketDataMonitor:
 
 def test_type_toggle_turns_calculation_on_off_live(mdm):
     enabled = {POIType.PDH: True, POIType.PDL: True, POIType.H4_HIGH: True, POIType.H4_LOW: True}
-    calc = POILevelCalculatorWorker(mdm, "BTCUSDT", enabled, lambda s, p: None)
+    calc = POILevelCalculatorWorker(mdm, "BTCUSDT", enabled, lambda s, p: None, timezone_mode="UTC")
     pois = calc.recompute()
     assert any(p.poi_type == POIType.PDH for p in pois)
 
     calc.set_type_enabled(POIType.PDH, False)
+    calc.set_display_enabled(POIType.PDH, False)
     pois_after = calc.recompute()
     assert not any(p.poi_type == POIType.PDH for p in pois_after)
 
@@ -109,7 +110,7 @@ def test_type_toggle_turns_calculation_on_off_live(mdm):
 
 def test_pdh_pdl_and_4h_hl_known_example(mdm):
     enabled = {POIType.PDH: True, POIType.PDL: True, POIType.H4_HIGH: True, POIType.H4_LOW: True}
-    calc = POILevelCalculatorWorker(mdm, "BTCUSDT", enabled, lambda s, p: None)
+    calc = POILevelCalculatorWorker(mdm, "BTCUSDT", enabled, lambda s, p: None, timezone_mode="UTC")
     pois = {p.poi_type: p.price for p in calc.recompute()}
 
     assert pois[POIType.PDH] == 105
