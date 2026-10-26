@@ -39,14 +39,14 @@
     "broker_days": "Not checked yet"
   },
   "sidebar_stage": "icons",
-  "trading_panel_symbol": "B-XAU_USDT",
+  "trading_panel_symbol": "B-ETH_USDT",
   "chart_coverage_cache_B-XAU_USDT_1m": {
     "date": "2026-10-26",
     "local_days": 0,
     "broker_days": "Not checked yet"
   },
   "poi_hidden_by_extras": {},
-  "trading_panel_follow_live": false,
+  "trading_panel_follow_live": true,
   "chart_coverage_cache_B-XAU_USDT_15m": {
     "date": "2026-10-10",
     "local_days": 0,

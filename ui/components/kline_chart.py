@@ -53,6 +53,7 @@ class KLineChart(rx.Component):
         return {
             **super().get_event_triggers(),
             "on_context_menu": lambda e: [e.clientX, e.clientY],
+            "on_ind_poi_moved": lambda uid, price: [uid, price],
         }
 
     def add_custom_code(self) -> list[str]:
@@ -184,13 +185,59 @@ if (typeof window !== "undefined" && !window.QT19_OVERLAYS_REGISTERED) {
 }
 
 
+if (typeof window !== "undefined" && !window.QT19_IND_OVERLAY_REGISTERED) {
+  window.QT19_IND_OVERLAY_REGISTERED = true;
+
+  registerOverlay({
+    name: "qt19_ind_poi_line",
+    totalStep: 2,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: ({ coordinates, bounding, overlay }) => {
+      if (coordinates.length < 1) return [];
+      const data = overlay.extendData || {};
+      const y = coordinates[0].y;
+      const color = data.color || "#F59E0B";
+      const lineColor = data.lineColor || color;
+      const lineStyle = data.lineStyle || (data.dashed === false ? "solid" : "dashed");
+      const width = data.width || 2;
+      const dashed = data.dashed !== false;
+      const line = [{ x: 0, y }, { x: bounding.width, y }];
+      const figures = [
+        {
+          type: "line",
+          attrs: { coordinates: line },
+          styles: { color: "rgba(0,0,0,0)", size: 14, style: "solid" },
+        },
+        {
+          type: "line",
+          attrs: { coordinates: line },
+          styles: { color: lineColor, size: width, style: lineStyle === "solid" ? "solid" : "dashed", dashedValue: lineStyle === "dotted" ? [2, 4] : [8, 5] },
+        },
+      ];
+      if (data.label) {
+        figures.push({
+          type: "text",
+          attrs: { x: bounding.width - 6, y: y - 4, text: data.label, align: "right", baseline: "bottom" },
+          styles: { color: color, size: 11, backgroundColor: "rgba(10,16,26,0.65)" },
+        });
+      }
+      return figures;
+    },
+  });
+}
+
+
 function QT19KLineChart(props) {
   const {
     chartId, data, dataVersion, symbol, period, styles, zoomEnabled,
-    scrollEnabled, onContextMenu, poiOverlays, poiOverlaysVersion,
+    scrollEnabled, onContextMenu, onIndPoiMoved, poiOverlays, poiOverlaysVersion,
     poiDots, poiDotsVersion, ...rest
   } = props;
   const chartRef = useRef(null);
+  const indMovedRef = useRef(null);
+  indMovedRef.current = onIndPoiMoved;
   const dataRef = useRef(data);
   const loaderReadyRef = useRef(false);
   const lastVersionRef = useRef(null);
@@ -228,10 +275,31 @@ function QT19KLineChart(props) {
       try { chart.removeOverlay(id); } catch (err) { /* already gone */ }
     });
     overlayIdsRef.current = [];
+    try { chart.removeOverlay({ name: "qt19_ind_poi_line" }); } catch (err) { /* none left */ }
     const list = poiOverlays || [];
     list.forEach((item) => {
       try {
-        if (item.kind === "zone") {
+        if (item.kind === "ind_line") {
+          const id = chart.createOverlay({
+            name: "qt19_ind_poi_line",
+            points: [{ value: item.price }],
+            lock: false,
+            extendData: { color: item.color, lineColor: item.line_color, width: item.width, dashed: item.dashed, lineStyle: item.line_style, label: item.chart_label || item.label },
+            onPressedMoveEnd: (event) => {
+              try {
+                const pts = event && event.overlay && event.overlay.points;
+                const price = pts && pts[0] ? pts[0].value : null;
+                if (typeof price === "number" && typeof indMovedRef.current === "function") {
+                  indMovedRef.current(item.uid, price);
+                }
+              } catch (err) {
+                console.error("QT19KLineChart: independent POI move failed", err);
+              }
+              return true;
+            },
+          });
+          if (id) overlayIdsRef.current.push(id);
+        } else if (item.kind === "zone") {
           const endTime = item.end_time || (Date.now() + 365 * 24 * 60 * 60 * 1000);
           const id = chart.createOverlay({
             name: "qt19_poi_zone",
