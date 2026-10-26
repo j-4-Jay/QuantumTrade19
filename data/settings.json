@@ -21,12 +21,12 @@
   "tab_transition_mode": "single",
   "per_symbol_settings": {},
   "chart_coverage_cache_B-ETH_USDT_1m": {
-    "date": "2026-10-24",
+    "date": "2026-10-26",
     "local_days": 0,
     "broker_days": "Not checked yet"
   },
   "active_tab": "Trading Panel",
-  "settings_active_subtab": "trading",
+  "settings_active_subtab": "appearance",
   "chart_coverage_cache_B-BTC_USDT_5m": {
     "date": "2026-10-24",
     "local_days": 0,
@@ -39,9 +39,9 @@
     "broker_days": "Not checked yet"
   },
   "sidebar_stage": "icons",
-  "trading_panel_symbol": "B-ETH_USDT",
+  "trading_panel_symbol": "B-XAU_USDT",
   "chart_coverage_cache_B-XAU_USDT_1m": {
-    "date": "2026-10-24",
+    "date": "2026-10-26",
     "local_days": 0,
     "broker_days": "Not checked yet"
   },
@@ -109,7 +109,7 @@
       "1M": 50
     }
   },
-  "trading_panel_bg_mode": "saffron-night",
+  "trading_panel_bg_mode": "auto",
   "candle_style": {
     "mode": "solid",
     "up_color": "#16C784",

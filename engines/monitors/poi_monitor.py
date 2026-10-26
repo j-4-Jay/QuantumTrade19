@@ -47,6 +47,7 @@ class POIMonitor:
         self._fvg_pois: Dict[str, Dict[str, POI]] = {}
         self._ob_pois: Dict[str, Dict[str, POI]] = {}
         self._inv_fvg_pois: Dict[str, Dict[str, POI]] = {}
+        self._independent_pois: Dict[str, Dict[str, POI]] = {}
         self._states: Dict[str, Dict[str, POIStateRecord]] = {}
         self._enabled_types: Dict[str, Dict[str, bool]] = {}
         self._level_workers: Dict[str, POILevelCalculatorWorker] = {}
@@ -92,7 +93,7 @@ class POIMonitor:
 
     def _collect_all_pois(self, symbol: str) -> List[POI]:
         merged: Dict[str, POI] = {}
-        for registry in (self._level_pois, self._fvg_pois, self._ob_pois, self._inv_fvg_pois):
+        for registry in (self._level_pois, self._fvg_pois, self._ob_pois, self._inv_fvg_pois, self._independent_pois):
             merged.update(registry.get(symbol, {}))
         return [poi for poi in merged.values() if poi.active]
 
@@ -115,6 +116,13 @@ class POIMonitor:
 
     def get_active_pois(self, symbol: str) -> List[POI]:
         return self._collect_all_pois(symbol)
+
+    def set_independent_pois(self, symbol: str, pois: List[POI]) -> None:
+        """Independent POI lines (stage FT-C): replace this symbol's lines, then refresh POI states."""
+        self._independent_pois[symbol] = {p.poi_id: p for p in pois}
+        worker = self._state_workers.get(symbol)
+        if worker is not None:
+            worker.recompute()
 
 
     def get_poi_state(self, symbol: str, poi_id: str) -> Optional[POIStateRecord]:
