@@ -19,6 +19,17 @@
     "uid": "ec412f9f90c4",
     "updated_ts": 1793054104.115624
    }
+  ],
+  "B-ETH_USDT": [
+   {
+    "created_ts": 1793067082.440335,
+    "number": 1,
+    "price": 2319.3,
+    "rev": 2,
+    "style": {},
+    "uid": "111fee5b2d6f",
+    "updated_ts": 1793067082.440335
+   }
   ]
  },
  "version": 1
