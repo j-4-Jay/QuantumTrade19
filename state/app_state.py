@@ -22,6 +22,7 @@ from state.app_state_mixins.trading_panel_mixin import TradingPanelMixin
 from state.app_state_mixins.deep_history_card_mixin import DeepHistoryCardMixin
 from state.app_state_mixins.poi_chart_mixin import PoiChartMixin
 from state.app_state_mixins.independent_poi_mixin import IndependentPoiMixin
+from state.app_state_mixins.setup_buffer_mixin import SetupBufferMixin
 
 from state.app_state_mixins.setup_visualization_mixin import SetupVisualizationMixin
 TRADING_PANEL_TF_OPTIONS = ["1m", "5m", "15m"]
@@ -37,6 +38,7 @@ class AppState(
     DeepHistoryCardMixin,
     PoiChartMixin,
     IndependentPoiMixin,
+    SetupBufferMixin,
     rx.State,
 ):
     screen: str = SHELL_STATE_CLASS.SPLASH.value

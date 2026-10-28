@@ -11,9 +11,9 @@ One callout for every confirmed 123Bull and 123Bear setup. It shows what the set
 ## 2. Names and colours (fixed, from the CSV)
 - Names: 123Bull and 123Bear.
 - Border: 123Bull #0E9464, 123Bear #990000.
-- Inside colour shows the trade state, a gradient from Profit #06402B to SL Hit #36404A.
+- Inside colour shows the trade state, a gradient from Profit #9FE2BF (light mint, Jay 28-10-2026) to SL Hit #36404A.
 - Break Even #FFCE1B exists in the design but stays inactive until trailing SL exists.
-- Text is very prominent.
+- Text is very prominent. The text colour follows the inside colour so it always reads clearly: dark ink #06231A while the fade is less than 55 percent of the way from Profit to SL Hit, white #FFFFFF from 55 percent on. Contrast is about 11 to 1 at both ends and at least about 4 to 1 at the switch point. Break Even #FFCE1B also uses the dark ink.
 
 ## 3. Shape, tail and placement
 - One smooth vector shape: body, tail and medium border drawn together with the gradient. No images.
@@ -51,6 +51,16 @@ The UID is shown on hover only.
 - Not hit and not closed = Open.
 - The tracker stores the first touch time of each RRR level (steps of 0.5R), the SL time and the deepest adverse dip.
 - It only reads. It never sends an alert and never places an order.
+
+## 7b. Dotted outcome line (added 28-10-2026, Jay)
+- A dotted line is drawn from the Candle 3 close (the entry) to the point where the outcome shows.
+- SL Hit: the line ends at the touching point of the candle that touched the SL price line.
+- Win: the line ends at the peak RRR point (the highest favourable price reached before the trade closed).
+- Reaching 1.5R is a win. The trade closes when the price returns to the 1.5R price. The peak RRR is recorded in the callout and the trade counts as a win with that RRR.
+- A win that has reached 1.5R but has not come back yet: the line follows the peak so far (proposal, Jay to confirm).
+- A trade that is still Open and has not reached 1.5R: no line yet (proposal, Jay to confirm).
+- The outcome worker will also store the time and price of the peak, because the line needs them (small addition when the line is built).
+- REMINDER (Jay, 28-10-2026): this win rule and this line change when the trailing SL is applied. Revisit sections 7, 7b and 10 then. The AI reminds Jay before any trailing SL work starts.
 
 ## 8. Settings and money
 - SL buffer: default 7 ticks, adjustable per symbol by Jay.

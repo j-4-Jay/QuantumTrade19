@@ -16,6 +16,7 @@ import reflex as rx
 from state.app_state import AppState
 from ui.theme.glass import GLASS_CARD_3XL_STYLE
 from ui.components.deep_historical_data_card import deep_historical_data_card
+from ui.components.setup_buffer_card import setup_buffer_card
 from ui.components.poi_engine_settings_card import (
     poi_timezone_card,
     poi_lines_card,
@@ -263,6 +264,7 @@ def _trading_tab() -> rx.Component:
         poi_custom_lines_card(),
         poi_visual_controls_card(),
         poi_setup_detection_card(),
+        setup_buffer_card(),
         _coming_soon_card("Signal Bias Filter", "Market-aware auto-disable rules for filters."),
         _coming_soon_card("Paper Trading", "Paper/Live toggle defaults and simulator settings."),
         columns=rx.breakpoints(initial="1", sm="1", md="2", lg="3"),
@@ -288,7 +290,8 @@ def settings_page() -> rx.Component:
             value=AppState.settings_active_subtab,
             on_change=AppState.set_settings_active_subtab,
             width="100%",
-            height="100%",
+            flex="1",
+            min_height="0",
             display="flex",
             flex_direction="column",
             overflow="hidden",

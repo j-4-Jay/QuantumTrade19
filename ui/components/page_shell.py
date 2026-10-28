@@ -51,7 +51,7 @@ def qt19_page_shell(content: rx.Component, show_nav: bool = True) -> rx.Componen
                 flex="1",
                 overflow_y="auto",
             ),
-            width="100%", height="100%", spacing="0", align_items="stretch",
+            width="100%", flex="1", min_height="0", spacing="0", align_items="stretch",
         ),
         width="100%", height="100vh", spacing="0", style=PAGE_BG_STYLE,
     )
