@@ -61,7 +61,7 @@ def _stage_handle_icon() -> rx.Component:
     return rx.match(
         AppState.sidebar_stage,
         ("full", rx.icon("chevrons-left", size=16)),
-        ("icons", rx.icon("minus", size=16)),
+        ("icons", rx.icon("chevrons-left", size=16)),
         rx.icon("chevrons-right", size=16),
     )
 
@@ -95,14 +95,32 @@ def _full_or_icons_body() -> rx.Component:
     )
 
 
-def _line_body() -> rx.Component:
-    """No decorative bar anymore - the entire card is one big icon
-    button, clearly clickable, filling the full collapsed-line height."""
+def _collapsed_handle() -> rx.Component:
+    """FT-U.2a: collapsed stage ("line" in settings) = no card, no space.
+    Only one round glowing handle floats on the left screen edge."""
     return rx.box(
-        _stage_handle_button("100%"),
-        width="100%",
-        height=_LINE_HEIGHT_TOTAL,
-        padding=_OUTER_PADDING,
+        rx.icon("chevrons-right", size=20),
+        on_click=AppState.cycle_sidebar_stage,
+        title="Open sidebar",
+        style={
+            "position": "fixed",
+            "left": "10px",
+            "top": "50%",
+            "transform": "translateY(-50%)",
+            "width": "38px",
+            "height": "38px",
+            "border_radius": "9999px",
+            "display": "flex",
+            "align_items": "center",
+            "justify_content": "center",
+            "background": "var(--qt19-accent)",
+            "color": "white",
+            "box_shadow": "0 0 16px 3px var(--qt19-accent-glow)",
+            "cursor": "pointer",
+            "z_index": "60",
+            "transition": "transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s ease",
+            "_hover": {"transform": "translateY(-50%) scale(1.12)"},
+        },
     )
 
 
@@ -113,8 +131,8 @@ def qt19_sidebar():
         ("icons", _ICONS_WIDTH),
         _LINE_WIDTH,
     )
-    body = rx.cond(AppState.sidebar_stage == "line", _line_body(), _full_or_icons_body())
-    return qt19_glow_card(
+    body = _full_or_icons_body()
+    card = qt19_glow_card(
         body,
         card_style={
             **GLASS_CARD_STYLE,
@@ -124,3 +142,4 @@ def qt19_sidebar():
         },
         margin="0.75rem",
     )
+    return rx.cond(AppState.sidebar_stage == "line", _collapsed_handle(), card)

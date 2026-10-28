@@ -6,7 +6,7 @@ Thread 005, 28-10-2026. Stage FT-U sits right after FT-H (Jay, 28-10-2026). No c
 |---|---|---|---|---|
 | Left sidebar | left edge | full 230px, icons 72px, collapsed 0px (handle only) | 3 (full, icons, collapsed) | whole software (page_shell) |
 | Right sidebar | right of chart, ends above the bottom card | open 360px, closed 0px | 2 | Trading Panel only |
-| Bottom card | under chart AND right sidebar, reaches the right screen edge | open 220px default, drag-resizable, closed 0px | 2 | Trading Panel only |
+| Bottom card | full window width, extreme left to extreme right, under both sidebars | open 220px default, drag-resizable, closed 0px | 2 | Trading Panel only |
 | Chart | middle | fills what is left | - | squeezed when panels open, widened when closed |
 
 ## 2. Rules
@@ -28,10 +28,12 @@ Thread 005, 28-10-2026. Stage FT-U sits right after FT-H (Jay, 28-10-2026). No c
 ## 3b. Jay's changes of 28-10-2026 (wireframe v2)
 9. Left sidebar collapsed state = a single round handle on the left edge, like the right sidebar. No bar, no space.
 10. Right sidebar open: the four tabs sit at the very top of the card, in one tidy row, with the active tab glowing. The order ticket card starts right under them.
-11. Bottom card spans from the left sidebar edge to the extreme right screen edge (under the right sidebar too). The right sidebar ends above it.
+11. Bottom card spans the full window width, from the extreme left to the extreme right edge. The left sidebar and the right sidebar both end above it (Jay, 28-10-2026, replaces the earlier wording). On other pages the left sidebar keeps its full height.
 12. Bottom card height is resizable by dragging the divider between chart and bottom card. Limits: 120px to 60% of the window height. Default 220px. Double-click on the divider resets it. Height is saved in settings.
 13. All three handles are draggable along their own edge only: left and right handles move up and down, the bottom handle moves left and right. A click (less than 5px movement) opens or closes the card. A drag moves the handle and does not toggle.
 14. Handle positions are saved in settings and kept inside the window. Settings gets a Reset handle positions button.
+15. Page_shell gets an optional bottom slot; only the Trading Panel fills it.
+16. Motion (Jay, 28-10-2026): the same spring transition runs on the left sidebar width, the right sidebar, the bottom card and the chart resize, and tab switch animations are active for all tabs in the whole software. Reduced motion switches all of them off.
 
 ## 4. Known defect to investigate (FT-U.2)
 Left sidebar collapsing is defective today. Read of sidebar.py: the line stage still keeps a 14px wide card with 0.75rem margin and a 280px tall box, so it eats space. Fixed by rule 9. Where cycle_sidebar_stage lives is still to be found (SEARCH).
