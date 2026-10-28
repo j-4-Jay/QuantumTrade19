@@ -39,7 +39,7 @@
     "broker_days": "Not checked yet"
   },
   "sidebar_stage": "icons",
-  "trading_panel_symbol": "B-BTC_USDT",
+  "trading_panel_symbol": "B-ETH_USDT",
   "chart_coverage_cache_B-XAU_USDT_1m": {
     "date": "2026-10-28",
     "local_days": 0,
