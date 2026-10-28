@@ -233,11 +233,28 @@ def _chart_card() -> rx.Component:
     )
 
 
+def _float_reserve():
+    """FT-U.2.4: header and stats make room for the floating sidebar; the chart does not."""
+    return rx.match(
+        AppState.sidebar_stage,
+        ("full", "calc(230px + 1.5rem)"),
+        ("icons", "calc(72px + 1.5rem)"),
+        "0px",
+    )
+
+
 def trading_panel_page() -> rx.Component:
     return rx.vstack(
-        _header(),
-        _bulk_controls_strip(),
-        _setup_stats_panel(),
+        rx.vstack(
+            _header(),
+            _bulk_controls_strip(),
+            _setup_stats_panel(),
+            spacing="3",
+            width="100%",
+            flex_shrink="0",
+            padding_left=_float_reserve(),
+            transition="padding-left 0.35s ease",
+        ),
         _chart_card(),
         spacing="3",
         width="100%",

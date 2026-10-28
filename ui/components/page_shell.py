@@ -36,11 +36,28 @@ def _theme_style_vars() -> dict:
     }
 
 
+def _sidebar_slot() -> rx.Component:
+    """FT-U.2.4: on the Trading Panel the sidebar floats over the page, so the
+    chart never changes size when the sidebar changes. Other pages keep it in the row."""
+    floating = AppState.active_tab == "Trading Panel"
+    return rx.box(
+        qt19_sidebar(),
+        display="flex",
+        align_items="stretch",
+        flex_shrink="0",
+        position=rx.cond(floating, "absolute", "relative"),
+        top=rx.cond(floating, "0", "auto"),
+        left=rx.cond(floating, "0", "auto"),
+        bottom=rx.cond(floating, "0", "auto"),
+        z_index="30",
+    )
+
+
 def qt19_page_shell(content: rx.Component, show_nav: bool = True) -> rx.Component:
     body = rx.vstack(
         rx.cond(show_nav, qt19_topbar(), rx.fragment()),
         rx.hstack(
-            rx.cond(show_nav, qt19_sidebar(), rx.fragment()),
+            rx.cond(show_nav, _sidebar_slot(), rx.fragment()),
             rx.box(
                 content,
                 width="100%",
@@ -51,7 +68,7 @@ def qt19_page_shell(content: rx.Component, show_nav: bool = True) -> rx.Componen
                 flex="1",
                 overflow_y="auto",
             ),
-            width="100%", flex="1", min_height="0", spacing="0", align_items="stretch",
+            width="100%", flex="1", min_height="0", spacing="0", align_items="stretch", position="relative",
         ),
         width="100%", height="100vh", spacing="0", style=PAGE_BG_STYLE,
     )
