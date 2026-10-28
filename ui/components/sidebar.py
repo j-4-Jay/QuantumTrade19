@@ -22,6 +22,36 @@ _LINE_WIDTH = "14px"
 _HANDLE_HEIGHT = "52px"
 _OUTER_PADDING = "0.85rem"
 _LINE_HEIGHT_TOTAL = "280px"
+_LEFT_HANDLE_JS = """(function(){
+  if(window.__qt19LeftHandle){window.__qt19LeftHandle.restore();return;}
+  var KEY='qt19_left_handle_top',root=document.documentElement,drag=null,moved=false,suppress=false;
+  function clamp(y){return Math.max(70,Math.min(window.innerHeight-24,y));}
+  function setTop(y){root.style.setProperty('--qt19-left-handle-top',clamp(y)+'px');}
+  function curTop(){return parseFloat(root.style.getPropertyValue('--qt19-left-handle-top'));}
+  function restore(){var v=parseFloat(localStorage.getItem(KEY));if(!isNaN(v))setTop(v);}
+  document.addEventListener('pointerdown',function(e){
+    var h=e.target.closest?e.target.closest('#qt19-left-handle'):null;if(!h)return;
+    var r=h.getBoundingClientRect();drag={y0:e.clientY,top0:r.top+r.height/2};moved=false;
+    try{h.setPointerCapture(e.pointerId);}catch(x){}
+  },true);
+  document.addEventListener('pointermove',function(e){
+    if(!drag)return;var dy=e.clientY-drag.y0;
+    if(!moved&&Math.abs(dy)<5)return;moved=true;setTop(drag.top0+dy);
+  },true);
+  function end(){
+    if(!drag)return;
+    if(moved){suppress=true;setTimeout(function(){suppress=false;},60);var v=curTop();if(!isNaN(v))localStorage.setItem(KEY,String(v));}
+    drag=null;
+  }
+  document.addEventListener('pointerup',end,true);
+  document.addEventListener('pointercancel',end,true);
+  document.addEventListener('click',function(e){
+    if(suppress&&e.target.closest&&e.target.closest('#qt19-left-handle')){e.stopPropagation();e.preventDefault();}
+  },true);
+  window.addEventListener('resize',function(){var v=curTop();if(!isNaN(v))setTop(v);});
+  window.__qt19LeftHandle={restore:restore};
+  restore();
+})();"""
 
 
 def _icon_for_tab(tab_name):
@@ -102,10 +132,12 @@ def _collapsed_handle() -> rx.Component:
         rx.icon("chevrons-right", size=20),
         on_click=AppState.cycle_sidebar_stage,
         title="Open sidebar",
+        id="qt19-left-handle",
+        on_mount=rx.call_script(_LEFT_HANDLE_JS),
         style={
             "position": "fixed",
             "left": "10px",
-            "top": "50%",
+            "top": "var(--qt19-left-handle-top, 50%)",
             "transform": "translateY(-50%)",
             "width": "38px",
             "height": "38px",
@@ -118,6 +150,8 @@ def _collapsed_handle() -> rx.Component:
             "box_shadow": "0 0 16px 3px var(--qt19-accent-glow)",
             "cursor": "pointer",
             "z_index": "60",
+            "touch_action": "none",
+            "user_select": "none",
             "transition": "transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s ease",
             "_hover": {"transform": "translateY(-50%) scale(1.12)"},
         },

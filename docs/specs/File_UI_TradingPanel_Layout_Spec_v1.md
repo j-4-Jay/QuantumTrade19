@@ -4,10 +4,10 @@ Thread 005, 28-10-2026. Stage FT-U sits right after FT-H (Jay, 28-10-2026). No c
 ## 1. Panels
 | Panel | Where | Sizes | States | Scope |
 |---|---|---|---|---|
-| Left sidebar | left edge | full 230px, icons 72px, collapsed 0px (handle only) | 3 (full, icons, collapsed) | whole software (page_shell) |
-| Right sidebar | right of chart, ends above the bottom card | open 360px, closed 0px | 2 | Trading Panel only |
+| Left sidebar | left edge, floats over the chart (Trading Panel); normal layout on other pages | full 230px, icons 72px, collapsed 0px (handle only) | 3 (full, icons, collapsed) | whole software (page_shell) |
+| Right sidebar | right edge, floats over the chart, ends above the bottom card | open 360px, closed 0px | 2 | Trading Panel only |
 | Bottom card | full window width, extreme left to extreme right, under both sidebars | open 220px default, drag-resizable, closed 0px | 2 | Trading Panel only |
-| Chart | middle | fills what is left | - | squeezed when panels open, widened when closed |
+| Chart | whole area between the top bar and the bottom card, extreme left to extreme right | fills it | - | only the bottom card changes its height; the sidebars float over it |
 
 ## 2. Rules
 1. A collapsed right or bottom card is NOT drawn and takes NO space (width/height 0, display none after the animation).
@@ -33,7 +33,11 @@ Thread 005, 28-10-2026. Stage FT-U sits right after FT-H (Jay, 28-10-2026). No c
 13. All three handles are draggable along their own edge only: left and right handles move up and down, the bottom handle moves left and right. A click (less than 5px movement) opens or closes the card. A drag moves the handle and does not toggle.
 14. Handle positions are saved in settings and kept inside the window. Settings gets a Reset handle positions button.
 15. Page_shell gets an optional bottom slot; only the Trading Panel fills it.
-16. Motion (Jay, 28-10-2026): the same spring transition runs on the left sidebar width, the right sidebar, the bottom card and the chart resize, and tab switch animations are active for all tabs in the whole software. Reduced motion switches all of them off.
+16. Motion (Jay, 28-10-2026): spring transitions run on the sidebars and the bottom card, and tab switch animations are active for all tabs in the whole software. Reduced motion switches all of them off.
+17. FLOAT RULE (Jay, 28-10-2026): the left and the right sidebar FLOAT over the chart. The chart always spans from the extreme left to the extreme right of the area above the bottom card, so opening, closing or changing a sidebar never resizes the chart: no redraw, no flicker. The left sidebar floats on the Trading Panel only; other pages keep their layout.
+18. The bottom card does NOT float. It squeezes the chart height (a floating card would cover too much chart). Both sidebars end above it.
+19. Look of the floating sidebars: real frosted glass (strong background blur with saturation, so objects behind are blurred but visible), very prominent text (high contrast, semi-bold, soft text shadow), animated edge glow (moving gradient border that brightens on hover), hover effects (lift, glow, shine sweep), spring entry and exit. Reduced motion switches the motion off but keeps the glass look.
+20. Known risk: while open, the right sidebar covers the newest candles and the price axis. We judge this live in FT-U.3. A Settings switch "Panels: float / squeeze chart" may follow if Jay wants it.
 
 ## 4. Known defect to investigate (FT-U.2)
 Left sidebar collapsing is defective today. Read of sidebar.py: the line stage still keeps a 14px wide card with 0.75rem margin and a 280px tall box, so it eats space. Fixed by rule 9. Where cycle_sidebar_stage lives is still to be found (SEARCH).
