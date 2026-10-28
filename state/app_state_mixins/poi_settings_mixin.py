@@ -76,6 +76,10 @@ class PoiSettingsMixin(rx.State, mixin=True):
             return
 
         settings = _engine.get_poi_settings()
+        if not settings:
+            # FIX (thread 004): the POI monitor is not started yet, so the engine has no answer.
+            # Do NOT mark the settings as loaded; the start-up task calls this again when the monitor is ready.
+            return
         self.poi_display_enabled = settings.get("display_enabled", {})
         self.poi_strategy_enabled = settings.get("strategy_enabled", {})
         self.poi_zone_source_tf_enabled = settings.get("zone_source_tf_enabled", {})

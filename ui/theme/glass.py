@@ -49,6 +49,9 @@ GLASS_CARD_STYLE: dict = {
 GLASS_CARD_3XL_STYLE: dict = {**GLASS_CARD_STYLE, "border_radius": "1.75rem"}
 
 
+SETTINGS_CARD_STYLE: dict = {**GLASS_CARD_3XL_STYLE, "padding": "1.5rem 1.5rem"}
+
+
 PILL_BUTTON_STYLE: dict = {
     "border_radius": "9999px",
     "padding_x": "1.25rem",

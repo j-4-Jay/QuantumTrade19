@@ -10,7 +10,7 @@ from __future__ import annotations
 import reflex as rx
 
 from state.app_state import AppState
-from ui.theme.glass import GLASS_CARD_3XL_STYLE
+from ui.theme.glass import SETTINGS_CARD_STYLE as GLASS_CARD_3XL_STYLE
 
 
 def _symbol_row(row) -> rx.Component:

@@ -16,7 +16,7 @@ revision - every other card/function below is UNCHANGED from r2.
 from __future__ import annotations
 import reflex as rx
 from state.app_state import AppState
-from ui.theme.glass import GLASS_CARD_3XL_STYLE
+from ui.theme.glass import SETTINGS_CARD_STYLE as GLASS_CARD_3XL_STYLE
 
 
 def _color_input(value: str, on_change) -> rx.Component:
@@ -256,7 +256,7 @@ def poi_zone_types_card() -> rx.Component:
         ),
         rx.grid(
             rx.foreach(AppState.poi_zone_type_rows, _poi_zone_type_card),
-            columns=rx.breakpoints(initial="1", sm="2", lg="3"),
+columns=rx.breakpoints(initial="1", sm="2", lg="5"),
             spacing="3", width="100%", margin_top="0.5rem",
         ),
         spacing="2", width="100%", style=GLASS_CARD_3XL_STYLE,

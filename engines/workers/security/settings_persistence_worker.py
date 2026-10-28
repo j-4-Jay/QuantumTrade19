@@ -25,6 +25,8 @@ screen-entrance transition pool.
 """
 from __future__ import annotations
 import json
+import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +47,9 @@ _DEFAULTS: dict[str, Any] = {
     "tab_transition_mode": "single",
     "per_symbol_settings": {},
 }
+
+
+_WRITE_LOCK = threading.RLock()
 
 
 class SettingsPersistenceWorker:
@@ -73,14 +78,32 @@ class SettingsPersistenceWorker:
         self._cache = merged
         return dict(merged)
 
+    def _read_disk(self) -> dict[str, Any] | None:
+        try:
+            return json.loads(self._path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+
     def save(self, settings: dict[str, Any]) -> None:
-        current = self.load()
-        current.update(settings)
-        self._cache = current
-        if self._force_memory:
-            return
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(json.dumps(current, indent=2))
+        """FIX (thread 004, lost updates): every worker object used to write its own
+        old cached copy of the whole file, so one object could undo what another had
+        just saved (e.g. the Weekly/Monthly POI flags). Now the file on disk is read
+        again just before each save, only the changed keys are updated, and the file
+        is replaced in one step so nobody reads a half-written file."""
+        with _WRITE_LOCK:
+            if self._force_memory:
+                current = self.load()
+                current.update(settings)
+                self._cache = current
+                return
+            on_disk = self._read_disk() if self._path.exists() else None
+            current = self.load() if on_disk is None else {**_DEFAULTS, **on_disk}
+            current.update(settings)
+            self._cache = current
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = self._path.with_name(self._path.name + ".tmp")
+            temp_path.write_text(json.dumps(current, indent=2))
+            os.replace(temp_path, self._path)
 
     def get_per_symbol_setting(self, symbol: str, key: str, default=None):
         per_symbol = self.load().get("per_symbol_settings", {})

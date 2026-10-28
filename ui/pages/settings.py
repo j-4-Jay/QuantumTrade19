@@ -14,7 +14,7 @@ this revision - everything else below is UNCHANGED.
 from __future__ import annotations
 import reflex as rx
 from state.app_state import AppState
-from ui.theme.glass import GLASS_CARD_3XL_STYLE
+from ui.theme.glass import SETTINGS_CARD_STYLE as GLASS_CARD_3XL_STYLE
 from ui.components.deep_historical_data_card import deep_historical_data_card
 from ui.components.setup_buffer_card import setup_buffer_card
 from ui.components.poi_engine_settings_card import (
@@ -35,6 +35,16 @@ _SCROLL_CONTENT_STYLE = {
     "flex": "1",
     "min_height": "0",
     "width": "100%",
+}
+
+
+_FILL_CONTENT_STYLE = {
+    "flex": "1",
+    "min_height": "0",
+    "width": "100%",
+    "display": "flex",
+    "flex_direction": "column",
+    "overflow": "hidden",
 }
 
 
@@ -251,24 +261,77 @@ def _security_tab() -> rx.Component:
     )
 
 
+def _cell(card: rx.Component, span: int, row_span: int = 1) -> rx.Component:
+    """One card placed on the 12-column grid; the card stretches to the row height."""
+    style = {
+        "grid_column": f"span {span}",
+        "display": "flex",
+        "flex_direction": "column",
+        "min_width": "0",
+        "& > *": {"flex": "1 1 auto"},
+    }
+    if row_span > 1:
+        style["grid_row"] = f"span {row_span}"
+    return rx.box(card, style=style, width="100%")
+
+
+def _trading_grid(*cells: rx.Component) -> rx.Component:
+    return rx.grid(*cells, columns="12", spacing="3", width="100%", margin_top="1rem", padding_bottom="1.5rem")
+
+
 def _trading_tab() -> rx.Component:
-    _full_row = {"grid_column": "1 / -1"}
-    return rx.grid(
-        poi_timezone_card(),
-        _crosshair_settings_card(),
-        _candle_style_settings_card(),
-        rx.box(poi_lines_card(), style=_full_row, width="100%"),
-        poi_horizontal_style_card(),
-        poi_zone_matrix_card(),
-        rx.box(poi_zone_types_card(), style=_full_row, width="100%"),
-        poi_custom_lines_card(),
-        poi_visual_controls_card(),
-        poi_setup_detection_card(),
-        setup_buffer_card(),
-        _coming_soon_card("Signal Bias Filter", "Market-aware auto-disable rules for filters."),
-        _coming_soon_card("Paper Trading", "Paper/Live toggle defaults and simulator settings."),
-        columns=rx.breakpoints(initial="1", sm="1", md="2", lg="3"),
-        spacing="2", width="100%", margin_top="0.5rem", padding_bottom="1.5rem",
+    return rx.tabs.root(
+        rx.tabs.list(
+            rx.tabs.trigger("Chart Look", value="look", color="var(--qt19-text-primary)"),
+            rx.tabs.trigger("POI Lines", value="lines", color="var(--qt19-text-primary)"),
+            rx.tabs.trigger("POI Zones", value="zones", color="var(--qt19-text-primary)"),
+            rx.tabs.trigger("Setups & Risk", value="setups", color="var(--qt19-text-primary)"),
+            flex_shrink="0",
+        ),
+        rx.tabs.content(
+            _trading_grid(
+                _cell(_candle_style_settings_card(), 4),
+                _cell(_crosshair_settings_card(), 4),
+                _cell(poi_custom_lines_card(), 4),
+            ),
+            value="look",
+            style=_SCROLL_CONTENT_STYLE,
+        ),
+        rx.tabs.content(
+            _trading_grid(
+                _cell(poi_lines_card(), 12),
+                _cell(poi_horizontal_style_card(), 8),
+                _cell(poi_timezone_card(), 4),
+            ),
+            value="lines",
+            style=_SCROLL_CONTENT_STYLE,
+        ),
+        rx.tabs.content(
+            _trading_grid(
+                _cell(poi_zone_types_card(), 12),
+                _cell(poi_zone_matrix_card(), 4),
+                _cell(poi_visual_controls_card(), 3),
+            ),
+            value="zones",
+            style=_SCROLL_CONTENT_STYLE,
+        ),
+        rx.tabs.content(
+            _trading_grid(
+                _cell(poi_setup_detection_card(), 5),
+                _cell(setup_buffer_card(), 7),
+                _cell(_coming_soon_card("Signal Bias Filter", "Market-aware auto-disable rules for filters."), 6),
+                _cell(_coming_soon_card("Paper Trading", "Paper/Live toggle defaults and simulator settings."), 6),
+            ),
+            value="setups",
+            style=_SCROLL_CONTENT_STYLE,
+        ),
+        default_value="look",
+        width="100%",
+        flex="1",
+        min_height="0",
+        display="flex",
+        flex_direction="column",
+        overflow="hidden",
     )
 
 
@@ -286,7 +349,7 @@ def settings_page() -> rx.Component:
             rx.tabs.content(_appearance_tab(), value="appearance", style=_SCROLL_CONTENT_STYLE),
             rx.tabs.content(_data_connection_tab(), value="data", style=_SCROLL_CONTENT_STYLE),
             rx.tabs.content(_security_tab(), value="security", style=_SCROLL_CONTENT_STYLE),
-            rx.tabs.content(_trading_tab(), value="trading", style=_SCROLL_CONTENT_STYLE),
+rx.tabs.content(_trading_tab(), value="trading", style=_FILL_CONTENT_STYLE),
             value=AppState.settings_active_subtab,
             on_change=AppState.set_settings_active_subtab,
             width="100%",
