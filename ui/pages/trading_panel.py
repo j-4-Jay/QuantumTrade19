@@ -370,6 +370,16 @@ def _right_reserve():
     return rx.cond(AppState.right_panel_open, "calc(360px + 0.75rem)", "0px")
 
 
+def _bottom_panel():
+    from ui.components.trading_bottom_panel import qt19_bottom_panel
+    return qt19_bottom_panel()
+
+
+def _bottom_handle():
+    from ui.components.trading_bottom_panel import qt19_bottom_handle
+    return qt19_bottom_handle()
+
+
 def _right_handle():
     from ui.components.trading_right_sidebar import qt19_right_handle
     return qt19_right_handle()
@@ -391,18 +401,27 @@ def _float_reserve():
 
 
 def trading_panel_page() -> rx.Component:
-    return rx.hstack(
-        rx.box(
-            _chart_card(),
-            _mini_bar(),
-            _right_handle(),
-            position="relative",
+    return rx.vstack(
+        rx.hstack(
+            rx.box(
+                _chart_card(),
+                _mini_bar(),
+                _right_handle(),
+                _bottom_handle(),
+                position="relative",
+                flex="1",
+                min_width="0",
+                height="100%",
+            ),
+            _right_sidebar(),
+            spacing="0",
+            align_items="stretch",
+            width="100%",
             flex="1",
-            min_width="0",
-            height="100%",
+            min_height="0",
         ),
-        _right_sidebar(),
-        spacing="3",
+        _bottom_panel(),
+        spacing="0",
         align_items="stretch",
         width="100%",
         height="100%",

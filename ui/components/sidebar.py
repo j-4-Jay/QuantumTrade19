@@ -184,4 +184,21 @@ def qt19_sidebar():
         margin="0.75rem",
         edge=True,
     )
-    return rx.cond(AppState.sidebar_stage == "line", _collapsed_handle(), card)
+    collapsed = AppState.sidebar_stage == "line"
+    hidden_style = {
+        "position": "absolute",
+        "top": "0",
+        "left": "0",
+        "transform": "translateX(-130%)",
+        "opacity": "0",
+        "pointer_events": "none",
+    }
+    shown_style = {"position": "relative", "transform": "translateX(0)", "opacity": "1"}
+    return rx.fragment(
+        rx.box(
+            card,
+            style=rx.cond(collapsed, hidden_style, shown_style),
+            transition="transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.35s ease",
+        ),
+        rx.cond(collapsed, _collapsed_handle(), rx.fragment()),
+    )

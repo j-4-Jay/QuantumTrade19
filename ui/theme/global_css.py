@@ -222,6 +222,30 @@ input:-webkit-autofill { animation-name: qt19-autofill-detect; animation-duratio
 }
 .qt19-glow-wrap:hover .qt19-glow-layer { opacity: 0.7; }
 .qt19-glow-content { position: relative !important; z-index: 1 !important; }
+#qt19-bottom-divider, #qt19-bottom-divider * { cursor: ns-resize !important; }
+#qt19-mini-grip { cursor: grab !important; }
+#qt19-mini-grip:active { cursor: grabbing !important; }
+.qt19-tab-dissolve { animation: qt19-anim-dissolve 0.3s ease; }
+.qt19-dragging .qt19-bottom-wrap { transition: none !important; }
+.qt19-reduce-motion *, .qt19-reduce-motion *::before, .qt19-reduce-motion *::after {
+  animation: none !important;
+  transition: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .qt19-tab-dissolve { animation: none !important; }
+  .qt19-bottom-wrap, .qt19-right-wrap { transition: none !important; }
+}
+@keyframes qt19-pop-in { from { opacity: 0; transform: scale(0.4); } to { opacity: 1; transform: scale(1); } }
+@keyframes qt19-panel-in-right { from { opacity: 0; transform: translateX(32px) scale(0.98); } to { opacity: 1; transform: translateX(0) scale(1); } }
+@keyframes qt19-panel-in-left { from { opacity: 0; transform: translateX(-32px) scale(0.98); } to { opacity: 1; transform: translateX(0) scale(1); } }
+@keyframes qt19-panel-in-up { from { opacity: 0; transform: translateY(28px); } to { opacity: 1; transform: translateY(0); } }
+.qt19-panel-in-right { animation: qt19-panel-in-right 0.55s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.qt19-panel-in-left { animation: qt19-panel-in-left 0.55s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.qt19-panel-in-up { animation: qt19-panel-in-up 0.5s cubic-bezier(0.34, 1.56, 0.64, 1); }
+@media (prefers-reduced-motion: reduce) {
+  .qt19-panel-in-right, .qt19-panel-in-left, .qt19-panel-in-up, .qt19-tab-switch,
+  .qt19-edge-wrap .qt19-glow-layer { animation: none !important; }
+}
 /* ---- FT-U.3e premium moving edge light (sidebars): replaces the centre hover blob ---- */
 @property --qt19-edge-angle { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
 @keyframes qt19-edge-spin { to { --qt19-edge-angle: 360deg; } }

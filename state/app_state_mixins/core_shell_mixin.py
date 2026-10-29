@@ -41,6 +41,7 @@ class CoreShellMixin(rx.State, mixin=True):
         self.transition_mode = settings.get("transition_mode", self.transition_mode)
         self.tab_transition_effects_enabled = settings.get("tab_transition_effects_enabled", self.tab_transition_effects_enabled)
         self.tab_transition_mode = settings.get("tab_transition_mode", self.tab_transition_mode)
+        self.motion_reduced = bool(settings.get("motion_reduced", False))
         self.trading_panel_chart_theme = settings.get("trading_panel_chart_theme", self.trading_panel_chart_theme)
         self.trading_panel_symbol = settings.get("trading_panel_symbol", self.trading_panel_symbol)
         self.trading_panel_chart_tf = settings.get("trading_panel_chart_tf", self.trading_panel_chart_tf)

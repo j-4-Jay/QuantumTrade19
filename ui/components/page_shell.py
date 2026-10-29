@@ -72,4 +72,12 @@ def qt19_page_shell(content: rx.Component, show_nav: bool = True) -> rx.Componen
         ),
         width="100%", height="100vh", spacing="0", style=PAGE_BG_STYLE,
     )
-    return rx.box(qt19_cursor_glow(), body, qt19_logout_dialog(), style=_theme_style_vars(), height="100vh", width="100%")
+    return rx.box(
+        qt19_cursor_glow(),
+        body,
+        qt19_logout_dialog(),
+        style=_theme_style_vars(),
+        class_name=rx.cond(AppState.motion_reduced, "qt19-reduce-motion", ""),
+        height="100vh",
+        width="100%",
+    )

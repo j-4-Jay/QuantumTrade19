@@ -231,10 +231,27 @@ def _candle_style_settings_card() -> rx.Component:
     )
 
 
+def _motion_card() -> rx.Component:
+    return rx.vstack(
+        rx.heading("Reduced Motion", size="4", color="var(--qt19-text-primary)"),
+        rx.text(
+            "Off by default, so all effects show. When on, panel slides, tab effects and the moving edge light are switched off in the whole software.",
+            font_size="0.8rem", color="var(--qt19-text-muted)",
+        ),
+        rx.hstack(
+            rx.checkbox(checked=AppState.motion_reduced, on_change=AppState.set_motion_reduced),
+            rx.text("Reduce motion", font_size="0.82rem", color="var(--qt19-text-primary)"),
+            spacing="2", align_items="center",
+        ),
+        spacing="2", width="100%", style=GLASS_CARD_3XL_STYLE,
+    )
+
+
 def _appearance_tab() -> rx.Component:
     return rx.grid(
         _transition_effects_card(),
         _tab_transition_card(),
+        _motion_card(),
         _coming_soon_card("Theme", "6 selectable themes (Yellow/Saffron/Blue x Day/Night)."),
         columns=rx.breakpoints(initial="1", sm="1", md="2", lg="3"),
         spacing="2", width="100%", margin_top="0.5rem", padding_bottom="1.5rem",

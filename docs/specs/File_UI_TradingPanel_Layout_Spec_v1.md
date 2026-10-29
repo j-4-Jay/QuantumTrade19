@@ -5,9 +5,9 @@ Thread 005, 28-10-2026. Stage FT-U sits right after FT-H (Jay, 28-10-2026). No c
 | Panel | Where | Sizes | States | Scope |
 |---|---|---|---|---|
 | Left sidebar | left edge, floats over the chart (Trading Panel); normal layout on other pages | full 230px, icons 72px, collapsed 0px (handle only) | 3 (full, icons, collapsed) | whole software (page_shell) |
-| Right sidebar | right edge, floats over the chart, ends above the bottom card | open 360px, closed 0px | 2 | Trading Panel only |
+| Right sidebar | right of the chart in the row (pushes the chart), ends above the bottom card | open 360px, closed 0px | 2 | Trading Panel only |
 | Bottom card | full window width, extreme left to extreme right, under both sidebars | open 220px default, drag-resizable, closed 0px | 2 | Trading Panel only |
-| Chart | whole area between the top bar and the bottom card, extreme left to extreme right | fills it | - | only the bottom card changes its height; the sidebars float over it |
+| Chart | area between the top bar and the bottom card | fills it | - | the left sidebar floats over it; the right sidebar and the bottom card squeeze it |
 
 ## 2. Rules
 1. A collapsed right or bottom card is NOT drawn and takes NO space (width/height 0, display none after the animation).
@@ -40,6 +40,8 @@ Thread 005, 28-10-2026. Stage FT-U sits right after FT-H (Jay, 28-10-2026). No c
 20. Known risk: while open, the right sidebar covers the newest candles and the price axis. We judge this live in FT-U.3. A Settings switch "Panels: float / squeeze chart" may follow if Jay wants it.
 21. DECISION CHANGE (Jay, 29-10-2026): the RIGHT sidebar now PUSHES the chart, because floating covered the price axis. A short flash on open and close is accepted. The left sidebar still floats on the Trading Panel. Rules 17 and 20 apply to the left sidebar only.
 22. Header rows moved into the right sidebar tabs (Trade, Chart, POI, Setups, Alerts) and into a draggable mini bar (symbol and time frame, 4x4 dot grip) on the chart. Handles are round-corner glowing squares at the top of each sidebar, not draggable. A moving edge light around both sidebar cards replaces the centre hover glow.
+23. (Jay, 29-10-2026) The left sidebar only hugs its contents and is not extended to the bottom card; the bottom card state does not affect it. The right sidebar ends above the bottom card. The bottom card handle sits at the bottom right of the chart. The divider cursor is a two-way arrow.
+24. (Jay, 29-10-2026) The right sidebar and the bottom card animate their size with a spring and the chart follows; the left sidebar slides in and out; the right sidebar tab content dissolves. One global Reduced Motion switch in Settings > Appearance, default OFF, turns all motion off.
 
 ## 4. Known defect to investigate (FT-U.2)
 Left sidebar collapsing is defective today. Read of sidebar.py: the line stage still keeps a 14px wide card with 0.75rem margin and a 280px tall box, so it eats space. Fixed by rule 9. Where cycle_sidebar_stage lives is still to be found (SEARCH).

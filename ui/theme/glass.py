@@ -56,6 +56,7 @@ SQUARE_HANDLE_STYLE: dict = {
     "box_shadow": "0 0 14px 2px var(--qt19-accent-glow), inset 0 0 8px rgba(255,255,255,0.08)",
     "cursor": "pointer",
     "transition": "transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s ease",
+    "animation": "qt19-pop-in 0.45s cubic-bezier(0.34, 1.56, 0.64, 1)",
     "_hover": {
         "transform": "scale(1.1)",
         "box_shadow": "0 0 22px 5px var(--qt19-accent-glow), inset 0 0 10px rgba(255,255,255,0.14)",

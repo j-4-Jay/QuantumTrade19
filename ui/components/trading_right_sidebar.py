@@ -94,6 +94,8 @@ def _panel(contents: dict) -> rx.Component:
             flex="1",
             min_height="0",
             overflow_y="auto",
+            class_name="qt19-tab-dissolve",
+            key=AppState.right_panel_tab,
             padding="0.9rem",
             border="1px solid var(--qt19-accent)",
             border_radius="0 0.9rem 0.9rem 0.9rem",
@@ -115,7 +117,7 @@ def _panel(contents: dict) -> rx.Component:
             "padding": "0.75rem",
             "backdrop_filter": "blur(22px) saturate(160%)",
         },
-        margin="0",
+        margin="0 0 0 0.75rem",
         edge=True,
     )
     return rx.box(
@@ -123,6 +125,7 @@ def _panel(contents: dict) -> rx.Component:
         display="flex",
         align_items="stretch",
         flex_shrink="0",
+        min_width="calc(360px + 0.75rem)",
     )
 
 
@@ -147,7 +150,15 @@ def _handle() -> rx.Component:
 
 
 def qt19_right_sidebar(contents: dict | None = None) -> rx.Component:
-    return rx.cond(AppState.right_panel_open, _panel(contents or {}), rx.fragment())
+    return rx.box(
+        _panel(contents or {}),
+        class_name="qt19-right-wrap",
+        display="flex",
+        align_items="stretch",
+        flex_shrink="0",
+        width=rx.cond(AppState.right_panel_open, "calc(360px + 0.75rem)", "0px"),
+        transition="width 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)",
+    )
 
 
 def qt19_right_handle() -> rx.Component:
