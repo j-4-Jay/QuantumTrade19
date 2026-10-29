@@ -165,17 +165,19 @@ class CoreShellMixin(rx.State, mixin=True):
         _engine.security.persistence.save({"active_tab": tab})
         self.detail_popup_open = False
         self._pick_tab_transition_effect()
+        sound = self.play_sound("tab-slide")
+        sound_events = [sound] if sound is not None else []
         if tab == "Trading Panel":
             self.refresh_trading_panel_chart()
             self.refresh_poi_chart_overlays()
             return [
-                self.play_sound("tab-slide"),
+                *sound_events,
                 type(self).poll_trading_panel_chart,
                 type(self).poll_poi_chart_overlays,
                 type(self).poll_setup_visualization,
             ]
         if tab == "Settings":
-            return [self.play_sound("tab-slide"), type(self).poll_deep_history_cards]
+            return [*sound_events, type(self).poll_deep_history_cards]
         return self.play_sound("tab-slide")
 
     def set_settings_active_subtab(self, subtab: str) -> None:

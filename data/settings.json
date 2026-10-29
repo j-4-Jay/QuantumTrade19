@@ -1,6 +1,6 @@
 {
   "theme_key": "blue-night",
-  "sound_master_on": true,
+  "sound_master_on": false,
   "dnd_on": false,
   "paper_mode": true,
   "run_on_startup": false,
@@ -27,7 +27,7 @@
     "broker_days": "Not checked yet"
   },
   "active_tab": "Trading Panel",
-  "settings_active_subtab": "appearance",
+  "settings_active_subtab": "trading",
   "chart_coverage_cache_B-BTC_USDT_5m": {
     "date": "2026-10-28",
     "local_days": 0,
@@ -169,8 +169,8 @@
       "P1H_LOW": false,
       "4H_HIGH": true,
       "4H_LOW": true,
-      "PDH": false,
-      "PDL": false,
+      "PDH": true,
+      "PDL": true,
       "1W_HIGH": false,
       "1W_LOW": false,
       "1M_HIGH": false,
