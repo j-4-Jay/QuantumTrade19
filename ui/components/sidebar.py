@@ -11,7 +11,7 @@ pretending to be a "line" anymore.
 from __future__ import annotations
 import reflex as rx
 from state.app_state import AppState
-from ui.theme.glass import GLASS_CARD_STYLE
+from ui.theme.glass import GLASS_CARD_STYLE, SQUARE_HANDLE_STYLE
 from ui.components.glow_card import qt19_glow_card
 
 _ICON_SIZE = 27
@@ -114,10 +114,28 @@ def _stage_handle_button(height: str) -> rx.Component:
     )
 
 
+def _square_handle() -> rx.Component:
+    """Round-corner stage button at the top of the sidebar (same look as the right sidebar's)."""
+    return rx.box(
+        _stage_handle_icon(),
+        on_click=AppState.cycle_sidebar_stage,
+        title="Collapse sidebar",
+        style={
+            **SQUARE_HANDLE_STYLE,
+            "width": "2.3rem",
+            "height": "2.3rem",
+            "display": "flex",
+            "align_items": "center",
+            "justify_content": "center",
+            "flex_shrink": "0",
+        },
+    )
+
+
 def _full_or_icons_body() -> rx.Component:
     return rx.vstack(
+        rx.box(_square_handle(), width="100%", display="flex", justify_content="flex-start", flex_shrink="0"),
         rx.foreach(AppState.sidebar_tabs, _tab_button),
-        _stage_handle_button(_HANDLE_HEIGHT),
         width="100%",
         padding=_OUTER_PADDING,
         spacing="2",
@@ -132,28 +150,17 @@ def _collapsed_handle() -> rx.Component:
         rx.icon("chevrons-right", size=20),
         on_click=AppState.cycle_sidebar_stage,
         title="Open sidebar",
-        id="qt19-left-handle",
-        on_mount=rx.call_script(_LEFT_HANDLE_JS),
         style={
-            "position": "fixed",
-            "left": "10px",
-            "top": "var(--qt19-left-handle-top, 50%)",
-            "transform": "translateY(-50%)",
-            "width": "38px",
-            "height": "38px",
-            "border_radius": "9999px",
+            **SQUARE_HANDLE_STYLE,
+            "position": "absolute",
+            "left": "1.6rem",
+            "top": "1.6rem",
+            "width": "2.3rem",
+            "height": "2.3rem",
             "display": "flex",
             "align_items": "center",
             "justify_content": "center",
-            "background": "var(--qt19-accent)",
-            "color": "white",
-            "box_shadow": "0 0 16px 3px var(--qt19-accent-glow)",
-            "cursor": "pointer",
             "z_index": "60",
-            "touch_action": "none",
-            "user_select": "none",
-            "transition": "transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s ease",
-            "_hover": {"transform": "translateY(-50%) scale(1.12)"},
         },
     )
 
@@ -175,5 +182,6 @@ def qt19_sidebar():
             "padding": "0",
         },
         margin="0.75rem",
+        edge=True,
     )
     return rx.cond(AppState.sidebar_stage == "line", _collapsed_handle(), card)

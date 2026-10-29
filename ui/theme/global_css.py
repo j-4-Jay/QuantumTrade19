@@ -222,6 +222,29 @@ input:-webkit-autofill { animation-name: qt19-autofill-detect; animation-duratio
 }
 .qt19-glow-wrap:hover .qt19-glow-layer { opacity: 0.7; }
 .qt19-glow-content { position: relative !important; z-index: 1 !important; }
+/* ---- FT-U.3e premium moving edge light (sidebars): replaces the centre hover blob ---- */
+@property --qt19-edge-angle { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
+@keyframes qt19-edge-spin { to { --qt19-edge-angle: 360deg; } }
+.qt19-edge-wrap .qt19-glow-layer {
+  inset: -1px !important;
+  border-radius: 1.5rem;
+  padding: 2px;
+  background: conic-gradient(from var(--qt19-edge-angle), transparent 0deg, var(--qt19-accent) 50deg, #ffffff 80deg, var(--qt19-accent) 110deg, transparent 170deg, transparent 360deg) !important;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  filter: none !important;
+  opacity: 0.6;
+  z-index: 2 !important;
+  animation: qt19-edge-spin 7s linear infinite;
+  transition: opacity 0.35s ease, filter 0.35s ease;
+}
+.qt19-edge-wrap:hover .qt19-glow-layer {
+  opacity: 1;
+  filter: drop-shadow(0 0 6px var(--qt19-accent-glow)) !important;
+  animation-duration: 3s;
+}
 
 
 @keyframes qt19-sidebar-collapse { from { width: 230px; } to { width: 64px; } }

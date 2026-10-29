@@ -30,10 +30,10 @@ from __future__ import annotations
 import reflex as rx
 
 
-def qt19_glow_card(*children, card_style: dict, **wrapper_props) -> rx.Component:
+def qt19_glow_card(*children, card_style: dict, edge: bool = False, **wrapper_props) -> rx.Component:
     return rx.box(
         rx.box(class_name="qt19-glow-layer"),
         rx.box(*children, style=card_style, class_name="qt19-glow-content"),
-        class_name="qt19-glow-wrap",
+        class_name="qt19-glow-wrap qt19-edge-wrap" if edge else "qt19-glow-wrap",
         **wrapper_props,
     )

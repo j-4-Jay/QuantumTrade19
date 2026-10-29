@@ -233,6 +233,153 @@ def _chart_card() -> rx.Component:
     )
 
 
+_MINI_BAR_JS = """(function(){
+  if(window.__qt19MiniBar){window.__qt19MiniBar.restore();return;}
+  var KX='qt19_mini_x',KY='qt19_mini_y',root=document.documentElement,drag=null;
+  function bar(){return document.getElementById('qt19-mini-bar');}
+  function clamp(x,y){
+    var b=bar();if(!b||!b.offsetParent)return [x,y];
+    var p=b.offsetParent.getBoundingClientRect(),w=b.offsetWidth,h=b.offsetHeight;
+    return [Math.max(w/2+4,Math.min(p.width-w/2-4,x)),Math.max(4,Math.min(p.height-h-4,y))];
+  }
+  function setPos(x,y){var c=clamp(x,y);root.style.setProperty('--qt19-mini-x',c[0]+'px');root.style.setProperty('--qt19-mini-y',c[1]+'px');}
+  function stored(){var x=parseFloat(localStorage.getItem(KX)),y=parseFloat(localStorage.getItem(KY));return (isNaN(x)||isNaN(y))?null:[x,y];}
+  function restore(){var s=stored();if(s)setPos(s[0],s[1]);}
+  document.addEventListener('pointerdown',function(e){
+    var g=e.target.closest?e.target.closest('#qt19-mini-grip'):null;if(!g)return;
+    var b=bar();if(!b||!b.offsetParent)return;
+    var r=b.getBoundingClientRect(),p=b.offsetParent.getBoundingClientRect();
+    drag={dx:e.clientX-(r.left+r.width/2),dy:e.clientY-r.top,px:p.left,py:p.top};
+    try{g.setPointerCapture(e.pointerId);}catch(x){}
+    e.preventDefault();
+  },true);
+  document.addEventListener('pointermove',function(e){
+    if(!drag)return;setPos(e.clientX-drag.px-drag.dx,e.clientY-drag.py-drag.dy);
+  },true);
+  function end(){
+    if(!drag)return;drag=null;
+    var x=parseFloat(root.style.getPropertyValue('--qt19-mini-x')),y=parseFloat(root.style.getPropertyValue('--qt19-mini-y'));
+    if(!isNaN(x)&&!isNaN(y)){localStorage.setItem(KX,String(x));localStorage.setItem(KY,String(y));}
+  }
+  document.addEventListener('pointerup',end,true);
+  document.addEventListener('pointercancel',end,true);
+  window.addEventListener('resize',restore);
+  window.__qt19MiniBar={restore:restore};
+  setTimeout(restore,50);
+})();"""
+
+
+def _mini_bar() -> rx.Component:
+    """FT-U.3b: symbol and time frame stay on the chart, top centre, glass pill."""
+    return rx.hstack(
+        rx.box(
+            id="qt19-mini-grip",
+            title="Drag to move",
+            style={
+                "width": "14px",
+                "height": "14px",
+                "flex_shrink": "0",
+                "cursor": "grab",
+                "touch_action": "none",
+                "opacity": "0.85",
+                "background": "radial-gradient(circle, var(--qt19-text-primary) 1px, transparent 1.5px) 0 0 / 3.5px 3.5px",
+            },
+        ),
+        rx.select(
+            AppState.trading_panel_symbol_options,
+            value=AppState.trading_panel_symbol,
+            on_change=AppState.set_trading_panel_symbol,
+            width="150px",
+            size="1",
+        ),
+        _tf_buttons(),
+        id="qt19-mini-bar",
+        on_mount=rx.call_script(_MINI_BAR_JS),
+        spacing="3",
+        align_items="center",
+        style={
+            "position": "absolute",
+            "top": "var(--qt19-mini-y, 0.9rem)",
+            "left": "var(--qt19-mini-x, 50%)",
+            "transform": "translateX(-50%)",
+            "z_index": "20",
+            "background": "var(--qt19-glass-bg)",
+            "backdrop_filter": "blur(16px) saturate(150%)",
+            "border": "1px solid var(--qt19-glass-border)",
+            "border_radius": "9999px",
+            "padding": "0.35rem 0.8rem",
+            "box_shadow": "0 4px 18px rgba(0,0,0,0.25)",
+        },
+    )
+
+
+def _bulk_button(label: str, handler) -> rx.Component:
+    return rx.button(label, on_click=handler, size="2", variant="soft", width="100%")
+
+
+def _right_tab_contents() -> dict:
+    """FT-U.3b: what the old two header rows now show inside the right sidebar tabs."""
+    return {
+        "Trade": rx.vstack(
+            rx.text("Market", font_size="0.78rem", font_weight="800", color="var(--qt19-text-muted)"),
+            rx.flex(
+                _ohlc_pill("O", AppState.trading_panel_current_open),
+                _ohlc_pill("H", AppState.trading_panel_current_high),
+                _ohlc_pill("L", AppState.trading_panel_current_low),
+                _ohlc_pill("C", AppState.trading_panel_current_close),
+                _ohlc_pill("Closes in", AppState.trading_panel_countdown_text),
+                spacing="4",
+                wrap="wrap",
+                width="100%",
+            ),
+            rx.divider(),
+            rx.text("Order ticket comes in step 3c.", font_size="0.85rem", color="var(--qt19-text-muted)"),
+            width="100%",
+            align_items="start",
+            spacing="3",
+        ),
+        "Chart": rx.vstack(
+            rx.text("Chart range", font_size="0.78rem", font_weight="800", color="var(--qt19-text-muted)"),
+            _display_last_group(),
+            width="100%",
+            align_items="start",
+            spacing="3",
+        ),
+        "POI": rx.vstack(
+            rx.text("POI Bulk Controls", font_size="0.78rem", font_weight="800", color="var(--qt19-text-muted)"),
+            _bulk_button("Hide Extras", AppState.poi_hide_extras),
+            _bulk_button("Show Extras", AppState.poi_show_extras),
+            _bulk_button("Enable Default Strategy", AppState.poi_enable_default_strategy),
+            _bulk_button("Disable All Strategy", AppState.poi_disable_all_strategy),
+            width="100%",
+            align_items="start",
+            spacing="2",
+        ),
+        "Setups": rx.vstack(
+            _setup_lookback_group(),
+            _setup_stats_panel(),
+            width="100%",
+            align_items="start",
+            spacing="3",
+        ),
+    }
+
+
+def _right_reserve():
+    """FT-U.3a: header and stats make room for the floating right sidebar; the chart does not."""
+    return rx.cond(AppState.right_panel_open, "calc(360px + 0.75rem)", "0px")
+
+
+def _right_handle():
+    from ui.components.trading_right_sidebar import qt19_right_handle
+    return qt19_right_handle()
+
+
+def _right_sidebar():
+    from ui.components.trading_right_sidebar import qt19_right_sidebar
+    return qt19_right_sidebar(_right_tab_contents())
+
+
 def _float_reserve():
     """FT-U.2.4: header and stats make room for the floating sidebar; the chart does not."""
     return rx.match(
@@ -244,22 +391,25 @@ def _float_reserve():
 
 
 def trading_panel_page() -> rx.Component:
-    return rx.vstack(
-        rx.vstack(
-            _header(),
-            _bulk_controls_strip(),
-            _setup_stats_panel(),
-            spacing="3",
-            width="100%",
-            flex_shrink="0",
-            padding_left=_float_reserve(),
-            transition="padding-left 0.35s ease",
+    return rx.hstack(
+        rx.box(
+            _chart_card(),
+            _mini_bar(),
+            _right_handle(),
+            position="relative",
+            flex="1",
+            min_width="0",
+            height="100%",
         ),
-        _chart_card(),
+        _right_sidebar(),
         spacing="3",
+        align_items="stretch",
         width="100%",
         height="100%",
+        padding_top="0.75rem",
+        padding_right="0.75rem",
+        padding_bottom="0.75rem",
         flex="1",
         min_height="0",
-        overflow="hidden",
+        overflow="visible",
     )

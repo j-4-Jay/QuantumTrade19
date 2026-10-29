@@ -38,6 +38,8 @@ Thread 005, 28-10-2026. Stage FT-U sits right after FT-H (Jay, 28-10-2026). No c
 18. The bottom card does NOT float. It squeezes the chart height (a floating card would cover too much chart). Both sidebars end above it.
 19. Look of the floating sidebars: real frosted glass (strong background blur with saturation, so objects behind are blurred but visible), very prominent text (high contrast, semi-bold, soft text shadow), animated edge glow (moving gradient border that brightens on hover), hover effects (lift, glow, shine sweep), spring entry and exit. Reduced motion switches the motion off but keeps the glass look.
 20. Known risk: while open, the right sidebar covers the newest candles and the price axis. We judge this live in FT-U.3. A Settings switch "Panels: float / squeeze chart" may follow if Jay wants it.
+21. DECISION CHANGE (Jay, 29-10-2026): the RIGHT sidebar now PUSHES the chart, because floating covered the price axis. A short flash on open and close is accepted. The left sidebar still floats on the Trading Panel. Rules 17 and 20 apply to the left sidebar only.
+22. Header rows moved into the right sidebar tabs (Trade, Chart, POI, Setups, Alerts) and into a draggable mini bar (symbol and time frame, 4x4 dot grip) on the chart. Handles are round-corner glowing squares at the top of each sidebar, not draggable. A moving edge light around both sidebar cards replaces the centre hover glow.
 
 ## 4. Known defect to investigate (FT-U.2)
 Left sidebar collapsing is defective today. Read of sidebar.py: the line stage still keeps a 14px wide card with 0.75rem margin and a 280px tall box, so it eats space. Fixed by rule 9. Where cycle_sidebar_stage lives is still to be found (SEARCH).

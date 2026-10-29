@@ -43,7 +43,7 @@ def _sidebar_slot() -> rx.Component:
     return rx.box(
         qt19_sidebar(),
         display="flex",
-        align_items="stretch",
+        align_items="flex-start",
         flex_shrink="0",
         position=rx.cond(floating, "absolute", "relative"),
         top=rx.cond(floating, "0", "auto"),
@@ -61,10 +61,10 @@ def qt19_page_shell(content: rx.Component, show_nav: bool = True) -> rx.Componen
             rx.box(
                 content,
                 width="100%",
-                padding_top="1.5rem",
-                padding_right="1.5rem",
-                padding_bottom="1.5rem",
-                padding_left="0.75rem",
+                padding_top=rx.cond(AppState.active_tab == "Trading Panel", "0", "1.5rem"),
+                padding_right=rx.cond(AppState.active_tab == "Trading Panel", "0", "1.5rem"),
+                padding_bottom=rx.cond(AppState.active_tab == "Trading Panel", "0", "1.5rem"),
+                padding_left=rx.cond(AppState.active_tab == "Trading Panel", "0.75rem", rx.cond(AppState.sidebar_stage == "line", "4.65rem", "0.75rem")),
                 flex="1",
                 overflow_y="auto",
             ),

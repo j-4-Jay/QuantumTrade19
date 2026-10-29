@@ -47,6 +47,20 @@ GLASS_CARD_STYLE: dict = {
 
 
 GLASS_CARD_3XL_STYLE: dict = {**GLASS_CARD_STYLE, "border_radius": "1.75rem"}
+SQUARE_HANDLE_STYLE: dict = {
+    "border": "1px solid var(--qt19-accent)",
+    "border_radius": "0.8rem",
+    "color": "white",
+    "background": "rgba(255,255,255,0.06)",
+    "backdrop_filter": "blur(12px)",
+    "box_shadow": "0 0 14px 2px var(--qt19-accent-glow), inset 0 0 8px rgba(255,255,255,0.08)",
+    "cursor": "pointer",
+    "transition": "transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s ease",
+    "_hover": {
+        "transform": "scale(1.1)",
+        "box_shadow": "0 0 22px 5px var(--qt19-accent-glow), inset 0 0 10px rgba(255,255,255,0.14)",
+    },
+}
 
 
 SETTINGS_CARD_STYLE: dict = {**GLASS_CARD_3XL_STYLE, "padding": "1.5rem 1.5rem"}
