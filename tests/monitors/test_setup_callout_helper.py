@@ -1,0 +1,59 @@
+"""PATH: tests/monitors/test_setup_callout_helper.py  (NEW FILE)
+FT-H.4 Step 1 tests for engines/workers/setup/setup_callout_helper.py. Run with pytest."""
+from types import SimpleNamespace as NS
+
+from engines.workers.setup.setup_callout_helper import build_setup_callouts
+
+
+def candle(o, h, l, c, t=1_700_000_000):
+    return NS(open=o, high=h, low=l, close=c, open_time=t)
+
+
+def setup(direction, c1, c2, c3, eid="e1", tf="5m"):
+    return NS(event_id=eid, direction=direction, timeframe=tf, c1=c1, c2=c2, c3=c3)
+
+
+def bull():
+    return setup("SetupDirection.BULL", candle(100, 101, 99, 100.5), candle(100.5, 102, 98.5, 101), candle(101, 103, 100.5, 102.5))
+
+
+def bear():
+    return setup("Bear", candle(100, 101, 99, 99.5), candle(99.5, 101.5, 98, 99), candle(99, 99.5, 97, 97.5))
+
+
+def test_bull_values():
+    out = build_setup_callouts([bull()], 0.1, 7)[0]
+    assert out["name"] == "123Bull" and out["is_bull"] is True
+    assert out["entry"] == 102.5
+    assert out["sl"] == 97.8
+    assert out["risk_ticks"] == 47
+    assert out["anchor_price"] == 100.2
+    assert out["border_color"] == "#0E9464"
+
+
+def test_bear_values():
+    out = build_setup_callouts([bear()], 0.1, 7)[0]
+    assert out["name"] == "123Bear" and out["is_bull"] is False
+    assert out["sl"] == 102.2
+    assert out["anchor_price"] == 99.8
+    assert out["risk_ticks"] == 47
+    assert out["border_color"] == "#990000"
+
+
+def test_six_rows_and_placeholders():
+    rows = build_setup_callouts([bull()], 0.1, 7)[0]["rows"]
+    assert len(rows) == 6
+    assert rows[0] == "123Bull 5m"
+    assert rows[5] == "Confidence: File 05 pending"
+
+
+def test_bad_tick_or_missing_candle_gives_nothing():
+    assert build_setup_callouts([bull()], 0, 7) == []
+    broken = bull()
+    broken.c2 = None
+    assert build_setup_callouts([broken], 0.1, 7) == []
+
+
+def test_empty_input():
+    assert build_setup_callouts([], 0.1, 7) == []
+    assert build_setup_callouts(None, 0.1, 7) == []

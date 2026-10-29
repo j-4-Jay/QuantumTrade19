@@ -36,6 +36,8 @@ def trading_panel_chart() -> rx.Component:
             poi_overlays_version=AppState.chart_overlays_all_version,
             poi_dots=AppState.combined_chart_dots,
             poi_dots_version=AppState.combined_chart_dots_version,
+            setup_callouts=AppState.setup_callouts,
+            setup_callouts_version=AppState.setup_callouts_version,
             chart_id=TRADING_PANEL_CHART_ID,
             id=TRADING_PANEL_CHART_ID,
             on_context_menu=AppState.open_chart_menu,

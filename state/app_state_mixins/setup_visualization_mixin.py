@@ -49,6 +49,8 @@ from engines.workers.setup.setup_visualization_helper import (
     build_setup_stats_rows,
 )
 from engines.workers.setup.candle_reuse_settings import set_strict_candle_reuse_lock_enabled
+from engines.workers.setup.setup_callout_helper import build_setup_callouts
+from engines.workers.setup.setup_buffer_settings import SetupBufferSettings
 
 _DEFAULT_LOOKBACK_DAYS = "5"
 _MIN_LOOKBACK_DAYS = 1
@@ -68,6 +70,10 @@ class SetupVisualizationMixin(rx.State, mixin=True):
     setup_chart_overlays_version: int = 0
     setup_dots: list[dict] = []
     setup_dots_version: int = 0
+
+    # --- FT-H.4: callout data for each confirmed setup (drawn by kline_chart.py in a later step) ---
+    setup_callouts: list[dict] = []
+    setup_callouts_version: int = 0
 
     # --- Compact setup-stats panel: date-wise confirmed Bull/Bear/failed ---
     setup_stats_rows: list[dict] = []
@@ -199,6 +205,15 @@ class SetupVisualizationMixin(rx.State, mixin=True):
         self.setup_chart_overlays_version += 1
         self.setup_dots = dots
         self.setup_dots_version += 1
+        try:
+            tick = float(_engine.market_data.symbol_registry.get_tick_size(symbol))
+            buffer_ticks = SetupBufferSettings(_engine.security.persistence).get_buffer_ticks(symbol)
+            new_callouts = build_setup_callouts(confirmed, tick, buffer_ticks)
+        except Exception:
+            new_callouts = []
+        if new_callouts != self.setup_callouts:
+            self.setup_callouts = new_callouts
+            self.setup_callouts_version += 1
         self.setup_stats_rows = build_setup_stats_rows(confirmed)
 
     @rx.var

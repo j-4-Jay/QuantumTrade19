@@ -39,6 +39,8 @@ class KLineChart(rx.Component):
     poi_overlays_version: rx.Var[int] = 0
     poi_dots: rx.Var[list[dict]] = []
     poi_dots_version: rx.Var[int] = 0
+    setup_callouts: rx.Var[list[dict]] = []
+    setup_callouts_version: rx.Var[int] = 0
 
     def add_imports(self) -> dict[str, list[ImportVar]]:
         return {
@@ -233,7 +235,7 @@ function QT19KLineChart(props) {
   const {
     chartId, data, dataVersion, symbol, period, styles, zoomEnabled,
     scrollEnabled, onContextMenu, onIndPoiMoved, poiOverlays, poiOverlaysVersion,
-    poiDots, poiDotsVersion, ...rest
+    poiDots, poiDotsVersion, setupCallouts, setupCalloutsVersion, ...rest
   } = props;
   const chartRef = useRef(null);
   const indMovedRef = useRef(null);
@@ -247,6 +249,165 @@ function QT19KLineChart(props) {
   const dotElementsRef = useRef({});
   const dotsDataRef = useRef([]);
   const lastDotsVersionRef = useRef(null);
+
+
+  const calloutsContainerRef = useRef(null);
+  const calloutElementsRef = useRef({});
+  const calloutsDataRef = useRef([]);
+  const calloutsPropRef = useRef([]);
+  calloutsPropRef.current = setupCallouts || [];
+  const lastCalloutsVersionRef = useRef(null);
+
+
+  const QT19_CO_W = 250;
+  const QT19_CO_H = 132;
+  const QT19_CO_R = 12;
+  const QT19_CO_TAIL = 28;
+  const QT19_CO_TIPX = 40;
+  const QT19_CO_HALF = 10;
+
+
+  const qt19Svg = (tag, attrs) => {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    Object.keys(attrs || {}).forEach((k) => node.setAttribute(k, attrs[k]));
+    return node;
+  };
+
+
+  const qt19MixHex = (a, b, t) => {
+    const pa = parseInt(a.slice(1), 16);
+    const pb = parseInt(b.slice(1), 16);
+    const mix = (shift) => {
+      const ca = (pa >> shift) & 255;
+      const cb = (pb >> shift) & 255;
+      return Math.round(ca + (cb - ca) * t);
+    };
+    const toHex = (v) => v.toString(16).padStart(2, "0");
+    return "#" + toHex(mix(16)) + toHex(mix(8)) + toHex(mix(0));
+  };
+
+
+  const qt19CalloutPath = (isBull) => {
+    const W = QT19_CO_W, H = QT19_CO_H, R = QT19_CO_R, T = QT19_CO_TAIL;
+    const X = QT19_CO_TIPX, S = QT19_CO_HALF;
+    if (isBull) {
+      return "M " + R + " 0 L " + (X - S) + " 0 L " + X + " " + (-T) + " L " + (X + S) + " 0 L " + (W - R) + " 0 Q " + W + " 0 " + W + " " + R
+        + " L " + W + " " + (H - R) + " Q " + W + " " + H + " " + (W - R) + " " + H + " L " + R + " " + H + " Q 0 " + H + " 0 " + (H - R)
+        + " L 0 " + R + " Q 0 0 " + R + " 0 Z";
+    }
+    return "M " + R + " 0 L " + (W - R) + " 0 Q " + W + " 0 " + W + " " + R + " L " + W + " " + (H - R) + " Q " + W + " " + H + " " + (W - R) + " " + H
+      + " L " + (X + S) + " " + H + " L " + X + " " + (H + T) + " L " + (X - S) + " " + H + " L " + R + " " + H + " Q 0 " + H + " 0 " + (H - R)
+      + " L 0 " + R + " Q 0 0 " + R + " 0 Z";
+  };
+
+
+  const qt19BuildCalloutElement = (co) => {
+    const bull = !!co.is_bull;
+    const gradId = "qt19cg-" + String(co.uid).replace(/[^A-Za-z0-9_-]/g, "_");
+    const fade = Math.max(0, Math.min(1, Number(co.fade) || 0));
+    const wrap = document.createElement("div");
+    wrap.className = "qt19-callout";
+    wrap.title = String(co.uid);
+    wrap.style.cssText = "position:absolute;display:none;pointer-events:auto;cursor:pointer;width:" + QT19_CO_W + "px;height:" + QT19_CO_H + "px;";
+    const svg = qt19Svg("svg", { width: QT19_CO_W, height: QT19_CO_H, viewBox: "0 0 " + QT19_CO_W + " " + QT19_CO_H });
+    svg.style.overflow = "visible";
+    const defs = qt19Svg("defs");
+    const grad = qt19Svg("linearGradient", { id: gradId, x1: "0", y1: "0", x2: "0", y2: "1" });
+    grad.appendChild(qt19Svg("stop", { offset: "0%", "stop-color": co.fill_from }));
+    grad.appendChild(qt19Svg("stop", { offset: "100%", "stop-color": qt19MixHex(co.fill_from, co.fill_to, fade) }));
+    defs.appendChild(grad);
+    svg.appendChild(defs);
+    svg.appendChild(qt19Svg("path", {
+      d: qt19CalloutPath(bull),
+      fill: "url(#" + gradId + ")",
+      stroke: co.border_color,
+      "stroke-width": "3",
+      "stroke-linejoin": "round",
+    }));
+    (co.rows || []).forEach((line, i) => {
+      const text = qt19Svg("text", {
+        x: "14",
+        y: String(26 + i * 20),
+        fill: co.text_color,
+        "font-size": i === 0 ? "15" : "12",
+        "font-weight": i === 0 ? "800" : "600",
+        "font-family": "system-ui, sans-serif",
+        opacity: i >= 2 ? "0.8" : "1",
+      });
+      text.textContent = line;
+      svg.appendChild(text);
+    });
+    wrap.appendChild(svg);
+    wrap.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const detail = { uid: co.uid, name: co.name, timeframe: co.timeframe, chartId: chartId };
+      window.dispatchEvent(new CustomEvent("qt19-callout-click", { detail: detail }));
+      if (typeof window.QT19_onCalloutClick === "function") window.QT19_onCalloutClick(detail);
+    });
+    return wrap;
+  };
+
+
+  const repositionCallouts = () => {
+    const chart = chartRef.current;
+    const container = calloutsContainerRef.current;
+    if (!chart || !container || typeof chart.convertToPixel !== "function") return;
+    const width = container.clientWidth;
+    calloutsDataRef.current.forEach((co) => {
+      const el = calloutElementsRef.current[co.id];
+      if (!el) return;
+      try {
+        const index = findDataIndexForTimestamp(co.timestamp);
+        const pixel = index >= 0
+          ? chart.convertToPixel({ dataIndex: index, value: co.anchor_price }, { paneId: "candle_pane" })
+          : chart.convertToPixel({ timestamp: co.timestamp, value: co.anchor_price }, { paneId: "candle_pane" });
+        if (pixel && typeof pixel.x === "number" && typeof pixel.y === "number" && pixel.x > -QT19_CO_W && pixel.x < width + QT19_CO_W) {
+          el.style.left = (pixel.x - QT19_CO_TIPX) + "px";
+          el.style.top = (co.is_bull ? pixel.y + QT19_CO_TAIL : pixel.y - QT19_CO_TAIL - QT19_CO_H) + "px";
+          el.style.display = "block";
+        } else {
+          el.style.display = "none";
+        }
+      } catch (err) {
+        el.style.display = "none";
+      }
+    });
+  };
+
+
+  const rebuildSetupCallouts = () => {
+    const container = calloutsContainerRef.current;
+    if (!container) return;
+    Object.values(calloutElementsRef.current).forEach((el) => {
+      try { container.removeChild(el); } catch (err) { /* already gone */ }
+    });
+    calloutElementsRef.current = {};
+    const list = calloutsPropRef.current || [];
+    calloutsDataRef.current = list;
+    list.forEach((co) => {
+      try {
+        const el = qt19BuildCalloutElement(co);
+        container.appendChild(el);
+        calloutElementsRef.current[co.id] = el;
+      } catch (err) {
+        console.error("QT19KLineChart: failed to draw callout", co, err);
+      }
+    });
+    repositionCallouts();
+  };
+
+
+  useEffect(() => {
+    if (lastCalloutsVersionRef.current === null) {
+      lastCalloutsVersionRef.current = setupCalloutsVersion;
+      if (chartRef.current) rebuildSetupCallouts();
+      return;
+    }
+    if (setupCalloutsVersion !== lastCalloutsVersionRef.current) {
+      lastCalloutsVersionRef.current = setupCalloutsVersion;
+      rebuildSetupCallouts();
+    }
+  }, [setupCalloutsVersion]);
 
 
   useEffect(() => {
@@ -498,6 +659,9 @@ function QT19KLineChart(props) {
         chart.subscribeAction("onZoom", repositionDots);
         chart.subscribeAction("onScroll", repositionDots);
         chart.subscribeAction("onVisibleRangeChange", repositionDots);
+        chart.subscribeAction("onZoom", repositionCallouts);
+        chart.subscribeAction("onScroll", repositionCallouts);
+        chart.subscribeAction("onVisibleRangeChange", repositionCallouts);
       } catch (err) {
         console.error("QT19KLineChart: subscribeAction failed:", err);
       }
@@ -506,6 +670,7 @@ function QT19KLineChart(props) {
 
     rebuildPoiOverlays();
     rebuildPoiDots();
+    rebuildSetupCallouts();
   };
 
 
@@ -524,6 +689,9 @@ function QT19KLineChart(props) {
             chart.unsubscribeAction("onZoom", repositionDots);
             chart.unsubscribeAction("onScroll", repositionDots);
             chart.unsubscribeAction("onVisibleRangeChange", repositionDots);
+            chart.unsubscribeAction("onZoom", repositionCallouts);
+            chart.unsubscribeAction("onScroll", repositionCallouts);
+            chart.unsubscribeAction("onVisibleRangeChange", repositionCallouts);
           } catch (err) { /* chart already torn down */ }
         }
         if (window.QT19_CHARTS && window.QT19_CHARTS[chartId] === chartRef.current) {
@@ -552,6 +720,10 @@ function QT19KLineChart(props) {
       />
       <div
         ref={dotsContainerRef}
+        style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }}
+      />
+      <div
+        ref={calloutsContainerRef}
         style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }}
       />
     </div>
