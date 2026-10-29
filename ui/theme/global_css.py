@@ -227,6 +227,21 @@ input:-webkit-autofill { animation-name: qt19-autofill-detect; animation-duratio
 #qt19-mini-grip:active { cursor: grabbing !important; }
 .qt19-tab-dissolve { animation: qt19-anim-dissolve 0.3s ease; }
 .qt19-dragging .qt19-bottom-wrap { transition: none !important; }
+.qt19-nav-btn { position: relative; overflow: hidden; transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.3s ease, background 0.3s ease; }
+.qt19-nav-btn:hover { transform: translateY(-2px) scale(1.02); box-shadow: 0 8px 20px -6px var(--qt19-accent-glow); }
+.qt19-nav-btn::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -70%;
+  width: 40%;
+  height: 100%;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.38), transparent);
+  transform: skewX(-20deg);
+  transition: left 0.65s ease;
+  pointer-events: none;
+}
+.qt19-nav-btn:hover::after { left: 135%; }
 .qt19-reduce-motion *, .qt19-reduce-motion *::before, .qt19-reduce-motion *::after {
   animation: none !important;
   transition: none !important;

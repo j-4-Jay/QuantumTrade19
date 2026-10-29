@@ -65,7 +65,7 @@ def _tab_button(tab_name):
 
     full_content = rx.hstack(
         rx.box(icon_el, width=_ICON_COL_WIDTH, display="flex", align_items="center", justify_content="center", flex_shrink="0"),
-        rx.text(tab_name, font_size="0.85rem", font_weight="600", text_align="left"),
+        rx.text(tab_name, font_size="0.95rem", font_weight="700", text_align="left", style={"text_shadow": "0 1px 8px rgba(0,0,0,0.55)"}),
         spacing="2",
         align_items="center",
         width="100%",
@@ -76,13 +76,14 @@ def _tab_button(tab_name):
     return rx.button(
         rx.cond(AppState.sidebar_stage == "full", full_content, icons_content),
         on_click=AppState.set_active_tab(tab_name),
+        class_name="qt19-nav-btn",
         width="100%",
         height=_HANDLE_HEIGHT,
         padding=rx.cond(AppState.sidebar_stage == "full", "0 0.75rem", "0"),
         style=rx.cond(
             is_active,
             {"background": "var(--qt19-accent)", "color": "white", "box_shadow": "0 0 16px 2px var(--qt19-accent-glow)", "border_radius": "0.9rem"},
-            {"background": "rgba(255,255,255,0.03)", "color": "var(--qt19-text-muted)", "border_radius": "0.9rem"},
+            {"background": "rgba(255,255,255,0.05)", "color": "var(--qt19-text-primary)", "border_radius": "0.9rem"},
         ),
     )
 
@@ -179,6 +180,9 @@ def qt19_sidebar():
             **GLASS_CARD_STYLE,
             "width": width,
             "min_width": width,
+            "background": "color-mix(in srgb, var(--qt19-glass-bg) 55%, transparent)",
+            "backdrop_filter": "blur(26px) saturate(180%)",
+            "box_shadow": "0 12px 40px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.16)",
             "padding": "0",
         },
         margin="0.75rem",

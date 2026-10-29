@@ -32,6 +32,7 @@ def _tab(name: str) -> rx.Component:
     return rx.button(
         name,
         on_click=AppState.set_right_tab(name),
+        class_name="qt19-nav-btn",
         flex="1",
         min_width="0",
         height="2.3rem",
@@ -115,7 +116,9 @@ def _panel(contents: dict) -> rx.Component:
             "min_width": _WIDTH,
             "height": "100%",
             "padding": "0.75rem",
-            "backdrop_filter": "blur(22px) saturate(160%)",
+            "background": "color-mix(in srgb, var(--qt19-glass-bg) 55%, transparent)",
+            "backdrop_filter": "blur(26px) saturate(180%)",
+            "box_shadow": "0 12px 40px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.16)",
         },
         margin="0 0 0 0.75rem",
         edge=True,
