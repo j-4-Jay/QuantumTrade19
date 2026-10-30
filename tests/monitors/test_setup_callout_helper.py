@@ -40,11 +40,24 @@ def test_bear_values():
     assert out["border_color"] == "#990000"
 
 
-def test_six_rows_and_placeholders():
-    rows = build_setup_callouts([bull()], 0.1, 7)[0]["rows"]
-    assert len(rows) == 6
-    assert rows[0] == "123Bull 5m"
-    assert rows[5] == "Confidence: File 05 pending"
+def test_text_fields_and_placeholders():
+    out = build_setup_callouts([bull()], 0.1, 7)[0]
+    assert out["uid"] == "e1" and out["timeframe"] == "5m"
+    assert out["entry_text"] == "102.5"
+    assert out["sl_text"] == "97.8"
+    assert out["ticks_text"] == "47"
+    for key in ("qty_text", "risk_text", "live_text", "peak_text"):
+        assert out[key] == "\u2014"
+    assert out["confidence_text"] == "Confidence: File 05 pending"
+
+
+def test_colours():
+    bull_out = build_setup_callouts([bull()], 0.1, 7)[0]
+    bear_out = build_setup_callouts([bear()], 0.1, 7)[0]
+    assert bull_out["fill_from"] == bear_out["fill_from"] == "#4188FF"
+    assert bull_out["fill_win"] == "#9FE2BF" and bull_out["fill_to"] == "#36404A"
+    assert bull_out["text_color"] == "#FFFFFF"
+    assert bull_out["glow_color"] == "#1FE0A0" and bear_out["glow_color"] == "#FF3B3B"
 
 
 def test_bad_tick_or_missing_candle_gives_nothing():

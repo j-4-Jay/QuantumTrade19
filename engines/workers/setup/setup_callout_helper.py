@@ -13,6 +13,10 @@ BULL_BORDER = "#0E9464"
 BEAR_BORDER = "#990000"
 FILL_PROFIT = "#9FE2BF"
 FILL_SL_HIT = "#36404A"
+FILL_RUNNING = "#4188FF"
+GLOW_BULL = "#1FE0A0"
+GLOW_BEAR = "#FF3B3B"
+TEXT_LIGHT = "#FFFFFF"
 INK_DARK = "#06231A"
 TAIL_GAP_TICKS = 3
 DASH = "\u2014"
@@ -73,17 +77,19 @@ def build_setup_callouts(confirmed_setups: List[Any], tick_size: float, buffer_t
             "sl": round(stop, places),
             "risk_ticks": risk_ticks,
             "border_color": BULL_BORDER if is_bull else BEAR_BORDER,
-            "fill_from": FILL_PROFIT,
+            "glow_color": GLOW_BULL if is_bull else GLOW_BEAR,
+            "fill_from": FILL_RUNNING,
+            "fill_win": FILL_PROFIT,
             "fill_to": FILL_SL_HIT,
             "fade": 0.0,
-            "text_color": INK_DARK,
-            "rows": [
-                f"{name} {timeframe}".strip(),
-                f"Entry {entry:.{places}f}  SL {stop:.{places}f}  ({risk_ticks} ticks)",
-                f"Qty {DASH}  Risk {DASH}",
-                f"Live RRR {DASH}",
-                f"Peak RRR {DASH}",
-                "Confidence: File 05 pending",
-            ],
+            "text_color": TEXT_LIGHT,
+            "entry_text": f"{entry:.{places}f}",
+            "sl_text": f"{stop:.{places}f}",
+            "ticks_text": str(risk_ticks),
+            "qty_text": DASH,
+            "risk_text": DASH,
+            "live_text": DASH,
+            "peak_text": DASH,
+            "confidence_text": "Confidence: File 05 pending",
         })
     return callouts

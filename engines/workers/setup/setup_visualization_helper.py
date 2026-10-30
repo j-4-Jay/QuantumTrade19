@@ -107,7 +107,7 @@ def build_setup_overlays_and_dots(
             "end_time": end_ms,
             "color": f"rgba({r},{g},{b},{_CONFIRMED_ZONE_OPACITY})",
             "dashed": False,
-            "label": f"{direction_label} \u2713",
+            "label": "",
             "opacity": _CONFIRMED_ZONE_OPACITY,
         })
         dots.append({
