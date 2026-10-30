@@ -35,12 +35,12 @@
   },
   "trading_panel_chart_tf": "1m",
   "chart_coverage_cache_B-BTC_USDT_1m": {
-    "date": "2026-10-29",
+    "date": "2026-10-30",
     "local_days": 0,
     "broker_days": "Not checked yet"
   },
   "sidebar_stage": "line",
-  "trading_panel_symbol": "B-XAU_USDT",
+  "trading_panel_symbol": "B-BTC_USDT",
   "chart_coverage_cache_B-XAU_USDT_1m": {
     "date": "2026-10-30",
     "local_days": 0,
@@ -49,7 +49,7 @@
   "poi_hidden_by_extras": {},
   "trading_panel_follow_live": true,
   "chart_coverage_cache_B-XAU_USDT_15m": {
-    "date": "2026-10-29",
+    "date": "2026-10-30",
     "local_days": 0,
     "broker_days": "Not checked yet"
   },
