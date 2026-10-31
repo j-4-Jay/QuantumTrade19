@@ -7,7 +7,7 @@ Rows 3 to 5 show a dash until FT-H.7 and FT-H.8; row 6 is the Confidence placeho
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 BULL_BORDER = "#0E9464"
 BEAR_BORDER = "#990000"
@@ -41,7 +41,39 @@ def _prices(candle: Any) -> List[float]:
     return [float(v) for v in values if v is not None]
 
 
-def build_setup_callouts(confirmed_setups: List[Any], tick_size: float, buffer_ticks: int) -> List[Dict[str, Any]]:
+_ZONE_SHORT = {
+    "RESISTANCE_FLIP": "R-Flip",
+    "SUPPORT_FLIP": "S-Flip",
+    "FVG": "FVG",
+    "INVERSE_FVG": "iFVG",
+    "ORDER_BLOCK": "OB",
+}
+_TF_PREFIX = {"1M": "1Mo"}
+
+
+def poi_short_names(pois: Optional[List[Any]]) -> Dict[str, str]:
+    """Short POI name for each poi_id, as shown on a callout.
+    Lines use the chart label already in the software (PDH, P4H H ...).
+    Zones carry the source timeframe in front (4H FVG, 1Mo OB; month is 1Mo, minute is 1m)."""
+    names: Dict[str, str] = {}
+    for poi in pois or []:
+        poi_id = str(getattr(poi, "poi_id", "") or "")
+        if not poi_id:
+            continue
+        raw = getattr(poi, "poi_type", "")
+        kind = str(getattr(raw, "value", raw) or "")
+        if kind in _ZONE_SHORT:
+            tf = str(getattr(poi, "source_tf", "") or "")
+            tf = _TF_PREFIX.get(tf, tf)
+            names[poi_id] = (tf + " " if tf else "") + _ZONE_SHORT[kind]
+        elif kind.upper().startswith(("IND", "CUSTOM")):
+            names[poi_id] = "IND"
+        else:
+            names[poi_id] = str(getattr(poi, "chart_label", "") or kind)
+    return names
+
+
+def build_setup_callouts(confirmed_setups: List[Any], tick_size: float, buffer_ticks: int, poi_names: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
     tick = float(tick_size or 0)
     if tick <= 0:
         return []
@@ -83,12 +115,14 @@ def build_setup_callouts(confirmed_setups: List[Any], tick_size: float, buffer_t
             "fill_to": FILL_SL_HIT,
             "fade": 0.0,
             "state": "running",
+            "poi_short": (poi_names or {}).get(str(getattr(setup, "poi_id", "") or ""), ""),
             "text_color": TEXT_LIGHT,
             "entry_text": f"{entry:.{places}f}",
             "sl_text": f"{stop:.{places}f}",
             "ticks_text": str(risk_ticks),
             "qty_text": DASH,
             "risk_text": DASH,
+            "profit_text": DASH,
             "live_text": DASH,
             "peak_text": DASH,
             "confidence_text": "Confidence: File 05 pending",

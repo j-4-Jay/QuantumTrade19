@@ -2,7 +2,7 @@
 FT-H.4 Step 1 tests for engines/workers/setup/setup_callout_helper.py. Run with pytest."""
 from types import SimpleNamespace as NS
 
-from engines.workers.setup.setup_callout_helper import build_setup_callouts
+from engines.workers.setup.setup_callout_helper import build_setup_callouts, poi_short_names
 
 
 def candle(o, h, l, c, t=1_700_000_000):
@@ -71,3 +71,46 @@ def test_bad_tick_or_missing_candle_gives_nothing():
 def test_empty_input():
     assert build_setup_callouts([], 0.1, 7) == []
     assert build_setup_callouts(None, 0.1, 7) == []
+
+
+def poi(poi_id, poi_type, source_tf="1m", chart_label="X"):
+    return NS(poi_id=poi_id, poi_type=poi_type, source_tf=source_tf, chart_label=chart_label)
+
+
+def test_poi_short_names_lines_zones_and_prefix():
+    names = poi_short_names([
+        poi("a", "PDH", "1D", "PDH"),
+        poi("b", "FVG", "4H", "FVG"),
+        poi("c", "ORDER_BLOCK", "1M", "OB"),
+        poi("d", "INVERSE_FVG", "1m", "iFVG"),
+        poi("e", "RESISTANCE_FLIP", "15m", "Resistance Flip"),
+        poi("f", "4H_HIGH", "4H", "P4H H"),
+    ])
+    assert names["a"] == "PDH"
+    assert names["b"] == "4H FVG"
+    assert names["c"] == "1Mo OB"
+    assert names["d"] == "1m iFVG"
+    assert names["e"] == "15m R-Flip"
+    assert names["f"] == "P4H H"
+
+
+def test_poi_short_names_enum_independent_and_empty():
+    from enum import Enum
+
+    class Kind(str, Enum):
+        FVG = "FVG"
+
+    assert poi_short_names([poi("x", Kind.FVG, "1H")])["x"] == "1H FVG"
+    assert poi_short_names([poi("i", "INDEPENDENT", "", "Custom")])["i"] == "IND"
+    assert poi_short_names(None) == {}
+    assert poi_short_names([poi("", "FVG")]) == {}
+
+
+def test_callout_gets_poi_name_and_profit_dash():
+    out = build_setup_callouts([bull()], 0.1, 7, {"p1": "4H FVG"})[0]
+    assert out["poi_short"] == ""
+    item = bull()
+    item.poi_id = "p1"
+    out = build_setup_callouts([item], 0.1, 7, {"p1": "4H FVG"})[0]
+    assert out["poi_short"] == "4H FVG"
+    assert out["profit_text"] == "\u2014"

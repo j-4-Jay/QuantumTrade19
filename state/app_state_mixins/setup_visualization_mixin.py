@@ -49,7 +49,7 @@ from engines.workers.setup.setup_visualization_helper import (
     build_setup_stats_rows,
 )
 from engines.workers.setup.candle_reuse_settings import set_strict_candle_reuse_lock_enabled
-from engines.workers.setup.setup_callout_helper import build_setup_callouts
+from engines.workers.setup.setup_callout_helper import build_setup_callouts, poi_short_names
 from engines.workers.setup.setup_buffer_settings import SetupBufferSettings
 
 _DEFAULT_LOOKBACK_DAYS = "5"
@@ -208,7 +208,8 @@ class SetupVisualizationMixin(rx.State, mixin=True):
         try:
             tick = float(_engine.market_data.symbol_registry.get_tick_size(symbol))
             buffer_ticks = SetupBufferSettings(_engine.security.persistence).get_buffer_ticks(symbol)
-            new_callouts = build_setup_callouts(confirmed, tick, buffer_ticks)
+            poi_names = poi_short_names(list(_engine.get_active_pois(symbol) or []))
+            new_callouts = build_setup_callouts(confirmed, tick, buffer_ticks, poi_names)
         except Exception:
             new_callouts = []
         if new_callouts != self.setup_callouts:
