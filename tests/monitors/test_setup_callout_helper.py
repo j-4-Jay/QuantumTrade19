@@ -55,7 +55,8 @@ def test_colours():
     bull_out = build_setup_callouts([bull()], 0.1, 7)[0]
     bear_out = build_setup_callouts([bear()], 0.1, 7)[0]
     assert bull_out["fill_from"] == bear_out["fill_from"] == "#4188FF"
-    assert bull_out["fill_win"] == "#9FE2BF" and bull_out["fill_to"] == "#36404A"
+    assert bull_out["fill_win"] == "#9FE2BF" and bull_out["fill_to"] == "#FF6200"
+    assert bull_out["state"] == "running"
     assert bull_out["text_color"] == "#FFFFFF"
     assert bull_out["glow_color"] == "#1FE0A0" and bear_out["glow_color"] == "#FF3B3B"
 

@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 BULL_BORDER = "#0E9464"
 BEAR_BORDER = "#990000"
 FILL_PROFIT = "#9FE2BF"
-FILL_SL_HIT = "#36404A"
+FILL_SL_HIT = "#FF6200"
 FILL_RUNNING = "#4188FF"
 GLOW_BULL = "#1FE0A0"
 GLOW_BEAR = "#FF3B3B"
@@ -82,6 +82,7 @@ def build_setup_callouts(confirmed_setups: List[Any], tick_size: float, buffer_t
             "fill_win": FILL_PROFIT,
             "fill_to": FILL_SL_HIT,
             "fade": 0.0,
+            "state": "running",
             "text_color": TEXT_LIGHT,
             "entry_text": f"{entry:.{places}f}",
             "sl_text": f"{stop:.{places}f}",
