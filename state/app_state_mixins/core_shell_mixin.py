@@ -50,6 +50,7 @@ class CoreShellMixin(rx.State, mixin=True):
         saved_stage = settings.get("sidebar_stage", "full")
         self.sidebar_stage = saved_stage if saved_stage in _SIDEBAR_STAGE_ORDER else "full"
         self.sidebar_collapsed = self.sidebar_stage != "full"
+        self._restore_panel_memory(settings)
 
         self.trading_panel_crosshair_enabled = bool(settings.get("trading_panel_crosshair_enabled", True))
         self.trading_panel_crosshair_color = settings.get("trading_panel_crosshair_color", self.trading_panel_crosshair_color)
