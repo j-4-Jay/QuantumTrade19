@@ -17,6 +17,7 @@ from __future__ import annotations
 import reflex as rx
 from state.app_state import AppState
 from ui.components.branding import qt19_brand
+from ui.components.ny_clock import qt19_ny_clock
 from config.settings import LIVE_GLOW_COLOR, LIVE_GLOW_SHADOW
 
 
@@ -95,6 +96,7 @@ def _ws_status_pill():
 def qt19_topbar():
     return rx.hstack(
         qt19_brand("sm"), rx.spacer(),
+        qt19_ny_clock(),
         _ws_status_pill(),
         _paper_live_button(), _theme_menu(), _sound_button(),
         rx.tooltip(rx.icon_button(rx.icon("lock"), on_click=AppState.lock_app, variant="ghost", border_radius="9999px"), content="Lock QuantumTrade19"),

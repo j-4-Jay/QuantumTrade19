@@ -35,6 +35,7 @@ from state.app_state import AppState
 from ui.theme.global_css import qt19_global_css
 from ui.components.keyboard_shortcuts import qt19_keyboard_shortcuts
 from ui.components.autofill_sync import qt19_autofill_sync
+from ui.components.ny_clock import qt19_ny_clock_script
 from ui.components.trading_panel_context_menu import trading_panel_context_menu
 from ui.pages.splash import splash_screen
 from ui.pages.register import register_screen
@@ -129,6 +130,7 @@ def index() -> rx.Component:
         qt19_global_css(),
         qt19_keyboard_shortcuts(),
         qt19_autofill_sync(),
+        qt19_ny_clock_script(),
         rx.box(
             _current_screen(),
             class_name="qt19-transition-" + AppState.transition_active_effect,
