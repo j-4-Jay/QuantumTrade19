@@ -83,6 +83,10 @@ class MasterAppEngine:
             self.market_data.add_candle_close_subscriber(
                 self.setup_detection_monitor.on_candle_closed
             )
+            from engines.workers.setup.setup_outcome_worker import SetupOutcomeWorker
+            self.setup_outcome_worker = SetupOutcomeWorker()
+            self.setup_detection_monitor.subscribe(self._track_confirmed_setup)
+            self.market_data.add_candle_close_subscriber(self.setup_outcome_worker.on_candle_closed)
             self._setup_detection_monitor_started = True
 
     def get_confirmed_setups(self, symbol: str, tf: str):
@@ -92,6 +96,24 @@ class MasterAppEngine:
     def get_pending_setups(self, symbol: str, tf: str):
         self.ensure_setup_detection_monitor_started()
         return self.setup_detection_monitor.get_pending_setups(symbol, tf)
+
+    def _track_confirmed_setup(self, confirmed) -> None:
+        """FT-H.7: every confirmed setup starts an outcome record (state, RRR, peak)."""
+        try:
+            from engines.workers.setup.setup_buffer_settings import SetupBufferSettings
+            tick = float(self.market_data.symbol_registry.get_tick_size(confirmed.symbol))
+            buffer_ticks = SetupBufferSettings(self.security.persistence).get_buffer_ticks(confirmed.symbol)
+            self.setup_outcome_worker.track(confirmed, tick, buffer_ticks)
+        except Exception:
+            __import__("logging").getLogger("setup.outcome").exception(
+                "setup_outcome_track_failed event_id=%s", getattr(confirmed, "event_id", "?")
+            )
+
+    def get_setup_outcomes(self, symbol: str, tf: str) -> dict:
+        worker = getattr(self, "setup_outcome_worker", None)
+        if worker is None:
+            return {}
+        return {o.event_id: o for o in worker.all_outcomes(symbol, tf)}
         
     
     
