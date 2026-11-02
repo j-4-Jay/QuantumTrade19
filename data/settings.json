@@ -33,7 +33,7 @@
     "local_days": 0,
     "broker_days": "Not checked yet"
   },
-  "trading_panel_chart_tf": "15m",
+  "trading_panel_chart_tf": "1m",
   "chart_coverage_cache_B-BTC_USDT_1m": {
     "date": "2026-11-02",
     "local_days": 0,
@@ -231,6 +231,6 @@
   "setup_sl_buffer_default_ticks": 10,
   "motion_reduced": false,
   "bottom_panel_open": false,
-  "right_panel_tab": "POI",
+  "right_panel_tab": "Trade",
   "right_panel_open": false
 }
