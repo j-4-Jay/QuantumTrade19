@@ -51,6 +51,7 @@ class CoreShellMixin(rx.State, mixin=True):
         self.sidebar_stage = saved_stage if saved_stage in _SIDEBAR_STAGE_ORDER else "full"
         self.sidebar_collapsed = self.sidebar_stage != "full"
         self._restore_panel_memory(settings)
+        self._restore_login_session()
 
         self.trading_panel_crosshair_enabled = bool(settings.get("trading_panel_crosshair_enabled", True))
         self.trading_panel_crosshair_color = settings.get("trading_panel_crosshair_color", self.trading_panel_crosshair_color)
@@ -74,7 +75,8 @@ class CoreShellMixin(rx.State, mixin=True):
 
         market_data_ok = True
         try:
-            _engine.ensure_market_data_started()
+            if getattr(_engine, "_market_data_started", False):
+                _engine.ensure_market_data_started()
         except Exception as exc:
             market_data_ok = False
             import logging
@@ -85,7 +87,10 @@ class CoreShellMixin(rx.State, mixin=True):
 
         if not market_data_ok:
             return []
-        background_tasks = [type(self).start_poi_monitor_background, type(self).poll_deep_history_cards]
+        if getattr(_engine, "_market_data_started", False):
+            background_tasks = [type(self).start_poi_monitor_background, type(self).poll_deep_history_cards]
+        else:
+            background_tasks = [type(self).start_market_data_background, type(self).poll_deep_history_cards]
         if self.active_tab == "Trading Panel":
             self.refresh_trading_panel_chart()
             self.refresh_poi_chart_overlays()
@@ -139,13 +144,50 @@ class CoreShellMixin(rx.State, mixin=True):
                 }})();
                 """
             )
-            await asyncio.sleep(SPLASH_DURATION_SECONDS)
-            await asyncio.sleep(SPLASH_HOLD_SECONDS)
-            self.totp_required = _engine.security.is_totp_enabled() and not _engine.security.is_device_trusted()
-            self.transition_active_effect = "dissolve"
-            self.screen = _engine.finish_splash().value
+            yield type(self).finish_splash_background
         finally:
             self._splash_task_running = False
+
+    @rx.event(background=True)
+    async def finish_splash_background(self):
+        """Waits out the splash WITHOUT holding the session lock, so typing and clicks stay instant."""
+        import time as _qt_clock
+        await asyncio.sleep(SPLASH_DURATION_SECONDS + SPLASH_HOLD_SECONDS)
+        _t0 = _qt_clock.perf_counter()
+        async with self:
+            _t1 = _qt_clock.perf_counter()
+            if self.screen != "splash":
+                self._qt_trace(f"splash_guard_stopped screen_now={self.screen}")
+                return
+            self.totp_required = _engine.security.is_totp_enabled() and not _engine.security.is_device_trusted()
+            _t2 = _qt_clock.perf_counter()
+            self.transition_active_effect = "dissolve"
+            self.screen = _engine.finish_splash().value
+            self._qt_trace(f"splash_done lock_wait_ms={(_t1 - _t0) * 1000:.0f} security_ms={(_t2 - _t1) * 1000:.0f} total_ms={(_qt_clock.perf_counter() - _t0) * 1000:.0f}")
+
+    @rx.event(background=True)
+    async def start_market_data_background(self):
+        """First start after the server began: market data loads history over the network (about 30 s).
+        It runs in a thread WITHOUT holding the session lock, so the login screen stays responsive."""
+        import logging
+        if getattr(_engine, "_qt19_md_starting", False):
+            return
+        _engine._qt19_md_starting = True
+        try:
+            await asyncio.to_thread(_engine.ensure_market_data_started)
+            await asyncio.to_thread(_engine.ensure_poi_monitor_started)
+        except Exception as exc:
+            logging.getLogger("qt19.on_load").warning("Market data start-up failed (refresh the page to try again): %s", exc)
+            return
+        finally:
+            _engine._qt19_md_starting = False
+        async with self:
+            self.load_poi_settings()
+            self.load_setup_detect_lookback()
+            self.refresh_symbol_rows()
+            if self.active_tab == "Trading Panel":
+                self.refresh_trading_panel_chart()
+                self.refresh_poi_chart_overlays()
 
     def _pick_transition_effect(self) -> None:
         effect, next_index = _engine.ui.transitions.pick(

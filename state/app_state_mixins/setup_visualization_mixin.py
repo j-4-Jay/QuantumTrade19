@@ -177,6 +177,8 @@ class SetupVisualizationMixin(rx.State, mixin=True):
         symbol = self.trading_panel_symbol
         tf = self.trading_panel_chart_tf
         try:
+            if not getattr(_engine, "_poi_monitor_started", False):
+                return
             confirmed = list(_engine.get_confirmed_setups(symbol, tf) or [])
         except Exception:
             confirmed = []
@@ -210,6 +212,7 @@ class SetupVisualizationMixin(rx.State, mixin=True):
             buffer_ticks = SetupBufferSettings(_engine.security.persistence).get_buffer_ticks(symbol)
             new_callouts = build_setup_callouts(confirmed, tick, buffer_ticks)
         except Exception:
+            __import__("logging").getLogger("setup.callouts").exception("setup_callouts_build_failed symbol=%s tf=%s", symbol, tf)
             new_callouts = []
         if new_callouts != self.setup_callouts:
             self.setup_callouts = new_callouts

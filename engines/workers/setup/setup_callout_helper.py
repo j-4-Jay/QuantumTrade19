@@ -8,6 +8,9 @@ Rows 3 to 5 show a dash until FT-H.7 and FT-H.8; row 6 is the Confidence placeho
 from __future__ import annotations
 
 from typing import Any, Dict, List
+import logging
+
+logger = logging.getLogger("setup.callout_helper")
 
 BULL_BORDER = "#0E9464"
 BEAR_BORDER = "#990000"
@@ -51,6 +54,7 @@ def build_setup_callouts(confirmed_setups: List[Any], tick_size: float, buffer_t
     for setup in confirmed_setups or []:
         candles = [getattr(setup, "c1", None), getattr(setup, "c2", None), getattr(setup, "c3", None)]
         if any(c is None for c in candles):
+            logger.warning("callout_skipped_missing_candle event_id=%s", getattr(setup, "event_id", "?"))
             continue
         is_bull = _direction_is_bull(getattr(setup, "direction", ""))
         c3 = candles[2]

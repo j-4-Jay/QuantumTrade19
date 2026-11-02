@@ -91,11 +91,43 @@ class AuthSecurityMixin(rx.State, mixin=True):
 
     def set_login_username(self, value: str) -> None:
         self.login_username = value
-        self.login_credentials_match = _engine.security.auth.verify(self.login_username, self.login_password)
+        self.login_credentials_match = False
+        return type(self).verify_login_later(self._login_seq(True))
 
     def set_login_password(self, value: str) -> None:
         self.login_password = value
-        self.login_credentials_match = _engine.security.auth.verify(self.login_username, self.login_password)
+        self.login_credentials_match = False
+        return type(self).verify_login_later(self._login_seq(True))
+
+    def _login_seq(self, bump: bool = False) -> int:
+        book = getattr(_engine, "_qt19_login_seq", None)
+        if book is None:
+            book = {}
+            setattr(_engine, "_qt19_login_seq", book)
+        key = self.router.session.client_token
+        if bump:
+            book[key] = book.get(key, 0) + 1
+        return book.get(key, 0)
+
+    @rx.event(background=True)
+    async def verify_login_later(self, seq: int):
+        """Checks the password ONCE, 0.15 s after the last key, off the main thread.
+        The slow Argon2 check no longer runs for every typed letter."""
+        import asyncio
+        import time as _qt_time
+        await asyncio.sleep(0.15)
+        async with self:
+            if self._login_seq() != seq:
+                return
+            user = self.login_username
+            pw = self.login_password
+        t0 = _qt_time.perf_counter()
+        ok = await asyncio.to_thread(_engine.security.auth.verify, user, pw)
+        ms = (_qt_time.perf_counter() - t0) * 1000.0
+        async with self:
+            if self._login_seq() == seq:
+                self.login_credentials_match = bool(ok)
+            self._qt_trace(f"login_verify ms={ms:.0f} password_length={len(pw)} match={bool(ok)}")
 
     def set_login_totp(self, value: str) -> None:
         self.login_totp = value
@@ -123,6 +155,7 @@ class AuthSecurityMixin(rx.State, mixin=True):
             self.login_credentials_match = False
             self._pick_transition_effect()
             self.screen = _engine.screen.value
+            self._remember_session_screen()
         else:
             self.login_error = "Invalid credentials or authenticator code."
             self.login_error_seq += 1
@@ -133,6 +166,53 @@ class AuthSecurityMixin(rx.State, mixin=True):
         self._pick_transition_effect()
         self.screen = _engine.screen.value
         self.is_locked = True
+        self._remember_session_screen()
+
+    def _session_book(self) -> dict:
+        book = getattr(_engine, "_qt19_session_screens", None)
+        if book is None:
+            book = {}
+            setattr(_engine, "_qt19_session_screens", book)
+        return book
+
+    def _remember_session_screen(self) -> None:
+        try:
+            self._session_book()[self.router.session.client_token] = {"screen": self.screen, "locked": bool(self.is_locked)}
+            self._qt_trace(f"session_remember token={str(self.router.session.client_token)[:8]} screen={self.screen} locked={bool(self.is_locked)}")
+        except Exception:
+            __import__("logging").getLogger("auth").exception("session_remember_failed")
+
+    def _forget_session_screen(self) -> None:
+        try:
+            self._session_book().pop(self.router.session.client_token, None)
+        except Exception:
+            __import__("logging").getLogger("auth").exception("session_forget_failed")
+
+    def _restore_login_session(self) -> None:
+        try:
+            token = self.router.session.client_token
+            saved = self._session_book().get(token)
+            self._qt_trace(f"session_restore token={str(token)[:8]} found={bool(saved)} screen_now={self.screen} book_size={len(self._session_book())}")
+            if not saved:
+                return
+            self.screen = saved["screen"]
+            self.is_locked = bool(saved["locked"])
+            _engine.screen = type(_engine.screen)(saved["screen"])
+        except Exception:
+            self._qt_trace("session_restore_failed " + repr(__import__("sys").exc_info()[1]))
+            __import__("logging").getLogger("auth").exception("session_restore_failed")
+
+    def _qt_trace(self, text: str) -> None:
+        try:
+            import os
+            import time
+            from pathlib import Path
+            folder = Path(__file__).resolve().parents[2] / "Debug"
+            folder.mkdir(exist_ok=True)
+            with open(folder / "session_trace.log", "a", encoding="utf-8") as handle:
+                handle.write(time.strftime("%H:%M:%S ") + text + "\n")
+        except Exception:
+            pass
 
     def unlock_app(self) -> None:
         if len(self.login_password) < 4:
@@ -146,6 +226,7 @@ class AuthSecurityMixin(rx.State, mixin=True):
             self._pick_transition_effect()
             self.screen = _engine.screen.value
             self.is_locked = False
+            self._remember_session_screen()
         else:
             self.login_error = "Invalid credentials or authenticator code."
 
@@ -339,6 +420,7 @@ class AuthSecurityMixin(rx.State, mixin=True):
     def _do_logout(self, close_trades: bool | None) -> None:
         self._pick_transition_effect()
         self.screen = _engine.logout(close_trades).value
+        self._forget_session_screen()
         self.show_logout_dialog = False
         self.login_username = ""
         self.login_password = ""

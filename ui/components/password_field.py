@@ -20,5 +20,6 @@ def qt19_password_field(placeholder, value, on_change, show_value, on_toggle_sho
             side="right",
         ),
         placeholder=placeholder, type=rx.cond(show_value, "text", "password"), value=value, on_change=on_change,
-        border_radius="1rem", width="100%",
+        size="3", border_radius="9999px", width="100%",
+        style={"& input": {"border_radius": "9999px", "padding_left": "1.1rem"}},
     )

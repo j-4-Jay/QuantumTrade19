@@ -54,6 +54,7 @@ class CandleBuilderWorker:
         self._current: Dict[Tuple[str, str], Candle] = {}
         self._closed_history: Dict[Tuple[str, str], List[Candle]] = {}
         self._last_closed_time: Dict[Tuple[str, str], int] = {}
+        self._vol_locked: Dict[Tuple[str, str], int] = {}
         self._on_candle_closed = on_candle_closed
 
     def seed_historical(self, symbol: str, timeframe: str, candles: List[Candle]) -> None:
@@ -107,7 +108,8 @@ class CandleBuilderWorker:
                     current.high = max(current.high, tick.price)
                     current.low = min(current.low, tick.price)
                     current.close = tick.price
-                    current.volume += tick.volume
+                    if self._vol_locked.get(key) != current.open_time:
+                        current.volume += tick.volume
                 elif bucket_open > current.open_time:
                     # current bucket is finished — close it, then open the new one
                     current.is_closed = True
@@ -158,3 +160,80 @@ class CandleBuilderWorker:
                     gaps.append((history[i - 1].open_time, history[i].open_time))
             return {"symbol": symbol, "timeframe": timeframe, "candle_count": len(history),
                     "gaps": gaps, "duplicates": dupes, "clean": not gaps and not dupes}
+
+    @staticmethod
+    def _copy_values(dst: "Candle", src: "Candle") -> None:
+        dst.open, dst.high, dst.low = src.open, src.high, src.low
+        dst.close, dst.volume = src.close, src.volume
+
+    @staticmethod
+    def _differs(a: "Candle", b: "Candle") -> bool:
+        return (a.open, a.high, a.low, a.close, a.volume) != (b.open, b.high, b.low, b.close, b.volume)
+
+    def apply_exchange_candles(self, symbol: str, timeframe: str, candles: List[Candle], now_ms: int) -> List[Candle]:
+        """Candle truth (thread 007): make our candles equal the exchange candles.
+        - forming candle: replaced by exchange open/high/low/close/volume, and tick volume
+          is no longer added to it
+        - closed candle that differs: corrected in place (subscribers are NOT called again)
+        - missing closed candle (gap): filled (subscribers are NOT called)
+        - local missed a rollover: the old candle is closed ONCE with exchange values and
+          the normal on_candle_closed callback runs once
+        Returns every closed candle that was corrected, filled or closed, so the caller can save it."""
+        key = (symbol, timeframe)
+        step = _TF_MS[timeframe]
+        corrected: List[Candle] = []
+        to_publish: List[Candle] = []
+        with self._lock:
+            hist = self._closed_history.setdefault(key, [])
+            by_time = {c.open_time: c for c in hist}
+            for ex in sorted(candles, key=lambda c: c.open_time):
+                t = ex.open_time
+                current = self._current.get(key)
+                if t + step > now_ms:
+                    if current is not None and current.open_time == t:
+                        self._copy_values(current, ex)
+                    elif current is None or current.open_time < t:
+                        self._current[key] = Candle(
+                            symbol=symbol, timeframe=timeframe, open_time=t,
+                            close_time=t + step - 1, open=ex.open, high=ex.high,
+                            low=ex.low, close=ex.close, volume=ex.volume, is_closed=False,
+                        )
+                    else:
+                        continue
+                    self._vol_locked[key] = t
+                    continue
+                known = by_time.get(t)
+                if known is not None:
+                    if self._differs(known, ex):
+                        self._copy_values(known, ex)
+                        corrected.append(known)
+                    continue
+                if current is not None and current.open_time == t:
+                    self._copy_values(current, ex)
+                    current.is_closed = True
+                    hist.append(current)
+                    by_time[t] = current
+                    self._current.pop(key, None)
+                    to_publish.append(current)
+                    corrected.append(current)
+                    continue
+                if hist and t < hist[0].open_time:
+                    continue
+                filled = Candle(
+                    symbol=symbol, timeframe=timeframe, open_time=t,
+                    close_time=t + step - 1, open=ex.open, high=ex.high,
+                    low=ex.low, close=ex.close, volume=ex.volume, is_closed=True,
+                )
+                hist.append(filled)
+                by_time[t] = filled
+                corrected.append(filled)
+            hist.sort(key=lambda c: c.open_time)
+            if hist:
+                self._last_closed_time[key] = hist[-1].open_time
+        for candle in to_publish:
+            if self._on_candle_closed:
+                try:
+                    self._on_candle_closed(candle)
+                except Exception:
+                    pass
+        return corrected

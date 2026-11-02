@@ -70,6 +70,8 @@ class MarketDataMonitor:
             get_coverage=self.sqlite_coverage_payload,
         )
         self.depth_prober = HistoryDepthProberWorker(manifest=self.history_manifest)
+        self._reconcile_worker = None
+        self._reconcile_loader = None
 
         self._subscribed: set[str] = set()
         self._degraded: set[str] = set()
@@ -98,6 +100,7 @@ class MarketDataMonitor:
         self.ws_feed.start()
         for symbol in active_symbols:
             self.subscribe(symbol)
+        self._start_reconcile()
 
     def stop(self) -> None:
         logger.info("market_data_monitor_stop subscribed_count=%d", len(self._subscribed))
@@ -105,6 +108,7 @@ class MarketDataMonitor:
             symbols = list(self._subscribed)
         for symbol in symbols:
             self.unsubscribe(symbol)
+        self._stop_reconcile()
         self.ws_feed.stop()
 
     def subscribe(self, symbol: str) -> None:
@@ -259,6 +263,60 @@ class MarketDataMonitor:
         return self.depth_prober.get_ceiling_days(symbol, timeframe)
 
     # ================= internal wiring =================
+
+    # ================= candle truth (thread 007) =================
+
+    def _start_reconcile(self) -> None:
+        import os
+        if os.environ.get("QT19_DISABLE_RECONCILE") or os.environ.get("PYTEST_CURRENT_TEST"):
+            logger.info("candle_reconcile_skipped_by_environment")
+            return
+        if self._reconcile_worker is not None:
+            return
+        try:
+            import requests
+            from engines.workers.market_data.candle_reconcile_worker import CandleReconcileWorker
+
+            def short_get(url, **kwargs):
+                kwargs["timeout"] = 6
+                return requests.get(url, **kwargs)
+
+            self._reconcile_loader = HistoricalDataLoaderWorker(http_get=short_get, rate_limit_sleep_s=0.1)
+            self._reconcile_worker = CandleReconcileWorker(
+                fetch_range=self._reconcile_loader.fetch_range,
+                apply=self._apply_exchange_candles,
+                get_symbols=self._reconcile_symbols,
+            )
+            self._reconcile_worker.start()
+        except Exception:
+            self._reconcile_worker = None
+            logger.exception("candle_reconcile_start_failed")
+
+    def _stop_reconcile(self) -> None:
+        worker = self._reconcile_worker
+        self._reconcile_worker = None
+        if worker is not None:
+            try:
+                worker.stop()
+            except Exception:
+                logger.exception("candle_reconcile_stop_failed")
+
+    def _reconcile_symbols(self) -> List[str]:
+        with self._lock:
+            return list(self._subscribed)
+
+    def _apply_exchange_candles(self, symbol: str, timeframe: str, candles: list, now_ms: int) -> list:
+        corrected = self.candle_builder.apply_exchange_candles(symbol, timeframe, candles, now_ms)
+        step = {"1m": 60_000, "5m": 300_000, "15m": 900_000}.get(timeframe, 60_000)
+        to_save = {c.open_time: c for c in candles if c.open_time + step <= now_ms}
+        for c in corrected:
+            to_save[c.open_time] = c
+        if to_save:
+            try:
+                self.candle_store.save_candles(symbol, timeframe, [to_save[k] for k in sorted(to_save)])
+            except Exception:
+                logger.exception("candle_reconcile_persist_failed symbol=%s timeframe=%s", symbol, timeframe)
+        return corrected
 
     def _seed_baseline_history(self, symbol: str) -> None:
         started = time.monotonic()

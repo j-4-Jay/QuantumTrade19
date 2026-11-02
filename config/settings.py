@@ -15,8 +15,8 @@ APP_SUBHEADING: str = "by Jayprakash Pattnaik"
 APP_TAGLINE: str = "Precision. Quantum. Profits."
 APP_VERSION: str = "v0.4.8"
 SIDEBAR_TABS: list[str] = ["Dashboard", "Trading Panel", "Journal & Reports", "Alerts", "Settings"]
-SPLASH_DURATION_SECONDS: float = 5.0
-SPLASH_HOLD_SECONDS: float = 2.0
+SPLASH_DURATION_SECONDS: float = 2.5
+SPLASH_HOLD_SECONDS: float = 1.0
 
 # v0.4.8 data-integrity safety guard values.
 TRADING_PANEL_RENDER_SAFE_DAYS: int = 5
