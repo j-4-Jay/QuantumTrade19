@@ -250,6 +250,7 @@ class AppState(
 
     trading_panel_poll_running: bool = False
     trading_panel_last_candle_ts: float = 0.0
+    trading_panel_correction_seq: int = 0
 
     # --- Custom right-click chart menu (v0.3.8) ---
     trading_panel_menu_open: bool = False

@@ -446,6 +446,24 @@ class TradingPanelMixin(rx.State, mixin=True):
         self.trading_panel_last_candle_ts = float(live_ts)
         return live_row, candle_closed
 
+    def build_correction_patch(self) -> str:
+        symbol = self.trading_panel_symbol
+        tf = self.trading_panel_chart_tf
+        seq = engine.market_data.get_correction_seq(symbol, tf)
+        if seq == self.trading_panel_correction_seq:
+            return ""
+        self.trading_panel_correction_seq = seq
+        rows = [
+            {
+                "timestamp": _normalize_timestamp_ms(c.open_time),
+                "open": float(c.open), "high": float(c.high),
+                "low": float(c.low), "close": float(c.close),
+                "volume": float(c.volume),
+            }
+            for c in engine.market_data.get_recent_closed(symbol, tf, 30)
+        ]
+        return json.dumps(rows) if rows else ""
+
     @rx.event(background=True)
     async def poll_trading_panel_chart(self):
         async with self:
@@ -456,10 +474,12 @@ class TradingPanelMixin(rx.State, mixin=True):
             while True:
                 live_row = None
                 should_snap = False
+                patch_json = ""
                 async with self:
                     live_row, candle_closed = self.build_live_ohlc_update()
                     if candle_closed and self.trading_panel_follow_live:
                         should_snap = True
+                    patch_json = self.build_correction_patch() if self.trading_panel_follow_live else ""
 
                 if live_row is not None:
                     bar_json = json.dumps(live_row)
@@ -481,6 +501,11 @@ class TradingPanelMixin(rx.State, mixin=True):
                                 {snap_call}
                             }}
                         }})()"""
+                    )
+                if patch_json:
+                    yield rx.call_script(
+                        "(function(){var p=window.QT19_PATCH_BARS&&window.QT19_PATCH_BARS['"
+                        + TRADING_PANEL_CHART_ID + "'];if(p){p(" + patch_json + ");}})()"
                     )
                 await asyncio.sleep(0.5)
         finally:

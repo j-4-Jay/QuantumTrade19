@@ -7,7 +7,7 @@ Rows 3 to 5 show a dash until FT-H.7 and FT-H.8; row 6 is the Confidence placeho
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import logging
 
 logger = logging.getLogger("setup.callout_helper")
@@ -23,6 +23,41 @@ TEXT_LIGHT = "#FFFFFF"
 INK_DARK = "#06231A"
 TAIL_GAP_TICKS = 3
 DASH = "\u2014"
+WIN_R_TEXT = 1.5
+
+
+def _apply_outcome(callout: Dict[str, Any], outcome: Any, live_price: Optional[float]) -> None:
+    """FT-H.7: state, fade, LIVE and PEAK text from the outcome worker. No outcome = nothing changes."""
+    if outcome is None:
+        return
+    risk = float(getattr(outcome, "risk", 0) or 0)
+    if risk <= 0:
+        return
+    status = str(getattr(outcome, "status", "OPEN"))
+    sign = 1.0 if getattr(outcome, "is_bull", True) else -1.0
+    live_r = None
+    if live_price is not None:
+        live_r = sign * (float(live_price) - float(outcome.entry)) / risk
+    peak = float(getattr(outcome, "peak_rrr", 0.0) or 0.0)
+    if status == "SL_HIT":
+        callout["state"] = "sl_hit"
+        callout["fade"] = 1.0
+        callout["live_text"] = "-1.00R"
+    elif status == "WIN" or getattr(outcome, "win_reached", False):
+        callout["state"] = "win"
+        callout["fade"] = 0.0
+        if status == "WIN":
+            callout["live_text"] = f"{WIN_R_TEXT:+.2f}R"
+        elif live_r is not None:
+            callout["live_text"] = f"{live_r:+.2f}R"
+    else:
+        callout["state"] = "running"
+        if live_r is not None:
+            callout["fade"] = round(min(1.0, max(0.0, -live_r)), 2)
+            callout["live_text"] = f"{live_r:+.2f}R"
+    if status == "OPEN" and live_r is not None:
+        peak = max(peak, live_r)
+    callout["peak_text"] = f"{max(peak, 0.0):.2f}R"
 
 
 def _direction_is_bull(direction: Any) -> bool:
@@ -44,7 +79,13 @@ def _prices(candle: Any) -> List[float]:
     return [float(v) for v in values if v is not None]
 
 
-def build_setup_callouts(confirmed_setups: List[Any], tick_size: float, buffer_ticks: int) -> List[Dict[str, Any]]:
+def build_setup_callouts(
+    confirmed_setups: List[Any],
+    tick_size: float,
+    buffer_ticks: int,
+    outcomes: Optional[Dict[str, Any]] = None,
+    live_price: Optional[float] = None,
+) -> List[Dict[str, Any]]:
     tick = float(tick_size or 0)
     if tick <= 0:
         return []
@@ -97,4 +138,5 @@ def build_setup_callouts(confirmed_setups: List[Any], tick_size: float, buffer_t
             "peak_text": DASH,
             "confidence_text": "Confidence: File 05 pending",
         })
+        _apply_outcome(callouts[-1], (outcomes or {}).get(str(setup.event_id)), live_price)
     return callouts

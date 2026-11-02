@@ -210,7 +210,10 @@ class SetupVisualizationMixin(rx.State, mixin=True):
         try:
             tick = float(_engine.market_data.symbol_registry.get_tick_size(symbol))
             buffer_ticks = SetupBufferSettings(_engine.security.persistence).get_buffer_ticks(symbol)
-            new_callouts = build_setup_callouts(confirmed, tick, buffer_ticks)
+            outcomes = _engine.get_setup_outcomes(symbol, tf)
+            live = _engine.market_data.get_live_candle(symbol, tf)
+            live_price = float(live.close) if live is not None else None
+            new_callouts = build_setup_callouts(confirmed, tick, buffer_ticks, outcomes, live_price)
         except Exception:
             __import__("logging").getLogger("setup.callouts").exception("setup_callouts_build_failed symbol=%s tf=%s", symbol, tf)
             new_callouts = []

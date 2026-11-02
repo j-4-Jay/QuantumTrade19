@@ -142,6 +142,13 @@ class MarketDataMonitor:
     def get_live_candle(self, symbol: str, timeframe: str) -> Optional[Candle]:
         return self.candle_builder.get_live_candle(symbol, timeframe)
 
+    def get_correction_seq(self, symbol: str, timeframe: str) -> int:
+        return self.__dict__.get("_correction_seq", {}).get((symbol, timeframe), 0)
+
+    def get_recent_closed(self, symbol: str, timeframe: str, count: int = 30) -> List[Candle]:
+        series = self.candle_builder.get_series(symbol, timeframe, limit=count + 1)
+        return [c for c in series if c.is_closed][-count:]
+
     def get_historical_candles(self, symbol: str, timeframe: str, days: int) -> List[Candle]:
         """Explicit broker-history read. Not permitted for Trading Panel
         rendering or chart polling. Use get_chart_candles() for chart data."""
@@ -307,6 +314,9 @@ class MarketDataMonitor:
 
     def _apply_exchange_candles(self, symbol: str, timeframe: str, candles: list, now_ms: int) -> list:
         corrected = self.candle_builder.apply_exchange_candles(symbol, timeframe, candles, now_ms)
+        if corrected:
+            seqs = self.__dict__.setdefault("_correction_seq", {})
+            seqs[(symbol, timeframe)] = seqs.get((symbol, timeframe), 0) + 1
         step = {"1m": 60_000, "5m": 300_000, "15m": 900_000}.get(timeframe, 60_000)
         to_save = {c.open_time: c for c in candles if c.open_time + step <= now_ms}
         for c in corrected:
@@ -387,6 +397,10 @@ class MarketDataMonitor:
         # registered subscriber (e.g. SetupDetectionMonitor.on_candle_closed).
         # Wrapped so a subscriber's own bug can NEVER break candle
         # persistence or the tick pipeline above.
+        if not self._defer_close_notification(candle):
+            self._notify_close_subscribers(candle)
+
+    def _notify_close_subscribers(self, candle: Candle) -> None:
         for callback in self._candle_close_subscribers:
             try:
                 callback(candle)
@@ -395,6 +409,27 @@ class MarketDataMonitor:
                     "candle_close_subscriber_failed symbol=%s timeframe=%s open_time=%d callback=%r",
                     candle.symbol, candle.timeframe, candle.open_time, callback,
                 )
+
+    def _defer_close_notification(self, candle: Candle) -> bool:
+        """FT-H.33: hold a closed 1m/5m/15m candle about 9 s so the exchange corrections
+        arrive before the setup monitor sees it. Other timeframes and a stopped reconcile
+        worker are notified at once."""
+        import os
+        from engines.workers.market_data.delayed_dispatch_worker import (
+            DelayedDispatchWorker, SETTLE_TIMEFRAMES, SETUP_SETTLE_DELAY_S,
+        )
+        if candle.timeframe not in SETTLE_TIMEFRAMES:
+            return False
+        if self._reconcile_worker is None or os.environ.get("QT19_DISABLE_RECONCILE"):
+            return False
+        with self._lock:
+            dispatcher = self.__dict__.get("_close_dispatcher")
+            if dispatcher is None:
+                dispatcher = DelayedDispatchWorker(self._notify_close_subscribers)
+                self._close_dispatcher = dispatcher
+                dispatcher.start()
+        dispatcher.submit(candle, SETUP_SETTLE_DELAY_S)
+        return True
 
     def _log_health_transition(self, symbol: str, health: str) -> None:
         with self._lock:

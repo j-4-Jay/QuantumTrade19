@@ -911,6 +911,36 @@ function QT19KLineChart(props) {
     } catch (err) {
       console.error("QT19KLineChart: setFormatter failed:", err);
     }
+    if (typeof window !== "undefined") {
+      window.QT19_PATCH_BARS = window.QT19_PATCH_BARS || {};
+      window.QT19_PATCH_BARS[chartId] = (rows) => {
+        try {
+          if (!Array.isArray(rows) || !rows.length) return;
+          const cur = typeof chart.getDataList === "function" ? chart.getDataList() : null;
+          const base = (cur && cur.length) ? cur : (dataRef.current || []);
+          if (!base.length) return;
+          const list = base.slice();
+          const idx = {};
+          list.forEach((b, i) => { idx[b.timestamp] = i; });
+          let changed = false;
+          rows.forEach((r) => {
+            const i = idx[r.timestamp];
+            if (i === undefined) return;
+            const b = list[i];
+            if (b.open !== r.open || b.high !== r.high || b.low !== r.low || b.close !== r.close || b.volume !== r.volume) {
+              list[i] = Object.assign({}, b, r);
+              changed = true;
+            }
+          });
+          if (changed) {
+            dataRef.current = list;
+            if (loaderReadyRef.current && typeof chart.resetData === "function") chart.resetData();
+          }
+        } catch (err) {
+          console.error("QT19KLineChart: patch bars failed:", err);
+        }
+      };
+    }
 
 
     try {
