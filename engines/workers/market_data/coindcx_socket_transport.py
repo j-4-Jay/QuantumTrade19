@@ -20,6 +20,7 @@ from curl_cffi.requests import Session
 _ORIGIN = "https://coindcx.com"
 _IMPERSONATE = "chrome124"
 _PING_SILENCE_TIMEOUT_S = 35.0
+_CONNECT_TIMEOUT_S = 10.0
 
 logger = logging.getLogger("market_data.coindcx_transport")
 
@@ -45,7 +46,13 @@ class CoinDCXSocketTransport:
         try:
             self.disconnect()
             self._session = Session(impersonate=_IMPERSONATE)
-            self._ws = self._session.ws_connect(ws_url, headers={"Origin": _ORIGIN})
+            try:
+                self._ws = self._session.ws_connect(
+                    ws_url, headers={"Origin": _ORIGIN}, timeout=_CONNECT_TIMEOUT_S
+                )
+            except TypeError:
+                logger.warning("transport_connect_timeout_not_supported_using_library_default")
+                self._ws = self._session.ws_connect(ws_url, headers={"Origin": _ORIGIN})
 
             data, _ = self._ws.recv()
             self._dispatch_frame(self._decode(data))

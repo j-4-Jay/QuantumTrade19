@@ -51,22 +51,22 @@
   ],
   "B-XAU_USDT": [
    {
-    "created_ts": 1793136416.4117687,
+    "created_ts": 1793800950.6726782,
     "number": 1,
-    "price": 4068.97,
-    "rev": 2,
+    "price": 4056.01,
+    "rev": 6,
     "style": {},
     "uid": "279779e8bb6a",
-    "updated_ts": 1793136416.4117687
+    "updated_ts": 1793800950.6726782
    },
    {
-    "created_ts": 1793308701.688293,
+    "created_ts": 1793794301.3896844,
     "number": 2,
-    "price": 4029.03,
-    "rev": 2,
+    "price": 4041.8,
+    "rev": 5,
     "style": {},
     "uid": "8f70e60cbc37",
-    "updated_ts": 1793308701.688293
+    "updated_ts": 1793794301.3896844
    },
    {
     "created_ts": 1793649605.025751,
