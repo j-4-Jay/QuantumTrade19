@@ -18,17 +18,64 @@
     "style": {},
     "uid": "ec412f9f90c4",
     "updated_ts": 1793054104.115624
+   },
+   {
+    "created_ts": 1793400712.7402918,
+    "number": 3,
+    "price": 76949.5,
+    "rev": 2,
+    "style": {},
+    "uid": "6e821c0fec7f",
+    "updated_ts": 1793400712.7402918
+   },
+   {
+    "created_ts": 1793569560.2205815,
+    "number": 4,
+    "price": 77923.90000000001,
+    "rev": 2,
+    "style": {},
+    "uid": "cf06eb55ea34",
+    "updated_ts": 1793569560.2205815
    }
   ],
   "B-ETH_USDT": [
    {
-    "created_ts": 1793067082.440335,
+    "created_ts": 1793569545.8760622,
     "number": 1,
-    "price": 2319.3,
+    "price": 2265.0,
+    "rev": 6,
+    "style": {},
+    "uid": "3ab5c5c39c19",
+    "updated_ts": 1793569545.8760622
+   }
+  ],
+  "B-XAU_USDT": [
+   {
+    "created_ts": 1793136416.4117687,
+    "number": 1,
+    "price": 4068.97,
     "rev": 2,
     "style": {},
-    "uid": "111fee5b2d6f",
-    "updated_ts": 1793067082.440335
+    "uid": "279779e8bb6a",
+    "updated_ts": 1793136416.4117687
+   },
+   {
+    "created_ts": 1793308701.688293,
+    "number": 2,
+    "price": 4029.03,
+    "rev": 2,
+    "style": {},
+    "uid": "8f70e60cbc37",
+    "updated_ts": 1793308701.688293
+   },
+   {
+    "created_ts": 1793649605.025751,
+    "number": 3,
+    "price": 3950.08,
+    "rev": 2,
+    "style": {},
+    "uid": "29914a838998",
+    "updated_ts": 1793649605.025751
    }
   ]
  },
