@@ -1,7 +1,18 @@
 """File 04 - shared internal base for the Candle1/2/3 role-assignment machine.
 PATH: engines/workers/setup/_fsm_base.py (REPLACE ENTIRE FILE)
 
-REVISION 4 (this file) - RECYCLE TOUCH-GATE CORRECTION. Live-chart
+REVISION 5 (this file, Jay, 05-11-2026) - TOUCH RULE: CANDLE 1 AND/OR CANDLE 2.
+A Candle1/Candle2 pairing is valid when Candle 1 and/or Candle 2 touched the
+POI (either one, or both). After a failed Candle 3 the recycled Candle 2 is
+the new Candle 1; if it touched the POI itself, the next candle of opposite
+colour pairs with it even if that candle did not touch. If the recycled
+candle did NOT touch, the next candle must touch (no silent drift). A
+recycled candle after a doji is kept only if it touched. Same for Bull and
+Bear. Where the text below says X TOUCHED the POI (REVISION 4 fix), read:
+X touched OR the recycled Candle 2 touched. See
+docs/specs/File_04_TouchRule_Rev5_Spec_Lock_v1.md.
+
+REVISION 4 (superseded in part by REVISION 5) - RECYCLE TOUCH-GATE CORRECTION. Live-chart
 observation showed a confirmed/pending chain "drifting" many candles away
 from its original POI touch, through several failed 3-candle attempts,
 without ever touching the POI again. Root cause: on a FAILED confirmation,
@@ -163,6 +174,7 @@ class _Base123FSMWorker:
         self._classifier = CandleColorClassifierWorker()
         self._pending: Dict[Tuple[str, str, str], PendingSetup] = {}
         self._last_candle: Dict[Tuple[str, str], object] = {}
+        self._touch_times: Dict[Tuple[str, str, str], List[int]] = {}
 
     # ------------------------------------------------------------------ #
     # Public interface
@@ -174,6 +186,8 @@ class _Base123FSMWorker:
 
         confirmed: List[ConfirmedSetup] = []
         touched_poi_ids = set(interactions_by_poi.keys())
+        for _poi_id in touched_poi_ids:
+            self._remember_touch((candle.symbol, candle.timeframe, _poi_id), candle.open_time)
         active_poi_ids = {k[2] for k in self._pending if k[0] == candle.symbol and k[1] == candle.timeframe}
         for poi_id in touched_poi_ids | active_poi_ids:
             result = self._step(candle, poi_id, touched=poi_id in touched_poi_ids, prev_candle=prev_candle)
@@ -257,8 +271,11 @@ class _Base123FSMWorker:
         anchor_color = self._classifier.classify(new_anchor)
         anchor_locked = self._lock_registry.is_locked(new_anchor.symbol, new_anchor.timeframe, new_anchor.open_time)
         if color is None:
-            self._pending[key] = self._new_pending(candle, key[2], stage=_ANCHOR, c1=new_anchor)
-        elif color != anchor_color and not anchor_locked and touched:
+            if self._did_touch(key, new_anchor):
+                self._pending[key] = self._new_pending(candle, key[2], stage=_ANCHOR, c1=new_anchor)
+            else:
+                del self._pending[key]
+        elif color != anchor_color and not anchor_locked and (touched or self._did_touch(key, new_anchor)):
             # REVISION 4 FIX: immediate re-pairing now REQUIRES this
             # incoming candle to have genuinely touched the POI. Without
             # `and touched` here, a chain could recycle indefinitely
@@ -272,6 +289,16 @@ class _Base123FSMWorker:
         else:
             del self._pending[key]
         return None
+
+    def _remember_touch(self, key, open_time) -> None:
+        times = self._touch_times.setdefault(key, [])
+        if open_time not in times:
+            times.append(open_time)
+            if len(times) > 50:
+                del times[:-50]
+
+    def _did_touch(self, key, candle) -> bool:
+        return candle is not None and candle.open_time in self._touch_times.get(key, ())
 
     def _confirms_extreme(self, c3, c2) -> bool:
         raise NotImplementedError

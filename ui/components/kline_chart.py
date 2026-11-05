@@ -665,7 +665,30 @@ function QT19KLineChart(props) {
     if (dataVersion !== lastVersionRef.current) {
       lastVersionRef.current = dataVersion;
       if (loaderReadyRef.current && chartRef.current && typeof chartRef.current.resetData === "function") {
-        chartRef.current.resetData();
+        const ch = chartRef.current;
+        let keepTs = null;
+        try {
+          const vr = ch.getVisibleRange();
+          const dl = ch.getDataList();
+          if (vr && dl && dl.length && dl[vr.to] && vr.to < dl.length - 3) keepTs = dl[vr.to].timestamp;
+        } catch (err) { keepTs = null; }
+        ch.resetData();
+        if (keepTs !== null && typeof ch.scrollToTimestamp === "function") {
+          const restoreView = () => {
+            try { ch.scrollToTimestamp(keepTs); } catch (err) { /* chart already gone */ }
+          };
+          setTimeout(restoreView, 100);
+          const fixView = () => {
+            try {
+              const dl2 = ch.getDataList();
+              const vr2 = ch.getVisibleRange();
+              let idx = -1;
+              for (let i = dl2.length - 1; i >= 0; i--) { if (dl2[i].timestamp === keepTs) { idx = i; break; } }
+              if (idx >= 0 && vr2 && vr2.to !== idx && typeof ch.scrollToDataIndex === "function") ch.scrollToDataIndex(idx - (vr2.to - idx));
+            } catch (err) { /* chart already gone */ }
+          };
+          setTimeout(fixView, 250);
+        }
       }
     }
   }, [dataVersion]);
@@ -885,6 +908,38 @@ function QT19KLineChart(props) {
     }
 
 
+    if (!chart.__qt19ResetKeepsView && typeof chart.resetData === "function") {
+      chart.__qt19ResetKeepsView = true;
+      const rawResetData = chart.resetData.bind(chart);
+      let pendingKeepTs = null;
+      chart.resetData = function () {
+        try {
+          if (pendingKeepTs === null) {
+            const vr = chart.getVisibleRange();
+            const dl = chart.getDataList();
+            if (vr && dl && dl.length && dl[vr.to] && vr.to < dl.length - 3) pendingKeepTs = dl[vr.to].timestamp;
+          }
+        } catch (err) { /* keep default behaviour */ }
+        const out = rawResetData();
+        if (pendingKeepTs !== null) {
+          const ts = pendingKeepTs;
+          setTimeout(() => {
+            try { chart.scrollToTimestamp(ts); } catch (err) { /* chart gone */ }
+          }, 100);
+          setTimeout(() => {
+            try {
+              const dl2 = chart.getDataList();
+              const vr2 = chart.getVisibleRange();
+              let idx = -1;
+              for (let i = dl2.length - 1; i >= 0; i--) { if (dl2[i].timestamp === ts) { idx = i; break; } }
+              if (idx >= 0 && vr2 && vr2.to !== idx) chart.scrollToDataIndex(idx - (vr2.to - idx));
+            } catch (err) { /* chart gone */ }
+          }, 250);
+          setTimeout(() => { pendingKeepTs = null; }, 400);
+        }
+        return out;
+      };
+    }
     installLoader(chart);
     try {
       if (typeof chart.setFormatter === "function") {

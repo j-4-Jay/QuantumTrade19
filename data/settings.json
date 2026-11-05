@@ -42,15 +42,15 @@
   "sidebar_stage": "line",
   "trading_panel_symbol": "B-XAU_USDT",
   "chart_coverage_cache_B-XAU_USDT_1m": {
-    "date": "2026-11-04",
-    "local_days": 0,
+    "date": "2026-11-05",
+    "local_days": 12,
     "broker_days": "Not checked yet"
   },
   "poi_hidden_by_extras": {},
-  "trading_panel_follow_live": true,
+  "trading_panel_follow_live": false,
   "chart_coverage_cache_B-XAU_USDT_15m": {
-    "date": "2026-11-04",
-    "local_days": 0,
+    "date": "2026-11-05",
+    "local_days": 12,
     "broker_days": "Not checked yet"
   },
   "chart_coverage_cache_B-ETH_USDT_5m": {
@@ -122,8 +122,8 @@
     "down_wick_color": "#EA3943"
   },
   "chart_coverage_cache_B-XAU_USDT_5m": {
-    "date": "2026-11-04",
-    "local_days": 0,
+    "date": "2026-11-05",
+    "local_days": 12,
     "broker_days": "Not checked yet"
   },
   "chart_coverage_cache_B-BTC_USDT_15m": {

@@ -462,6 +462,12 @@ class TradingPanelMixin(rx.State, mixin=True):
             }
             for c in engine.market_data.get_recent_closed(symbol, tf, 30)
         ]
+        if rows:
+            from state.app_state_mixins.candle_rows_merge import merge_rows_by_timestamp
+            merged = merge_rows_by_timestamp(self.trading_panel_candles, rows)
+            if merged is not None:
+                self.trading_panel_candles = merged
+                self.trading_panel_data_version += 1
         return json.dumps(rows) if rows else ""
 
     @rx.event(background=True)
@@ -479,7 +485,7 @@ class TradingPanelMixin(rx.State, mixin=True):
                     live_row, candle_closed = self.build_live_ohlc_update()
                     if candle_closed and self.trading_panel_follow_live:
                         should_snap = True
-                    patch_json = self.build_correction_patch() if self.trading_panel_follow_live else ""
+                    patch_json = self.build_correction_patch()
 
                 if live_row is not None:
                     bar_json = json.dumps(live_row)

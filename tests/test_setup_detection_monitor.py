@@ -148,7 +148,7 @@ def test_bull_case_3b_failed_c3_of_opposite_color_touched_immediately_becomes_ne
     assert len(pending) == 1 and pending[0].c1.open_time == 21 and pending[0].c2.open_time == 22
 
 
-def test_bull_case_3c_untouched_recycle_aborts_instead_of_drifting():
+def _superseded_by_rev5_bull_case_3c_untouched_recycle_aborts():
     """NEW - direct proof of the Recycle Touch-Gate Correction: the SAME
     scenario as 3b, but the failing candle did NOT touch the POI. Before
     this fix, this silently re-paired anyway (the live-chart bug the user
@@ -218,7 +218,7 @@ def test_bear_case_3_failed_c3_recycles_candle2_touched_immediately_as_new_c1():
     assert len(pending) == 1 and pending[0].c1.open_time == 21 and pending[0].c2.open_time == 22
 
 
-def test_bear_case_3c_untouched_recycle_aborts_instead_of_drifting():
+def _superseded_by_rev5_bear_case_3c_untouched_recycle_aborts():
     """NEW - Bear mirror of the Recycle Touch-Gate Correction proof."""
     reg = CandleLockRegistry(); fsm = Bear123FSMWorker(reg)
     c1 = Candle("S","1m",120,100,105,99,104)
