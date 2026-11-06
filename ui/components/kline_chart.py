@@ -666,29 +666,7 @@ function QT19KLineChart(props) {
       lastVersionRef.current = dataVersion;
       if (loaderReadyRef.current && chartRef.current && typeof chartRef.current.resetData === "function") {
         const ch = chartRef.current;
-        let keepTs = null;
-        try {
-          const vr = ch.getVisibleRange();
-          const dl = ch.getDataList();
-          if (vr && dl && dl.length && dl[vr.to] && vr.to < dl.length - 3) keepTs = dl[vr.to].timestamp;
-        } catch (err) { keepTs = null; }
         ch.resetData();
-        if (keepTs !== null && typeof ch.scrollToTimestamp === "function") {
-          const restoreView = () => {
-            try { ch.scrollToTimestamp(keepTs); } catch (err) { /* chart already gone */ }
-          };
-          setTimeout(restoreView, 100);
-          const fixView = () => {
-            try {
-              const dl2 = ch.getDataList();
-              const vr2 = ch.getVisibleRange();
-              let idx = -1;
-              for (let i = dl2.length - 1; i >= 0; i--) { if (dl2[i].timestamp === keepTs) { idx = i; break; } }
-              if (idx >= 0 && vr2 && vr2.to !== idx && typeof ch.scrollToDataIndex === "function") ch.scrollToDataIndex(idx - (vr2.to - idx));
-            } catch (err) { /* chart already gone */ }
-          };
-          setTimeout(fixView, 250);
-        }
       }
     }
   }, [dataVersion]);
@@ -851,6 +829,20 @@ function QT19KLineChart(props) {
   }, [poiDotsVersion]);
 
 
+  const qt19ChartAtLive = (chart) => {
+    try {
+      const dl = chart.getDataList();
+      const vr = chart.getVisibleRange();
+      const off = chart.getOffsetRightDistance();
+      if (!dl || !dl.length || !vr) return true;
+      if (typeof chart.__qt19LiveOff !== "number") {
+        if (vr.to >= dl.length - 1) { chart.__qt19LiveOff = off; return true; }
+        return false;
+      }
+      return vr.to >= dl.length - 1 && Math.abs(off - chart.__qt19LiveOff) < 3;
+    } catch (err) { return true; }
+  };
+
   const installLoader = (chart) => {
     chart.setDataLoader({
       getBars: ({ type, callback }) => {
@@ -970,7 +962,12 @@ function QT19KLineChart(props) {
       window.QT19_PATCH_BARS = window.QT19_PATCH_BARS || {};
       window.QT19_PATCH_BARS[chartId] = (rows) => {
         try {
-          if (!Array.isArray(rows) || !rows.length) return;
+          const pend = chart.__qt19PendingRows || (chart.__qt19PendingRows = {});
+          if (Array.isArray(rows)) rows.forEach((r) => { pend[r.timestamp] = r; });
+          const allRows = Object.keys(pend).map((k) => pend[k]);
+          if (!allRows.length) return;
+          if (!qt19ChartAtLive(chart)) { console.log("QT19 patch held (view away from live)", allRows.length); return; }
+          rows = allRows;
           const cur = typeof chart.getDataList === "function" ? chart.getDataList() : null;
           const base = (cur && cur.length) ? cur : (dataRef.current || []);
           if (!base.length) return;
@@ -987,6 +984,7 @@ function QT19KLineChart(props) {
               changed = true;
             }
           });
+          chart.__qt19PendingRows = {};
           if (changed) {
             dataRef.current = list;
             if (loaderReadyRef.current && typeof chart.resetData === "function") chart.resetData();

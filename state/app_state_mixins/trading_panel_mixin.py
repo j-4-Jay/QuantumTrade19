@@ -466,8 +466,7 @@ class TradingPanelMixin(rx.State, mixin=True):
             from state.app_state_mixins.candle_rows_merge import merge_rows_by_timestamp
             merged = merge_rows_by_timestamp(self.trading_panel_candles, rows)
             if merged is not None:
-                self.trading_panel_candles = merged
-                self.trading_panel_data_version += 1
+                pass  # chart is patched in the browser; leaving state candles unchanged avoids a chart re-init at each new candle
         return json.dumps(rows) if rows else ""
 
     @rx.event(background=True)

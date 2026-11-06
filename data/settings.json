@@ -1,5 +1,5 @@
 {
-  "theme_key": "lime-night",
+  "theme_key": "blue-night",
   "sound_master_on": false,
   "dnd_on": false,
   "paper_mode": true,
@@ -42,8 +42,8 @@
   "sidebar_stage": "line",
   "trading_panel_symbol": "B-XAU_USDT",
   "chart_coverage_cache_B-XAU_USDT_1m": {
-    "date": "2026-11-05",
-    "local_days": 12,
+    "date": "2026-11-06",
+    "local_days": 0,
     "broker_days": "Not checked yet"
   },
   "poi_hidden_by_extras": {},
@@ -122,8 +122,8 @@
     "down_wick_color": "#EA3943"
   },
   "chart_coverage_cache_B-XAU_USDT_5m": {
-    "date": "2026-11-05",
-    "local_days": 12,
+    "date": "2026-11-06",
+    "local_days": 0,
     "broker_days": "Not checked yet"
   },
   "chart_coverage_cache_B-BTC_USDT_15m": {
