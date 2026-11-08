@@ -25,6 +25,7 @@ from state.app_state_mixins.independent_poi_mixin import IndependentPoiMixin
 from state.app_state_mixins.setup_buffer_mixin import SetupBufferMixin
 from state.app_state_mixins.right_panel_mixin import RightPanelMixin
 from state.app_state_mixins.motion_mixin import MotionMixin
+from state.app_state_mixins.candle_popup_mixin import CandlePopupMixin
 
 from state.app_state_mixins.setup_visualization_mixin import SetupVisualizationMixin
 TRADING_PANEL_TF_OPTIONS = ["1m", "5m", "15m"]
@@ -43,6 +44,7 @@ class AppState(
     SetupBufferMixin,
     RightPanelMixin,
     MotionMixin,
+    CandlePopupMixin,
     rx.State,
 ):
     screen: str = SHELL_STATE_CLASS.SPLASH.value

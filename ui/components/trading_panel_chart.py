@@ -42,6 +42,9 @@ def trading_panel_chart() -> rx.Component:
             id=TRADING_PANEL_CHART_ID,
             on_context_menu=AppState.open_chart_menu,
             on_ind_poi_moved=AppState.move_independent_poi,
+            on_candle_popup=AppState.candle_popup_request,
+            candle_popup_symbol=AppState.trading_panel_symbol,
+            candle_popup_reduced_motion=AppState.poi_reduced_motion,
             style={
                 "width": "100%",
                 "height": "100%",

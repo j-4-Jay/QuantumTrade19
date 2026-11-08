@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import reflex as rx
 from reflex.utils.imports import ImportVar
+from ui.components.candle_info_popup_js import CANDLE_INFO_POPUP_JS
 
 
 class KLineChart(rx.Component):
@@ -41,6 +42,8 @@ class KLineChart(rx.Component):
     poi_dots_version: rx.Var[int] = 0
     setup_callouts: rx.Var[list[dict]] = []
     setup_callouts_version: rx.Var[int] = 0
+    candle_popup_symbol: rx.Var[str] = ""
+    candle_popup_reduced_motion: rx.Var[bool] = False
 
     def add_imports(self) -> dict[str, list[ImportVar]]:
         return {
@@ -56,10 +59,12 @@ class KLineChart(rx.Component):
             **super().get_event_triggers(),
             "on_context_menu": lambda e: [e.clientX, e.clientY],
             "on_ind_poi_moved": lambda uid, price: [uid, price],
+            "on_candle_popup": lambda action, popup_id, ts, sym, tf: [action, popup_id, ts, sym, tf],
         }
 
     def add_custom_code(self) -> list[str]:
         return [
+            CANDLE_INFO_POPUP_JS,
             r"""
 if (typeof window !== "undefined" && !window.QT19_OVERLAYS_REGISTERED) {
   window.QT19_OVERLAYS_REGISTERED = true;
@@ -235,11 +240,19 @@ function QT19KLineChart(props) {
   const {
     chartId, data, dataVersion, symbol, period, styles, zoomEnabled,
     scrollEnabled, onContextMenu, onIndPoiMoved, poiOverlays, poiOverlaysVersion,
-    poiDots, poiDotsVersion, setupCallouts, setupCalloutsVersion, ...rest
+    poiDots, poiDotsVersion, setupCallouts, setupCalloutsVersion,
+    onCandlePopup, candlePopupSymbol, candlePopupReducedMotion, ...rest
   } = props;
   const chartRef = useRef(null);
   const indMovedRef = useRef(null);
   indMovedRef.current = onIndPoiMoved;
+  const popupHostRef = useRef(null);
+  const popupReqRef = useRef(null);
+  popupReqRef.current = onCandlePopup;
+  const popupSymRef = useRef("");
+  popupSymRef.current = candlePopupSymbol || "";
+  const popupRmRef = useRef(false);
+  popupRmRef.current = !!candlePopupReducedMotion;
   const dataRef = useRef(data);
   const loaderReadyRef = useRef(false);
   const lastVersionRef = useRef(null);
@@ -1031,6 +1044,33 @@ function QT19KLineChart(props) {
 
 
   useEffect(() => {
+    const host = popupHostRef.current;
+    if (!host || typeof window === "undefined" || !window.QT19CandlePopup) return undefined;
+    const handle = window.QT19CandlePopup.attach({
+      chartId: chartId,
+      container: host,
+      getChart: () => chartRef.current,
+      getSymbol: () => popupSymRef.current,
+      getTf: () => {
+        const p = periodRef.current || {};
+        const s = p.span || 1;
+        return p.type === "hour" ? s + "H" : (p.type === "day" ? s + "D" : s + "m");
+      },
+      reducedMotion: () => popupRmRef.current,
+      request: (action, popupId, ts, sym, tf) => {
+        if (typeof popupReqRef.current === "function") popupReqRef.current(action, popupId, ts, sym, tf);
+      },
+    });
+    return () => { handle.destroy(); };
+  }, [chartId]);
+
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.QT19CandlePopup) window.QT19CandlePopup.closeAll(chartId);
+  }, [candlePopupSymbol]);
+
+
+  useEffect(() => {
     return () => {
       if (typeof window !== "undefined") {
         const chart = chartRef.current;
@@ -1055,6 +1095,7 @@ function QT19KLineChart(props) {
 
   return (
     <div
+      ref={popupHostRef}
       onContextMenu={handleContextMenu}
       style={{ width: "100%", height: "100%", position: "relative" }}
     >
