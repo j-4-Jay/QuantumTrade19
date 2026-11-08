@@ -17,7 +17,7 @@ from __future__ import annotations
 CANDLE_INFO_POPUP_JS = r"""
 (function () {
   if (typeof window === "undefined" || window.QT19CandlePopup) return;
-  var MAX = 10, MOVE_PX = 3, SYNC_MS = 15000, MIN_W = 236, MIN_H = 196, DEF_W = 304, DEF_H = 286;
+  var MAX = 10, MOVE_PX = 3, SYNC_MS = 15000, MIN_W = 280, MIN_H = 248, DEF_W = 304, DEF_H = 286;
   var TF_MS = { "1m": 60000, "5m": 300000, "15m": 900000, "1H": 3600000, "4H": 14400000, "1D": 86400000 };
   var LABELS = [["o", "Open"], ["h", "High"], ["l", "Low"], ["c", "Close"], ["v", "Volume"]];
   var inst = {}, zTop = 60, cssDone = false, fmtCache = {};
@@ -29,6 +29,11 @@ CANDLE_INFO_POPUP_JS = r"""
     ".qt19-cip.fl{background:linear-gradient(135deg,rgba(120,132,150,.55) 0%,rgba(24,30,42,.94) 58%,rgba(10,14,22,.97) 100%);border-color:rgba(170,182,200,.4)}",
     ".qt19-cip-h{flex:0 0 14px;cursor:grab;background-image:radial-gradient(rgba(255,255,255,.55) 1.1px,transparent 1.3px);background-size:6px 6px;background-position:3px 3px;opacity:.7;touch-action:none}",
     ".qt19-cip-h:active{cursor:grabbing}",
+    ".qt19-cip-dragging,.qt19-cip-dragging *{cursor:grabbing!important}.qt19-cip-resizing,.qt19-cip-resizing *{cursor:nwse-resize!important}",
+    ".qt19-cip.compact .qt19-cip-f,.qt19-cip.compact .qt19-cip-r .g,.qt19-cip.compact .qt19-cip-badge{display:none}",
+    ".qt19-cip-compare{display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin-top:2px;padding-right:12px}.qt19-cip-compare-badge{font-size:10.5px;border:1px solid rgba(255,255,255,.24);border-radius:8px;padding:2px 6px;overflow-wrap:anywhere}.qt19-cip-compare-badge.match{color:#9FE2BF}.qt19-cip-compare-badge.diff,.qt19-cip-compare-badge.unavailable{color:#FFD76A}.qt19-cip.compact .qt19-cip-compare{display:flex}.qt19-cip.compact .qt19-cip-compare .qt19-cip-btn{padding:2px 6px;font-size:10.5px}",
+    ".qt19-cip.compact .qt19-cip-b{gap:3px}.qt19-cip.compact .qt19-cip-r{flex:1;min-height:21px}.qt19-cip.compact .qt19-cip-tm{grid-template-columns:auto 1fr}.qt19-cip.compact .qt19-cip-tm i{display:block}",
+    ".qt19-cip-t b{overflow:hidden;text-overflow:ellipsis;min-width:0}.qt19-cip-x{flex-shrink:0;margin-left:auto}.qt19-cip-b{overflow:auto;scrollbar-width:thin}.qt19-cip-tm span,.qt19-cip-r .v{overflow-wrap:anywhere}",
     ".qt19-cip-b{flex:1;min-width:0;display:flex;flex-direction:column;padding:8px 10px 8px 8px;gap:5px;opacity:0}",
     ".qt19-cip-t{display:flex;align-items:center;gap:6px}",
     ".qt19-cip-t b{font-size:12.5px;letter-spacing:.02em;white-space:nowrap}",
@@ -48,7 +53,7 @@ CANDLE_INFO_POPUP_JS = r"""
     ".qt19-cip-btn{cursor:pointer;font:inherit;font-size:11px;color:#EEF2F7;padding:3px 9px;border-radius:8px;background:rgba(0,0,0,.32);border:1px solid rgba(255,255,255,.2)}.qt19-cip-btn:hover{background:rgba(255,255,255,.16)}.qt19-cip-btn[disabled]{opacity:.5;cursor:default}",
     ".qt19-cip-btn.on{background:rgba(31,224,160,.28);border-color:rgba(31,224,160,.7)}",
     ".qt19-cip-note{font-size:10.5px;color:#FFD76A;min-height:13px;width:100%}",
-    ".qt19-cip-g{position:absolute;right:0;bottom:0;width:16px;height:16px;cursor:nwse-resize;touch-action:none;background:linear-gradient(135deg,transparent 55%,rgba(255,255,255,.5) 55% 62%,transparent 62% 72%,rgba(255,255,255,.5) 72% 79%,transparent 79%)}",
+    ".qt19-cip-g{position:absolute;z-index:20;right:0;bottom:0;width:22px;height:22px;pointer-events:auto;cursor:nwse-resize!important;touch-action:none;background:linear-gradient(135deg,transparent 55%,rgba(255,255,255,.5) 55% 62%,transparent 62% 72%,rgba(255,255,255,.5) 72% 79%,transparent 79%)}.qt19-cip-g:hover{cursor:nwse-resize!important}",
     "@container (max-width:268px){.qt19-cip-r{grid-template-columns:48px 1fr}.qt19-cip-tm{grid-template-columns:1fr}.qt19-cip-tm i{display:none}.qt19-cip-btn{padding:2px 6px}}",
     ".qt19-cip-ring{position:absolute;width:38px;height:38px;pointer-events:none;z-index:50}.qt19-cip-ring circle{fill:none;stroke:#FFD76A;stroke-width:2.5;stroke-linecap:round;stroke-dasharray:101;stroke-dashoffset:101;opacity:0;animation:qt19cipring 1.7s linear .3s forwards}",
     "@keyframes qt19cipring{0%{opacity:1;stroke-dashoffset:101}100%{opacity:1;stroke-dashoffset:0}}",
@@ -103,6 +108,41 @@ CANDLE_INFO_POPUP_JS = r"""
     } catch (e) { return null; }
   }
 
+  function clearLocatorNote(p, restore) {
+    var n = p.locatorNotice;
+    if (!n) return;
+    n.actions.forEach(function (action) { try { n.chart.unsubscribeAction(action, n.changed); } catch (e) {} });
+    if (n.frame) cancelAnimationFrame(n.frame);
+    if (restore && p.note.textContent === n.text) p.note.textContent = n.before;
+    p.locatorNotice = null;
+  }
+  function locatorNote(st, p, text) {
+    var before = p.locatorNotice ? p.locatorNotice.before : p.note.textContent;
+    clearLocatorNote(p, false);
+    p.note.textContent = text;
+    var chart = st.opts.getChart();
+    if (!chart || !chart.subscribeAction || !chart.unsubscribeAction) return;
+    var n = { chart: chart, text: text, before: before, actions: [], frame: 0 };
+    p.locatorNotice = n;
+    function check() {
+      n.frame = 0;
+      if (p.closed || p.locatorNotice !== n) return;
+      if (p.note.textContent !== n.text) { clearLocatorNote(p, false); return; }
+      if (st.opts.getTf() !== p.tf || st.opts.getSymbol() !== p.sym) return;
+      try {
+        var current = st.opts.getChart();
+        var list = current.getDataList() || [], i = indexOfTs(list, p.ts);
+        if (i < 0) return;
+        var xy = current.convertToPixel({ dataIndex: i, value: list[i].close }, { paneId: "candle_pane" });
+        if (xy && Number.isFinite(xy.x) && Number.isFinite(xy.y) && xy.x >= 0 && xy.x <= st.container.clientWidth && xy.y >= 0 && xy.y <= st.container.clientHeight) clearLocatorNote(p, true);
+      } catch (e) {}
+    }
+    n.changed = function () { if (!n.frame) n.frame = requestAnimationFrame(check); };
+    ["onVisibleRangeChange", "onScroll", "onZoom", "onPaneDrag"].forEach(function (action) {
+      try { chart.subscribeAction(action, n.changed); n.actions.push(action); } catch (e) {}
+    });
+  }
+
   function clearCandleHighlight(st) {
     if (!st.highlight) return;
     cancelAnimationFrame(st.highlight.frame);
@@ -112,7 +152,7 @@ CANDLE_INFO_POPUP_JS = r"""
   function highlightCandle(st, p) {
     clearCandleHighlight(st);
     if (p.closed || st.opts.getSymbol() !== p.sym) return;
-    if (st.opts.getTf() !== p.tf) { p.note.textContent = "Switch to " + p.tf + " to locate this candle."; return; }
+    if (st.opts.getTf() !== p.tf) { locatorNote(st, p, "Switch to " + p.tf + " to locate this candle."); return; }
     var glow = el("div", "qt19-cip-candle-glow");
     glow.style.cssText = "position:absolute;pointer-events:none;z-index:49;border-radius:5px;background:rgba(255,222,40,.24);border:1px solid rgba(255,225,65,.85);box-shadow:0 0 9px 4px rgba(255,220,30,.55),0 0 20px 7px rgba(255,220,30,.24);";
     st.container.appendChild(glow);
@@ -126,7 +166,7 @@ CANDLE_INFO_POPUP_JS = r"""
       try {
         var chart = st.opts.getChart(), list = chart ? chart.getDataList() || [] : [];
         var idx = indexOfTs(list, p.ts);
-        if (idx < 0) { p.note.textContent = "Candle is not loaded on this chart."; clearCandleHighlight(st); return; }
+        if (idx < 0) { locatorNote(st, p, "Candle is not loaded on this chart."); clearCandleHighlight(st); return; }
         var bar = list[idx];
         var hi = chart.convertToPixel({ dataIndex: idx, value: bar.high }, { paneId: "candle_pane" });
         var lo = chart.convertToPixel({ dataIndex: idx, value: bar.low }, { paneId: "candle_pane" });
@@ -135,8 +175,9 @@ CANDLE_INFO_POPUP_JS = r"""
         var width = Math.max(4, (typeof bs === "number" ? bs : (bs && bs.bar) || 8) + 4);
         var top = Math.min(hi.y, lo.y) - 4, height = Math.max(8, Math.abs(lo.y - hi.y) + 8);
         if (hi.x < 0 || hi.x > st.container.clientWidth || top + height < 0 || top > st.container.clientHeight) {
-          p.note.textContent = "Candle is outside the visible chart."; clearCandleHighlight(st); return;
+          locatorNote(st, p, "Candle is outside the visible chart."); clearCandleHighlight(st); return;
         }
+        clearLocatorNote(p, true);
         glow.style.left = (hi.x - width / 2) + "px";
         glow.style.top = top + "px";
         glow.style.width = width + "px";
@@ -254,10 +295,17 @@ CANDLE_INFO_POPUP_JS = r"""
     var bA = el("button", "qt19-cip-btn", "Auto: OFF");
     var bC = el("button", "qt19-cip-btn", "Copy");
     var bX = el("button", "qt19-cip-btn", "Compare CoinDCX");
-    [bR, bA, bC, bX].forEach(function (b) { b.type = "button"; foot.appendChild(b); });
+    [bR, bA, bC].forEach(function (b) { b.type = "button"; foot.appendChild(b); });
+    bX.type = "button";
     var note = el("div", "qt19-cip-note", "");
     foot.appendChild(note);
     body.appendChild(foot);
+    var compareBar = el("div", "qt19-cip-compare");
+    var compareBadge = el("span", "qt19-cip-compare-badge", "CoinDCX: waiting");
+    compareBadge.setAttribute("role", "status");
+    compareBar.appendChild(compareBadge); compareBar.appendChild(bX);
+    body.appendChild(compareBar);
+    p.compareBadge = compareBadge; p.compareButton = bX; p.compareState = "idle";
     var grip = el("div", "qt19-cip-g");
     root.appendChild(handle); root.appendChild(body); root.appendChild(grip);
     st.container.appendChild(root);
@@ -280,8 +328,9 @@ CANDLE_INFO_POPUP_JS = r"""
         r.cx.textContent = diffX ? "CoinDCX: " + show(k, xv) + " (\u0394 " + num(xv - v[k], k === "v" ? 3 : 8) + ")" : "";
       });
       var up = v && v.c > v.o, dn = v && v.c < v.o;
-      root.className = "qt19-cip " + (up ? "up" : dn ? "dn" : "fl") + (p.shown ? " show" : "");
+      root.className = "qt19-cip " + (up ? "up" : dn ? "dn" : "fl") + (p.shown ? " show" : "") + (p.compact ? " compact" : "");
       badgeUpdate();
+      updateComparison(p);
     }
     function badgeUpdate() {
       var s = statusOf(p, Date.now());
@@ -304,11 +353,7 @@ CANDLE_INFO_POPUP_JS = r"""
     // actions
     xb.addEventListener("click", function () { closePopup(st, p); });
     bR.addEventListener("click", function () { askDb(st, p); });
-    bX.addEventListener("click", function () {
-      note.textContent = "Comparing with CoinDCX\u2026"; bX.disabled = true;
-      p.timers.push(setTimeout(function () { bX.disabled = false; }, 3000));
-      st.opts.request("compare", p.id, p.ts, p.sym, p.tf);
-    });
+    bX.addEventListener("click", function () { askCompare(st, p); });
     bA.addEventListener("click", function () {
       if (!p.auto) {
         if (Date.now() >= p.ts + p.dur + SYNC_MS) { note.textContent = "Already settled \u2013 nothing to sync."; return; }
@@ -322,14 +367,22 @@ CANDLE_INFO_POPUP_JS = r"""
       copyText(t);
       bC.textContent = "Copied"; setTimeout(function () { bC.textContent = "Copy"; }, 1200);
     });
-    root.addEventListener("pointerdown", function (e) { e.stopPropagation(); root.style.zIndex = String(++zTop); });
+    root.addEventListener("pointerdown", function (e) {
+      e.stopPropagation();
+      if (e.button === 1) { e.preventDefault(); closePopup(st, p); return; }
+      root.style.zIndex = String(++zTop);
+    });
+    root.addEventListener("auxclick", function (e) { if (e.button === 1) { e.preventDefault(); e.stopPropagation(); closePopup(st, p); } });
     root.addEventListener("click", function (e) {
       if (e.target && e.target.closest && e.target.closest("button,.qt19-cip-h,.qt19-cip-g")) return;
       highlightCandle(st, p);
     });
     root.addEventListener("wheel", function (e) { e.stopPropagation(); }, { passive: true });
     handle.addEventListener("pointerdown", function (e) {
+      if (e.button === 1) { e.preventDefault(); e.stopPropagation(); closePopup(st, p); return; }
+      if (e.button !== 0) return;
       e.preventDefault(); e.stopPropagation();
+      document.body.classList.add("qt19-cip-dragging");
       var sx = e.clientX - p.x, sy = e.clientY - p.y;
       try { handle.setPointerCapture(e.pointerId); } catch (x) {}
       function mv(ev) {
@@ -337,23 +390,42 @@ CANDLE_INFO_POPUP_JS = r"""
         p.y = clamp(ev.clientY - sy, 0, Math.max(0, st.container.clientHeight - p.h));
         root.style.transform = "translate3d(" + p.x + "px," + p.y + "px,0)";
       }
-      function up() { handle.removeEventListener("pointermove", mv); handle.removeEventListener("pointerup", up); handle.removeEventListener("pointercancel", up); }
+      function up() { document.body.classList.remove("qt19-cip-dragging"); handle.removeEventListener("pointermove", mv); handle.removeEventListener("pointerup", up); handle.removeEventListener("pointercancel", up); window.removeEventListener("blur", up); p.endInteraction = null; }
+      p.endInteraction = up; window.addEventListener("blur", up);
       handle.addEventListener("pointermove", mv); handle.addEventListener("pointerup", up); handle.addEventListener("pointercancel", up);
     });
-    grip.addEventListener("pointerdown", function (e) {
+    grip.addEventListener("dblclick", function (e) {
       e.preventDefault(); e.stopPropagation();
+      if (p.endInteraction) p.endInteraction();
+      p.compact = !!p.nextCompact; p.nextCompact = !p.compact;
+      p.w = p.compact ? MIN_W : DEF_W; p.h = p.compact ? MIN_H : DEF_H;
+      p.x = clamp(p.x, 0, Math.max(0, st.container.clientWidth - p.w));
+      p.y = clamp(p.y, 0, Math.max(0, st.container.clientHeight - p.h));
+      root.style.width = p.w + "px"; root.style.height = p.h + "px";
+      root.style.transform = "translate3d(" + p.x + "px," + p.y + "px,0)";
+      root.classList.toggle("compact", p.compact);
+    });
+    grip.addEventListener("pointerdown", function (e) {
+      if (e.button === 1) { e.preventDefault(); e.stopPropagation(); closePopup(st, p); return; }
+      if (e.button !== 0) return;
+      e.preventDefault(); e.stopPropagation();
+      document.body.classList.add("qt19-cip-resizing");
       var sx = e.clientX, sy = e.clientY, w0 = p.w, h0 = p.h;
       try { grip.setPointerCapture(e.pointerId); } catch (x) {}
       function mv(ev) {
         p.w = clamp(w0 + ev.clientX - sx, MIN_W, Math.max(MIN_W, st.container.clientWidth - p.x));
         p.h = clamp(h0 + ev.clientY - sy, MIN_H, Math.max(MIN_H, st.container.clientHeight - p.y));
+        p.compact = p.h <= MIN_H + 1;
+        root.classList.toggle("compact", p.compact);
         root.style.width = p.w + "px"; root.style.height = p.h + "px";
       }
-      function up() { grip.removeEventListener("pointermove", mv); grip.removeEventListener("pointerup", up); grip.removeEventListener("pointercancel", up); }
+      function up() { document.body.classList.remove("qt19-cip-resizing"); grip.removeEventListener("pointermove", mv); grip.removeEventListener("pointerup", up); grip.removeEventListener("pointercancel", up); window.removeEventListener("blur", up); p.endInteraction = null; }
+      p.endInteraction = up; window.addEventListener("blur", up);
       grip.addEventListener("pointermove", mv); grip.addEventListener("pointerup", up); grip.addEventListener("pointercancel", up);
     });
 
     askDb(st, p);
+    askCompare(st, p);
     if (statusOf(p, Date.now()).k !== "settled") ensureTicker(st);
   }
 
@@ -368,6 +440,39 @@ CANDLE_INFO_POPUP_JS = r"""
     p.auto = false;
     var b = p.el.querySelectorAll(".qt19-cip-btn")[1];
     if (b) { b.textContent = "Auto: OFF"; b.classList.remove("on"); }
+  }
+  function updateComparison(p) {
+    if (!p.compareBadge) return;
+    var text = "CoinDCX: waiting", kind = "";
+    if (p.compareState === "pending") text = "CoinDCX: comparing...";
+    else if (p.compareState === "unavailable") { text = "CoinDCX: unavailable"; kind = "unavailable"; }
+    else if (p.compareState === "ready") {
+      var valid = p.vals && p.cx && LABELS.every(function (kv) {
+        var k = kv[0];
+        return p.vals[k] != null && p.cx[k] != null && Number.isFinite(Number(p.vals[k])) && Number.isFinite(Number(p.cx[k]));
+      });
+      if (!valid) text = "CoinDCX: waiting for candle values";
+      else {
+        var diffs = 0;
+        LABELS.forEach(function (kv) { if (!same(p.vals[kv[0]], p.cx[kv[0]])) diffs++; });
+        text = diffs ? "CoinDCX: differs (" + diffs + "/5)" : "CoinDCX: matches (5/5)";
+        kind = diffs ? "diff" : "match";
+      }
+    }
+    p.compareBadge.textContent = text;
+    p.compareBadge.className = "qt19-cip-compare-badge" + (kind ? " " + kind : "");
+    p.compareBadge.title = p.compareError || "Snapshot comparison; use Compare CoinDCX for a fresh check.";
+  }
+  function askCompare(st, p) {
+    if (p.closed || p.compareState === "pending") return;
+    p.cx = null; p.compareError = ""; p.compareState = "pending";
+    p.compareButton.disabled = true;
+    p.paint(null);
+    try { st.opts.request("compare", p.id, p.ts, p.sym, p.tf); }
+    catch (e) {
+      p.compareState = "unavailable"; p.compareError = "Comparison request failed; retry Compare CoinDCX.";
+      p.compareButton.disabled = false; p.paint(null);
+    }
   }
   function askDb(st, p) { st.opts.request("db", p.id, p.ts, p.sym, p.tf); }
 
@@ -398,6 +503,8 @@ CANDLE_INFO_POPUP_JS = r"""
   function closePopup(st, p) {
     if (p.closed) return;
     clearCandleHighlight(st);
+    clearLocatorNote(p, false);
+    if (p.endInteraction) p.endInteraction();
     p.closed = true; autoOff(p);
     p.timers.forEach(clearTimeout);
     var gapMs = gapOf(st);
@@ -418,10 +525,12 @@ CANDLE_INFO_POPUP_JS = r"""
     for (var i = 0; i < st.list.length; i++) if (st.list[i].id === popupId) p = st.list[i];
     if (!p || p.closed) return;
     if (payload.kind === "db") {
-      var old = p.vals, nv = null, cur = chartVals(st, p.ts);
+      clearLocatorNote(p, false);
+      if (payload.error) { p.note.textContent = "Database read failed; retry Refresh. See application log."; return; }
+      var old = p.vals, nv = null, cur = st.opts.getTf() === p.tf ? chartVals(st, p.ts) : null;
       if (payload.candle) { nv = pick(payload.candle); p.src = "DB"; }
-      else if (cur && cur.isLast) { nv = cur.vals; p.src = "Live"; }
-      else { p.note.textContent = "Not in the database."; return; }
+      else if (cur && cur.isLast && Date.now() < p.ts + p.dur) { nv = cur.vals; p.src = "Live"; }
+      else { p.note.textContent = "No saved row for this candle. Refresh after history loading finishes."; return; }
       p.chart = cur ? cur.vals : null;
       var fk = [];
       if (old) LABELS.forEach(function (kv) { if (!same(old[kv[0]], nv[kv[0]])) fk.push(kv[0]); });
@@ -429,13 +538,14 @@ CANDLE_INFO_POPUP_JS = r"""
       p.note.textContent = "Source: " + p.src + " \u00B7 " + new Date().toLocaleTimeString("en-US");
       p.paint(fk);
     } else if (payload.kind === "compare") {
-      if (payload.candle) {
-        p.cx = pick(payload.candle);
-        var diffs = 0;
-        if (p.vals) LABELS.forEach(function (kv) { if (!same(p.vals[kv[0]], p.cx[kv[0]])) diffs++; });
-        p.note.textContent = diffs ? ("CoinDCX differs in " + diffs + " value" + (diffs > 1 ? "s" : "")) : "CoinDCX matches all 5 values.";
-        p.paint(null);
-      } else { p.note.textContent = payload.error ? ("CoinDCX: " + payload.error) : "CoinDCX candle not found."; }
+      p.compareButton.disabled = false;
+      if (payload.error || !payload.candle) {
+        p.cx = null; p.compareState = "unavailable";
+        p.compareError = payload.error ? ("CoinDCX: " + payload.error) : "CoinDCX candle not found.";
+      } else {
+        p.cx = pick(payload.candle); p.compareState = "ready"; p.compareError = "";
+      }
+      p.paint(null);
     }
   }
 
@@ -460,7 +570,7 @@ CANDLE_INFO_POPUP_JS = r"""
     endHold(st);
     st.container.removeEventListener("pointerdown", st.down, true);
     if (st.ticker) { clearInterval(st.ticker); st.ticker = null; }
-    st.list.slice().forEach(function (p) { p.closed = true; p.timers.forEach(clearTimeout); if (p.el.parentNode) p.el.parentNode.removeChild(p.el); });
+    st.list.slice().forEach(function (p) { clearLocatorNote(p, false); if (p.endInteraction) p.endInteraction(); p.closed = true; p.timers.forEach(clearTimeout); if (p.el.parentNode) p.el.parentNode.removeChild(p.el); });
     st.list = [];
     delete inst[chartId];
   }

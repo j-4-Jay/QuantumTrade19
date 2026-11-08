@@ -333,6 +333,7 @@ class TradingPanelMixin(rx.State, mixin=True):
             f"""(function() {{
                 var chart = window.QT19_CHARTS && window.QT19_CHARTS['{TRADING_PANEL_CHART_ID}'];
                 if (chart && typeof chart.setBarSpace === 'function') chart.setBarSpace(6);
+                if (chart && typeof chart.__qt19CountdownReset === 'function') chart.__qt19CountdownReset();
             }})()"""
         )
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 import reflex as rx
 from reflex.utils.imports import ImportVar
 from ui.components.candle_info_popup_js import CANDLE_INFO_POPUP_JS
+from ui.components.chart_countdown_js import CHART_COUNTDOWN_JS
 
 
 class KLineChart(rx.Component):
@@ -65,6 +66,7 @@ class KLineChart(rx.Component):
     def add_custom_code(self) -> list[str]:
         return [
             CANDLE_INFO_POPUP_JS,
+            CHART_COUNTDOWN_JS,
             r"""
 if (typeof window !== "undefined" && !window.QT19_OVERLAYS_REGISTERED) {
   window.QT19_OVERLAYS_REGISTERED = true;
@@ -273,62 +275,26 @@ function QT19KLineChart(props) {
   const countdownElRef = useRef(null);
   const periodRef = useRef(period);
   periodRef.current = period;
-  const countdownLastTextRef = useRef("");
-
-  const qt19PeriodMs = (p) => {
-    const span = (p && p.span) || 1;
-    const unit = { second: 1000, minute: 60000, hour: 3600000, day: 86400000, week: 604800000, month: 2592000000, year: 31536000000 };
-    return span * (unit[p && p.type] || 60000);
+  const countdownControllerRef = useRef(null);
+  const countdownActionCleanupRef = useRef(null);
+  const qt19CountdownSchedule = () => {
+    if (countdownControllerRef.current) countdownControllerRef.current.schedule();
   };
-
-  const qt19CountdownTick = () => {
-    const el = countdownElRef.current;
-    const chart = chartRef.current;
-    if (!el) return;
-    const hide = () => { if (el.style.display !== "none") el.style.display = "none"; };
-    try {
-      if (!chart || typeof chart.getDataList !== "function" || typeof chart.convertToPixel !== "function") { hide(); return; }
-      const list = chart.getDataList() || [];
-      const last = list[list.length - 1];
-      if (!last) { hide(); return; }
-      const dur = qt19PeriodMs(periodRef.current);
-      const now = Date.now();
-      let rem = last.timestamp + dur - now;
-      if (rem <= 0) rem = dur - ((now - last.timestamp) % dur);
-      const secs = Math.max(0, Math.floor(rem / 1000));
-      const two = (v) => String(v).padStart(2, "0");
-      let text;
-      if (dur <= 60000) text = two(secs);
-      else if (dur < 3600000) text = two(Math.floor(secs / 60)) + ":" + two(secs % 60);
-      else text = two(Math.floor(secs / 3600)) + ":" + two(Math.floor((secs % 3600) / 60)) + ":" + two(secs % 60);
-      const pixel = chart.convertToPixel({ timestamp: last.timestamp, value: last.close }, { paneId: "candle_pane" });
-      if (!pixel || typeof pixel.x !== "number" || typeof pixel.y !== "number") { hide(); return; }
-      let bar = 8;
-      if (typeof chart.getBarSpace === "function") {
-        const bs = chart.getBarSpace();
-        if (bs && typeof bs.bar === "number") bar = bs.bar;
-      }
-      const box = el.parentElement ? el.parentElement.getBoundingClientRect() : null;
-      const x = pixel.x + 2 * bar;
-      if (box && (x < 0 || x > box.width || pixel.y < 0 || pixel.y > box.height)) { hide(); return; }
-      const color = last.close > last.open ? "#2DC08E" : (last.close < last.open ? "#F92855" : "#888888");
-      if (countdownLastTextRef.current !== text) {
-        el.textContent = text;
-        countdownLastTextRef.current = text;
-      }
-      el.style.color = color;
-      el.style.left = x + "px";
-      el.style.top = (pixel.y - 24) + "px";
-      if (el.style.display !== "block") el.style.display = "block";
-    } catch (err) {
-      hide();
-    }
-  };
-
   useEffect(() => {
-    const timer = setInterval(qt19CountdownTick, 250);
-    return () => clearInterval(timer);
-  }, []);
+    const el = countdownElRef.current;
+    if (!el || typeof window === "undefined" || !window.QT19CreateCountdown) return undefined;
+    const controller = window.QT19CreateCountdown(el, () => chartRef.current, () => periodRef.current, () => popupRmRef.current);
+    countdownControllerRef.current = controller;
+    const host = el.parentElement;
+    const observer = typeof ResizeObserver !== "undefined" && host ? new ResizeObserver(qt19CountdownSchedule) : null;
+    if (observer) observer.observe(host);
+    return () => {
+      if (observer) observer.disconnect();
+      if (countdownActionCleanupRef.current) countdownActionCleanupRef.current();
+      controller.destroy(); countdownControllerRef.current = null;
+    };
+  }, [chartId]);
+  useEffect(() => { qt19CountdownSchedule(); }, [period, dataVersion, candlePopupReducedMotion]);
 
 
   const QT19_CO_W = 320;
@@ -869,7 +835,11 @@ function QT19KLineChart(props) {
         loaderReadyRef.current = true;
         if (typeof window !== "undefined") {
           window.QT19_LIVE_CALLBACKS = window.QT19_LIVE_CALLBACKS || {};
-          window.QT19_LIVE_CALLBACKS[chartId] = callback;
+          window.QT19_LIVE_CALLBACKS[chartId] = (...args) => {
+            const result = callback(...args);
+            qt19CountdownSchedule();
+            return result;
+          };
         }
       },
       unsubscribeBar: () => {},
@@ -1001,6 +971,7 @@ function QT19KLineChart(props) {
           if (changed) {
             dataRef.current = list;
             if (loaderReadyRef.current && typeof chart.resetData === "function") chart.resetData();
+            qt19CountdownSchedule();
           }
         } catch (err) {
           console.error("QT19KLineChart: patch bars failed:", err);
@@ -1031,6 +1002,18 @@ function QT19KLineChart(props) {
     }
 
 
+    if (countdownActionCleanupRef.current) countdownActionCleanupRef.current();
+    const countdownActions = [];
+    if (typeof chart.subscribeAction === "function" && typeof chart.unsubscribeAction === "function") {
+      ["onZoom", "onScroll", "onVisibleRangeChange", "onPaneDrag"].forEach((action) => {
+        try { chart.subscribeAction(action, qt19CountdownSchedule); countdownActions.push(action); } catch (err) { /* unsupported action */ }
+      });
+    }
+    countdownActionCleanupRef.current = () => {
+      countdownActions.forEach((action) => { try { chart.unsubscribeAction(action, qt19CountdownSchedule); } catch (err) { /* disposed chart */ } });
+      countdownActionCleanupRef.current = null;
+    };
+    qt19CountdownSchedule();
     rebuildPoiOverlays();
     rebuildPoiDots();
     rebuildSetupCallouts();
@@ -1119,7 +1102,8 @@ function QT19KLineChart(props) {
       />
       <div
         ref={countdownElRef}
-        style={{ position: "absolute", left: 0, top: 0, display: "none", pointerEvents: "none", whiteSpace: "nowrap", fontFamily: "'JetBrains Mono', 'Cascadia Mono', Consolas, monospace", fontSize: "16px", fontWeight: 700, lineHeight: "20px", textShadow: "0 0 4px rgba(0,0,0,0.6)" }}
+        className="qt19-countdown"
+        style={{ position: "absolute", left: 0, top: 0, display: "none", pointerEvents: "none" }}
       />
     </div>
   );

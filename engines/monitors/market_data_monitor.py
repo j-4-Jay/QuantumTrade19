@@ -333,6 +333,11 @@ class MarketDataMonitor:
         logger.info("baseline_seed_started symbol=%s timeframes=%s", symbol, TRADING_TFS)
         baseline = self.historical_loader.backfill_baseline(symbol)
         counts: Dict[str, int] = {}
+        from engines.workers.market_data.baseline_persistence_worker import persist_missing_baseline
+
+        saved = persist_missing_baseline(self.candle_store, symbol, baseline, self._now_ms())
+        logger.info("baseline_missing_rows_saved symbol=%s counts=%s backup=%s", symbol, saved,
+                    getattr(self.candle_store, "_baseline_backup_path", "not needed"))
         for timeframe, candles in baseline.items():
             self.candle_builder.seed_historical(symbol, timeframe, candles)
             counts[timeframe] = len(candles)
