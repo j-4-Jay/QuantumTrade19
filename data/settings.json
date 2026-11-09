@@ -35,12 +35,12 @@
   },
   "trading_panel_chart_tf": "1m",
   "chart_coverage_cache_B-BTC_USDT_1m": {
-    "date": "2026-11-02",
-    "local_days": 0,
+    "date": "2026-11-08",
+    "local_days": 16,
     "broker_days": "Not checked yet"
   },
   "sidebar_stage": "icons",
-  "trading_panel_symbol": "B-ETH_USDT",
+  "trading_panel_symbol": "B-BTC_USDT",
   "chart_coverage_cache_B-XAU_USDT_1m": {
     "date": "2026-11-08",
     "local_days": 0,
@@ -113,13 +113,13 @@
   "trading_panel_bg_mode": "auto",
   "candle_style": {
     "mode": "solid",
-    "up_color": "#2e2e2e",
-    "down_color": "#000442",
-    "no_change_color": "#4a4a4a",
-    "up_border_color": "#042f21",
-    "down_border_color": "#2a0407",
-    "up_wick_color": "#2e2e2e",
-    "down_wick_color": "#000442"
+    "up_color": "#16C784",
+    "down_color": "#EA3943",
+    "no_change_color": "#8B98AA",
+    "up_border_color": "#5CFFC8",
+    "down_border_color": "#FF7B86",
+    "up_wick_color": "#16C784",
+    "down_wick_color": "#EA3943"
   },
   "chart_coverage_cache_B-XAU_USDT_5m": {
     "date": "2026-11-06",
@@ -127,8 +127,8 @@
     "broker_days": "Not checked yet"
   },
   "chart_coverage_cache_B-BTC_USDT_15m": {
-    "date": "2026-10-29",
-    "local_days": 0,
+    "date": "2026-11-08",
+    "local_days": 16,
     "broker_days": "Not checked yet"
   },
   "poi_custom_lines_v2": [
