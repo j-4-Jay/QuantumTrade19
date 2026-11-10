@@ -21,6 +21,7 @@ import reflex as rx
 from reflex.utils.imports import ImportVar
 from ui.components.candle_info_popup_js import CANDLE_INFO_POPUP_JS
 from ui.components.chart_countdown_js import CHART_COUNTDOWN_JS
+from ui.components.chart_correction_js import CHART_CORRECTION_JS
 
 
 class KLineChart(rx.Component):
@@ -67,6 +68,7 @@ class KLineChart(rx.Component):
         return [
             CANDLE_INFO_POPUP_JS,
             CHART_COUNTDOWN_JS,
+            CHART_CORRECTION_JS,
             r"""
 if (typeof window !== "undefined" && !window.QT19_OVERLAYS_REGISTERED) {
   window.QT19_OVERLAYS_REGISTERED = true;
@@ -256,6 +258,7 @@ function QT19KLineChart(props) {
   const popupRmRef = useRef(false);
   popupRmRef.current = !!candlePopupReducedMotion;
   const dataRef = useRef(data);
+  const chartDataLoaderRef = useRef(null);
   const loaderReadyRef = useRef(false);
   const lastVersionRef = useRef(null);
   const overlayIdsRef = useRef([]);
@@ -632,7 +635,14 @@ function QT19KLineChart(props) {
 
 
   useEffect(() => {
+    const previous = dataRef.current;
     dataRef.current = data;
+    const chart = chartRef.current;
+    if (chart && Date.now() - (chart.__qt19DiagPropsAt || 0) >= 5000) {
+      chart.__qt19DiagPropsAt = Date.now();
+      const brief = (rows) => (rows || []).slice(-4).map((r) => ({ timestamp: r.timestamp, close: r.close, volume: r.volume }));
+      console.info("[QT19 FT-H37 PROPS] " + JSON.stringify({ chart: chart.id, previousTail: brief(previous), incomingTail: brief(data), chartTail: brief(chart.getDataList()) }));
+    }
   }, [data]);
 
 
@@ -822,14 +832,14 @@ function QT19KLineChart(props) {
     } catch (err) { return true; }
   };
 
-  const installLoader = (chart) => {
-    chart.setDataLoader({
+  if (!chartDataLoaderRef.current) {
+    chartDataLoaderRef.current = {
       getBars: ({ type, callback }) => {
-        if (type === "init") {
-          callback(dataRef.current || [], false);
-        } else {
-          callback([], false);
-        }
+        const rows = type === "init" ? (dataRef.current || []) : [];
+        const brief = (items) => (items || []).slice(-4).map((r) => ({ timestamp: r.timestamp, close: r.close, volume: r.volume }));
+        if (type === "init") console.info("[QT19 FT-H37 LOAD] " + JSON.stringify({ chart: chartRef.current && chartRef.current.id, inputTail: brief(rows), length: rows.length }));
+        callback(rows, { forward: false, backward: false });
+        if (type === "init") console.info("[QT19 FT-H37 LOADED] " + JSON.stringify({ chart: chartRef.current && chartRef.current.id, chartTail: brief(chartRef.current && chartRef.current.getDataList()) }));
       },
       subscribeBar: ({ callback }) => {
         loaderReadyRef.current = true;
@@ -838,12 +848,17 @@ function QT19KLineChart(props) {
           window.QT19_LIVE_CALLBACKS[chartId] = (...args) => {
             const result = callback(...args);
             qt19CountdownSchedule();
+            const chart = chartRef.current;
+            if (chart && chart.__qt19CorrectionQueue) chart.__qt19CorrectionQueue.schedule();
             return result;
           };
         }
       },
       unsubscribeBar: () => {},
-    });
+    };
+  }
+  const installLoader = (chart) => {
+    chart.setDataLoader(chartDataLoaderRef.current);
   };
 
 
@@ -941,42 +956,24 @@ function QT19KLineChart(props) {
     } catch (err) {
       console.error("QT19KLineChart: setFormatter failed:", err);
     }
-    if (typeof window !== "undefined") {
+    if (typeof window !== "undefined" && window.QT19CreateCorrectionQueue) {
+      if (chart.__qt19CorrectionQueue) chart.__qt19CorrectionQueue.destroy();
+      const corrections = window.QT19CreateCorrectionQueue({
+        chart: chart,
+        getContext: () => String(popupSymRef.current) + "|" + JSON.stringify(periodRef.current),
+        atLive: qt19ChartAtLive,
+        ready: () => loaderReadyRef.current,
+        setData: (list) => {
+          dataRef.current = list;
+          const brief = (rows) => (rows || []).slice(-4).map((r) => ({ timestamp: r.timestamp, close: r.close, volume: r.volume }));
+          console.info("[QT19 FT-H37 SET] " + JSON.stringify({ chart: chart.id, currentChart: chartRef.current && chartRef.current.id, registryOwner: !!(window.QT19_CHARTS && window.QT19_CHARTS[chartId] === chart), inputTail: brief(list), chartTail: brief(chart.getDataList()) }));
+        },
+        changed: qt19CountdownSchedule,
+        error: (err) => { console.error("QT19KLineChart: patch bars failed:", err); },
+      });
+      chart.__qt19CorrectionQueue = corrections;
       window.QT19_PATCH_BARS = window.QT19_PATCH_BARS || {};
-      window.QT19_PATCH_BARS[chartId] = (rows) => {
-        try {
-          const pend = chart.__qt19PendingRows || (chart.__qt19PendingRows = {});
-          if (Array.isArray(rows)) rows.forEach((r) => { pend[r.timestamp] = r; });
-          const allRows = Object.keys(pend).map((k) => pend[k]);
-          if (!allRows.length) return;
-          if (!qt19ChartAtLive(chart)) { console.log("QT19 patch held (view away from live)", allRows.length); return; }
-          rows = allRows;
-          const cur = typeof chart.getDataList === "function" ? chart.getDataList() : null;
-          const base = (cur && cur.length) ? cur : (dataRef.current || []);
-          if (!base.length) return;
-          const list = base.slice();
-          const idx = {};
-          list.forEach((b, i) => { idx[b.timestamp] = i; });
-          let changed = false;
-          rows.forEach((r) => {
-            const i = idx[r.timestamp];
-            if (i === undefined) return;
-            const b = list[i];
-            if (b.open !== r.open || b.high !== r.high || b.low !== r.low || b.close !== r.close || b.volume !== r.volume) {
-              list[i] = Object.assign({}, b, r);
-              changed = true;
-            }
-          });
-          chart.__qt19PendingRows = {};
-          if (changed) {
-            dataRef.current = list;
-            if (loaderReadyRef.current && typeof chart.resetData === "function") chart.resetData();
-            qt19CountdownSchedule();
-          }
-        } catch (err) {
-          console.error("QT19KLineChart: patch bars failed:", err);
-        }
-      };
+      window.QT19_PATCH_BARS[chartId] = corrections.push;
     }
 
 
@@ -1070,6 +1067,12 @@ function QT19KLineChart(props) {
         if (window.QT19_CHARTS && window.QT19_CHARTS[chartId] === chartRef.current) {
           delete window.QT19_CHARTS[chartId];
         }
+        if (chart && chart.__qt19CorrectionQueue) {
+          const corrections = chart.__qt19CorrectionQueue;
+          corrections.destroy();
+          if (window.QT19_PATCH_BARS && window.QT19_PATCH_BARS[chartId] === corrections.push) delete window.QT19_PATCH_BARS[chartId];
+          delete chart.__qt19CorrectionQueue;
+        }
         if (window.QT19_ensureLiveCallback) delete window.QT19_ensureLiveCallback[chartId];
       }
     };
@@ -1083,7 +1086,7 @@ function QT19KLineChart(props) {
       style={{ width: "100%", height: "100%", position: "relative" }}
     >
       <RKLineChart
-        data={data}
+        dataLoader={chartDataLoaderRef.current}
         symbol={symbol}
         period={period}
         styles={styles}

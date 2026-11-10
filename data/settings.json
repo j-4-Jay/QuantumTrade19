@@ -22,8 +22,8 @@
   "tab_transition_mode": "shuffle",
   "per_symbol_settings": {},
   "chart_coverage_cache_B-ETH_USDT_1m": {
-    "date": "2026-11-09",
-    "local_days": 6,
+    "date": "2026-11-10",
+    "local_days": 17,
     "broker_days": "Not checked yet"
   },
   "active_tab": "Trading Panel",
@@ -33,7 +33,7 @@
     "local_days": 0,
     "broker_days": "Not checked yet"
   },
-  "trading_panel_chart_tf": "1m",
+  "trading_panel_chart_tf": "5m",
   "chart_coverage_cache_B-BTC_USDT_1m": {
     "date": "2026-11-09",
     "local_days": 5,
@@ -54,8 +54,8 @@
     "broker_days": "Not checked yet"
   },
   "chart_coverage_cache_B-ETH_USDT_5m": {
-    "date": "2026-11-09",
-    "local_days": 6,
+    "date": "2026-11-10",
+    "local_days": 18,
     "broker_days": "Not checked yet"
   },
   "poi_tf_settings": {
