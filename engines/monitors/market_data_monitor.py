@@ -101,6 +101,7 @@ class MarketDataMonitor:
         for symbol in active_symbols:
             self.subscribe(symbol)
         self._start_reconcile()
+        self._start_candle_shadow()
 
     def stop(self) -> None:
         logger.info("market_data_monitor_stop subscribed_count=%d", len(self._subscribed))
@@ -108,6 +109,7 @@ class MarketDataMonitor:
             symbols = list(self._subscribed)
         for symbol in symbols:
             self.unsubscribe(symbol)
+        self._shadow_call("stop")
         self._stop_reconcile()
         self.ws_feed.stop()
 
@@ -122,6 +124,7 @@ class MarketDataMonitor:
             self._seed_baseline_history(symbol)
             self.ws_feed.subscribe(symbol)
             logger.info("market_data_subscribe_complete symbol=%s", symbol)
+            self._shadow_call("subscribe", symbol)
         except Exception:
             with self._lock:
                 self._subscribed.discard(symbol)
@@ -134,6 +137,7 @@ class MarketDataMonitor:
             self._subscribed.discard(symbol)
             self._degraded.discard(symbol)
             self._last_health.pop(symbol, None)
+        self._shadow_call("unsubscribe", symbol)
         self.ws_feed.unsubscribe(symbol)
         self.rest_fallback.disengage(symbol)
         if was_subscribed:
@@ -313,6 +317,8 @@ class MarketDataMonitor:
             return list(self._subscribed)
 
     def _apply_exchange_candles(self, symbol: str, timeframe: str, candles: list, now_ms: int) -> list:
+        for observed_candle in candles:
+            self._shadow_call("observe", "reconcile_observation", observed_candle)
         corrected = self.candle_builder.apply_exchange_candles(symbol, timeframe, candles, now_ms)
         if corrected:
             seqs = self.__dict__.setdefault("_correction_seq", {})
@@ -387,6 +393,7 @@ class MarketDataMonitor:
         )
 
     def _publish_candle_closed(self, candle: Candle) -> None:
+        self._shadow_call("observe", "current_close", candle)
         try:
             self.candle_store.save_candles(candle.symbol, candle.timeframe, [candle])
         except Exception:
@@ -406,6 +413,7 @@ class MarketDataMonitor:
             self._notify_close_subscribers(candle)
 
     def _notify_close_subscribers(self, candle: Candle) -> None:
+        self._shadow_call("observe", "current_delivery", candle)
         for callback in self._candle_close_subscribers:
             try:
                 callback(candle)
@@ -435,6 +443,32 @@ class MarketDataMonitor:
                 dispatcher.start()
         dispatcher.submit(candle, SETUP_SETTLE_DELAY_S)
         return True
+
+    def _start_candle_shadow(self) -> None:
+        """Opt-in observer only; tests and ordinary launches never open its socket."""
+        import os
+        if os.environ.get("QT19_CANDLE_SHADOW") != "1" or os.environ.get("PYTEST_CURRENT_TEST"):
+            return
+        old = self.__dict__.get("_candle_shadow")
+        if old is not None and old.thread and old.thread.is_alive():
+            return
+        try:
+            from engines.workers.market_data.candle_shadow_worker import CandleShadowWorker
+            worker = CandleShadowWorker()
+            with self._lock:
+                symbols = list(self._subscribed)
+            self._candle_shadow = worker
+            worker.start(symbols)
+        except Exception:
+            logger.exception("candle_shadow_start_failed current feed unchanged")
+
+    def _shadow_call(self, method: str, *args) -> None:
+        worker = self.__dict__.get("_candle_shadow")
+        if worker is not None:
+            try:
+                getattr(worker, method)(*args)
+            except Exception:
+                logger.exception("candle_shadow_hook_failed method=%s current feed unchanged", method)
 
     def _log_health_transition(self, symbol: str, health: str) -> None:
         with self._lock:
